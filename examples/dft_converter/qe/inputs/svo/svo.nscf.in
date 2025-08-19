@@ -2,7 +2,7 @@
   calculation      = 'nscf',
   outdir           = './OUT',
   prefix           = 'svo',
-  pseudo_dir       = './pseudo',
+  pseudo_dir       = '../../pseudo',
   verbosity        = 'high'
 / 
 
@@ -11,8 +11,8 @@
   A                = 3.84102000,
   nat              = 5, 
   ntyp             = 3,
-  ecutwfc          = 650,
-  nbnd             = 120,
+  ecutwfc          = 90,
+  nbnd             = 60,
   occupations      = 'smearing',
   degauss          = 0.0015,
   smearing         = 'm-p',
@@ -30,8 +30,8 @@
 
 ATOMIC_SPECIES
   Sr   0.0  Sr_ONCV_PBE-1.2.upf
-  V    0.0  V.ccECP.upf
-  O    0.0  O.ccECP.upf
+  V    0.0  V_ONCV_PBE-1.2.upf
+  O    0.0  O_ONCV_PBE-1.2.upf
 
 ATOMIC_POSITIONS {crystal}
   Sr 0.50 0.50 0.50
@@ -41,4 +41,4 @@ ATOMIC_POSITIONS {crystal}
   O  0.00 0.00 0.50
 
 K_POINTS {automatic}
- 7 7 7 0 0 0
+ 5 5 5 0 0 0
