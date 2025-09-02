@@ -2,13 +2,20 @@ CoQui: Correlated Quantum Interface
 -----------------------------------------------
 **Last Updated:** Sept. 2, 2025
 
-CoQuí, **Cor**related **Qu**antum **í**nterface, is a software project 
+CoQuí (**Cor**related **Qu**antum **í**nterface) is a software project 
 designed for *ab initio* electronic structure beyond density functional 
-theory (DFT). Starting with a single-particle basis 
-set and a mean-field solution, typically DFT or Hartree-Fock, CoQui employs 
-tensor hypercontraction (THC) decomposition to efficiently process two-electron 
-operators. This sophisticated approach enables CoQui to achieve exceptionally 
-low-scaling algorithms in subsequent many-body calculations. 
+theory (DFT). 
+It provides scalable implementations of correlated methods based on 
+the tensor hypercontraction (THC) representation of Coulomb integrals 
+for both molecular and solid-state systems. 
+
+CoQuí can be used in **two interfaces**:
+
+1. **Python interface**  
+   Build with `-DCOQUI_PYTHON_SUPPORT=ON`, then import CoQUí as a module 
+   to prepare inputs, launch runs, and post-process results.
+2. **Input-file interface**  
+   Provide an input toml file and run CoQuí from the command line.
 
 ## What does CoQui do?
 CoQui utilizes distributed linear algebra to enable high-performance
