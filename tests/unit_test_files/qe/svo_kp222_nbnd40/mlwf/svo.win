@@ -1,0 +1,38 @@
+#svo.win created by wannier_driver.py parser
+
+num_wann = 3
+
+begin projections
+V:dxz,dyz,dxy:x=1,0,0
+end projections
+
+exclude_bands : 1-20,24-40
+
+#other parameters created by wannier_driver.py
+
+num_bands = 3
+bands_plot = True
+bands_num_points = 100
+bands_plot_format = gnuplot
+write_hr = True
+write_u_matrices = True
+write_xyz = True
+translate_home_cell = False
+dis_win_min = 2.0
+dis_win_max = 18.0
+dis_froz_min = 2.0
+dis_froz_max = 18.0
+dis_num_iter = 10000
+dis_conv_tol = 1e-14
+dis_mix_ratio = 0.5
+num_iter = 10000
+conv_window = 5
+conv_tol = 1e-12
+
+begin kpoint_path
+R 0.50 0.50 0.50 G 0.00 0.00 0.00
+G 0.00 0.00 0.00 X 0.00 0.50 0.00
+X 0.00 0.50 0.00 M 0.50 0.50 0.00
+M 0.50 0.50 0.00 G 0.00 0.00 0.00
+end kpoint_path
+
