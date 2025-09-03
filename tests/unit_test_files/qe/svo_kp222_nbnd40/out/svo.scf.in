@@ -1,0 +1,49 @@
+&CONTROL
+   verbosity        = 'high'
+   outdir           = './out'
+   prefix           = 'svo'
+   pseudo_dir       = '../../../pseudo'
+/
+&SYSTEM
+   ibrav            = 0
+   nat              = 5
+   ntyp             = 3
+   ecutwfc          = 90.0
+   occupations      = 'smearing'
+   degauss          = 0.0015
+   smearing         = 'm-p'
+   input_dft        = 'pbe'
+/
+&ELECTRONS
+   conv_thr         = 1e-10
+   mixing_beta      = 0.7
+   diagonalization  = 'david'
+/
+&IONS
+/
+&CELL
+/
+&FCP
+/
+&RISM
+/
+ATOMIC_SPECIES
+Sr 87.62 Sr_ONCV_PBE-1.2.upf
+V 50.9415 V_ONCV_PBE-1.2.upf
+O 15.999 O_ONCV_PBE-1.2.upf
+
+K_POINTS automatic
+14 14 14  0 0 0
+
+CELL_PARAMETERS angstrom
+3.84102000000000 0.00000000000000 0.00000000000000
+0.00000000000000 3.84102000000000 0.00000000000000
+0.00000000000000 0.00000000000000 3.84102000000000
+
+ATOMIC_POSITIONS angstrom
+Sr 1.9205100000 1.9205100000 1.9205100000  
+V 0.0000000000 0.0000000000 0.0000000000  
+O 1.9205100000 0.0000000000 0.0000000000  
+O 0.0000000000 1.9205100000 0.0000000000  
+O 0.0000000000 0.0000000000 1.9205100000  
+
