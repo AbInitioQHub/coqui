@@ -1,12 +1,12 @@
 DFT Converter
 -----------------------------------------------
 
-**Last Updated:** May 17, 2024
+**Last Updated:** Sept. 07, 2025
 
 `CoQui` requires the following input data in order to start a many-body 
 electronic structure calculation:  
-- **Metadata**: Defines the simulated system.
-- **Mean-Field Solution**: Typically from DFT or HF.
+- **Metadata**: Defines the crystal/molecule information sush as atomic
+positions and k-points.
 - **Single-Particle Basis Set**: Basis functions used to construct the many-body
   Hamiltonian in subsequent calculations, typically including Kohn-Sham orbitals,
   Gaussian bases, or other generic basis functions.
