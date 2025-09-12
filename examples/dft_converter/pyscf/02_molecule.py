@@ -1,37 +1,51 @@
 #!/usr/bin/env python
 """
-Converter for a PySCF mean-field object for molecules
+Convert a PySCF mean-field (molecule) to CoQuí HDF5 format.
 
-Our converter uses the Python interface for hdf5 from
-nda (https://github.com/TRIQS/nda), rather than h5py.
+What this does
+--------------
+- Runs a minimal PySCF SCF calculation
+- Exports the mean-field data and orbital values on a Becke grid to HDF5
+  using CoQuí's converter
+
+Outputs
+-------
+- <outdir>/<prefix>.h5         : metadata and MF results
+- <outdir>/Orb_r/              : orbital values on the Becke grid
+
+Notes
+-----
+- `becke_grid_level` controls the atom-centered Lebedev/Becke grid density.
+  Higher = more accurate but larger files.
+- Our converter uses the Python interface for hdf5 from
+  nda (https://github.com/TRIQS/nda), rather than h5py.
+
+!! Important !!!
+- The orbital dump on the Becke grid itself cannot be used to construct THC
+  Coulomb integrals directly. Instead, additional Gaussian density-fitting (GDF) integrals
+  need to be constructed first using PySCF and then the Least-Squares THC procedure (LS-THC)
+  procedure must be applied.
+- See the example: 
+  1. interaction/01_pyscf_gdf_coulomb.py 
+  2. interaction/01_ls_thc_coulomb.py
 """
 
 from pyscf import gto, scf, dft
 
 from coqui.mean_field.pyscf_interface import mol_dump_to_h5
 
-cell = gto.M(
-    atom = '''Si  0.      0.      0.
-              Si 1.3575 1.3575 1.3575''',
-    basis = 'gth-dzvp-molopt-sr',
-    pseudo = 'gth-pbe',
-    verbose = 7,
+mol = gto.M(
+    atom = '''O 0 0 0 
+              H 0 1 0  
+              H 0 0 1''',
+    basis = 'ccpvdz',
+    verbose = 7
 )
 
-kmf = scf.KRKS(cell, cell.make_kpts([2,2,2]))
-kmf.xc = 'pbe'
-kmf.kernel()
+mf = scf.RHF(mol)
+mf.kernel()
+mf.analyze()
 
-#
-# dump_to_h5() function extracts necessary information form kmf into h5 files
-# that is readable by CoQuí.
-#
-# When "mo=True", all quantities in the AO basis will be transformed to MOs.
-#
-# The outputs include: 
-#   a) a h5 file for metadata: "outdir/prefix.h5"
-#   b) a folder for wfc on a FFT mesh: "outdir/Orb_fft"
-if mol_dump_to_h5(
-    mf=mf, becke_grid_level=3, mo=False,
-    outdir='./', prefix='pyscf'): != 0:
-    raise ValueError("dump_to_h5() fail!")
+# --- Export to CoQuí format
+mol_dump_to_h5(mf, becke_grid_level=8, outdir='./', prefix='pyscf')
+

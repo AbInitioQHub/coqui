@@ -1,7 +1,24 @@
 """
-Construct a THC Coulomb Hamiltonian from a mean-field object,
-returning a ThcCoulomb instance that provides access to the
-THC integrals for subsequent many-body solvers.
+
+Example: Constructing THC Coulomb Hamiltonian from QE mean-field object
+
+CoQuí supports three entry points for Coulomb Hamiltonians:
+1. THC (Tensor Hypercontraction) integrals built internally (this example, preferred).
+2. Cholesky-decomposed integrals built internally (mainly for debugging).
+3. GDF integrals generated externally by PySCF.
+
+This examples demonstrates how to construct a THC Coulomb Hamiltonian
+using interpolative separable density fitting (ISDF) from a mean-field
+object.
+
+The output is a ThcCoulomb instance that provides access to the THC
+integrals in the following many-body solvers.
+
+
+See also
+--------
+- Cholesky-decomposed Coulomb Hamiltonian: interaction/01_cholesky_coulomb.py
+- Least-Squares THC: interactions/01_ls_thc_coulomb.py
 """
 
 from mpi4py import MPI

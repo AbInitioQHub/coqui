@@ -191,7 +191,7 @@ namespace methods {
  *  - path: "./", Path to generated cholesky data files.
  *  - output: "chol_info.h5", Name of h5 file. 
  *            If write_type="single", this file will contain all information (meta_data + cholesky tensors).
- *            If write_type="multi", this file only contains meta_data. In this case, cholesly vectors are writen 
+ *            If write_type="multi", this file only contains meta_data. In this case, cholesly vectors are written
  *            in separate files, VqQ.h5 
  *  - ecut: "same as MF", Plane wave cutoff used for the evaluation of coulomb matrix elements.
  *  - chol_block_size: "32", Block size in cholesky decomposition.
