@@ -19,8 +19,7 @@ See also
 --------
 - Cholesky-decomposed Coulomb Hamiltonian: interaction/01_cholesky_coulomb.py
 - ISDF-based THC Coulomb Hamiltonian (preferred): interaction/01_isdf_thc_coulomb.py
-- Cholesky Coulomb from GDF using PySCF (molecule): interaction/20_pyscf_gdf_mol.py
-- Cholesky Coulomb from GDF using PySCF (solid): interaction/20_pyscf_gdf_solid.py
+- Cholesky Coulomb from GDF using PySCF (molecule): interaction/01_pyscf_gdf_coulomb.py
 """
 
 from mpi4py import MPI
