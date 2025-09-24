@@ -494,6 +494,7 @@ void pseudopot::read_vnl_h5(MF_t &mf, h5::group& grp0)
         nda::array<double,3> Dnn_r(nsp,nhm,nhm); 
         nda::h5_read(grp,"dion",Dnn_r);
         auto Dloc = Dnn.local();
+        if(nhm != 0)
         Dloc() = ComplexType(0.0);
         for( int s=0; s<nsp; ++s )
           for( int p=0; p<npol; ++p )
