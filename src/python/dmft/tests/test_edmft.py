@@ -24,6 +24,8 @@ import os
 import numpy as np
 import pytest
 
+pytest.importorskip("triqs", reason="triqs is required for dmft tests")
+
 import coqui
 from coqui.utils.tests.test_coqui_env import mpi
 from coqui.dmft.bath_fit import causal_projection_boson

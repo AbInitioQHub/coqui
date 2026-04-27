@@ -139,19 +139,21 @@ namespace methods {
 
         } else if (div_treatment.find("gygi") != std::string::npos) {
 
-          app_log(1, "");
-          app_log(1, "╔═══════════════════════════════════════════════════════════════════════════════════════════╗");
-          app_log(1, "║ [ NOTE ]                                                                                  ║");
-          app_log(1, "║ The 'gygi' treatment for the inverse dielectric function has been updated.                ║");
-          app_log(1, "║ The new 'gygi' method extrapolates to q=0 using a polynomial fit of the closest q-points. ║");
-          app_log(1, "║ This provides a more accurate estimate at q=0, important for treating finite-size effects.║");
-          app_log(1, "║                                                                                           ║");
-          app_log(1, "║ You can still access the previous 'gygi' treatment (uses smallest-|q| point) via          ║");
-          app_log(1, "║ 'gygi_smallest_q'. However, this older method is less accurate and not recommended.       ║");
-          app_log(1, "╚═══════════════════════════════════════════════════════════════════════════════════════════╝\n");
+          app_log(4, "");
+          app_log(4, "╔═══════════════════════════════════════════════════════════════════════════════════════════╗");
+          app_log(4, "║ [ NOTE ]                                                                                  ║");
+          app_log(4, "║ The 'gygi' treatment for the inverse dielectric function has been updated.                ║");
+          app_log(4, "║ The new 'gygi' method extrapolates to q=0 using a polynomial fit of the closest q-points. ║");
+          app_log(4, "║ This provides a more accurate estimate at q=0, important for treating finite-size effects.║");
+          app_log(4, "║                                                                                           ║");
+          app_log(4, "║ You can still access the previous 'gygi' treatment (uses smallest-|q| point) via          ║");
+          app_log(4, "║ 'gygi_smallest_q'. However, this older method is less accurate and not recommended.       ║");
+          app_log(4, "╚═══════════════════════════════════════════════════════════════════════════════════════════╝\n");
 
-          int fit_order = 2; // default
-          // Try to extract fit_order from string: "gygi_q2_fit_{N}[_...]"
+          // default to a rather large fit order which seems to result in better extrapolation. 
+          // The actual polynomial order will be automatically reduced if not enough q-points are found along each direction.
+          int fit_order = 10; 
+          // User can specify a smaller fit order by appending "order_{N}" to div_treatment, e.g. "gygi_order_4" to use a 4th-order polynomial fit.
           const std::string order_prefix = "order_";
           auto fit_pos = div_treatment.find(order_prefix);
           if (fit_pos != std::string::npos) {
@@ -165,11 +167,11 @@ namespace methods {
           auto closest_indices = find_n_closest_per_direction(mf.Qpts_ibz(), mf.lattv(), fit_order+1);
 
           if (two_dimension)
-            app_log(2, "\n Polynomial extrapolate head of the inverse of the dielectric function as O(q^2)\n"
-                       " up to order {} using the closest {} points along +/-b1, and +/-b2 directions", fit_order, fit_order+1);
+            app_log(2, "\n Polynomial extrapolate head of the inverse of the dielectric function as O(q^2) along +/-b1, and +/-b2 directions."); 
           else
-            app_log(2, "\n Polynomial extrapolate head of the inverse of the dielectric function as O(q^2)\n"
-                       " up to order {} using the closest {} points along +/-b1, +/-b2, and +/-b3 directions", fit_order, fit_order+1);
+            app_log(2, "\n Polynomial extrapolate head of the inverse of the dielectric function as O(q^2) along +/-b1, +/-b2, and +/-b3 directions."); 
+          app_log(4, "   - Maximum polynomial fit order: {}", fit_order);
+          app_log(4, "   - Maximum number of q-points used for fit per direction: {}", fit_order+1);
           
           int dim = 0;
           constexpr std::array<const char *, 6> direction_labels = {"+b1", "-b1", "+b2", "-b2", "+b3", "-b3"};
