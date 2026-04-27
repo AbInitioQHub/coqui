@@ -70,10 +70,6 @@ def test_downfold(mpi):
     }
     Gloc_t = coqui.downfold_local_gf(mf, gloc_params)
 
-
-    print(f"Gloc_t[-1,0,0,0] = {Gloc_t[-1,0,0,0]}")
-    print(f"Gloc_t[-1,0,1,0] = {Gloc_t[-1,0,1,0]}")
-    print(f"Gloc_t[-1,0,1,1] = {Gloc_t[-1,0,1,1]}")
     assert np.allclose(Gloc_t.imag, 0.0, atol=1e-10), "Imaginary part of Gloc(t) is not negligible"
     assert Gloc_t[-1,0,0,0] == pytest.approx(-0.990216810442369, abs=1e-10)
     assert Gloc_t[-1,0,1,0] == pytest.approx(-2.0127730737525417e-05, abs=1e-10)
@@ -100,10 +96,6 @@ def test_downfold(mpi):
     assert Vloc[0,1,0,1] == pytest.approx(4.286546964169289e-05, abs=1e-12)
     assert Vloc[1,1,1,1] == pytest.approx(0.5557140951494038, abs=1e-12)
 
-    print(f"Wloc_t[0,0,0,0,0] = {Wloc_t[0,0,0,0,0]}")
-    print(f"Wloc_t[0,0,0,1,1] = {Wloc_t[0,0,0,1,1]}")
-    print(f"Wloc_t[0,0,1,0,1] = {Wloc_t[0,0,1,0,1]}")
-    print(f"Wloc_t[0,1,1,1,1] = {Wloc_t[0,1,1,1,1]}")
     assert np.allclose(Wloc_t.imag, 0.0, atol=1e-12), "Imaginary part of Wloc(t) is not negligible"
     assert Wloc_t[0,0,0,0,0] == pytest.approx(-0.2206215541852932, abs=1e-12)
     assert Wloc_t[0,0,0,1,1] == pytest.approx(-0.04908133825297427, abs=1e-12)
@@ -114,10 +106,6 @@ def test_downfold(mpi):
     wloc_params["screen_type"] = "crpa"
     Vloc, Uloc_t = coqui.downfold_coulomb(thc, wloc_params, projector_info=proj_info)
 
-    print(f"Uloc_t[0,0,0,0,0] = {Uloc_t[0,0,0,0,0]}")
-    print(f"Uloc_t[0,0,0,1,1] = {Uloc_t[0,0,0,1,1]}")
-    print(f"Uloc_t[0,0,1,0,1] = {Uloc_t[0,0,1,0,1]}")
-    print(f"Uloc_t[0,1,1,1,1] = {Uloc_t[0,1,1,1,1]}")
     assert np.allclose(Uloc_t.imag, 0.0, atol=1e-12), "Imaginary part of Uloc(t) is not negligible"
     assert Uloc_t[0,0,0,0,0] == pytest.approx(-0.21483386189174042, abs=1e-12)
     assert Uloc_t[0,0,0,1,1] == pytest.approx(-0.04774705924289125, abs=1e-12)
@@ -164,11 +152,6 @@ def test_local_coulomb_from_mf(mpi):
     assert Vloc[0,1,0,1] == pytest.approx(4.286546964169289e-05, abs=1e-12)
     assert Vloc[1,1,1,1] == pytest.approx(0.5557140951494038, abs=1e-12)
 
-
-    print(f"Wloc_t[0,0,0,0,0] = {Wloc_t[0,0,0,0,0]}")
-    print(f"Wloc_t[0,0,0,1,1] = {Wloc_t[0,0,0,1,1]}")
-    print(f"Wloc_t[0,0,1,0,1] = {Wloc_t[0,0,1,0,1]}")
-    print(f"Wloc_t[0,1,1,1,1] = {Wloc_t[0,1,1,1,1]}")
     assert np.allclose(Wloc_t.imag, 0.0, atol=1e-12), "Imaginary part of Wloc(t) is not negligible"
     assert Wloc_t[0,0,0,0,0] == pytest.approx(-0.2047780731982674, abs=1e-12)
     assert Wloc_t[0,0,0,1,1] == pytest.approx(-0.04195005851002771, abs=1e-12)
