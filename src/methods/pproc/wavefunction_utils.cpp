@@ -164,6 +164,95 @@ void psi_from_occ_vector(h5::group & grp, mf::MF &mf, ptree const& pt, int nspin
 
 // add version of add_PsiT that takes a dense matrix and writes it in sparse form
 
+bool is_metal(nda::ArrayOfRank<3> auto const& occ, ptree const& pt)
+{
+  auto upper_c = io::get_value_with_default<double>(pt,"upper_cutoff",0.95);
+  auto lower_c = io::get_value_with_default<double>(pt,"lower_cutoff",0.05);
+  for(long is=0; is<occ.extent(0); ++is) {
+    auto occ_s = occ(is, nda::ellipsis{});
+    if(std::any_of(occ_s.begin(), occ_s.end(), [&](double v){ return v > lower_c and v < upper_c; }))
+      return true;
+  }
+  return false;
+}
+
+/*
+ * For metals: occupy the nup_mf (ndn_mf) lowest-eigenvalue orbitals globally
+ * across all k-points rather than per-k-point occupation numbers.
+ * Always produces a single determinant.
+ */
+void psi_from_eigval(h5::group& grp, mf::MF& mf, ptree const& pt, int nspins)
+{
+  auto occ = mf.occ();
+  auto eigval = mf.eigval();
+  auto nkpts = mf.nkpts();
+  long mf_nspins = mf.nspin();
+  long nbnd = mf.nbnd();
+  long nup_mf = long(std::round(std::accumulate(occ(0,nda::ellipsis{}).begin(),
+                                                occ(0,nda::ellipsis{}).end(),double(0.0))));
+  long ndn_mf = ( mf_nspins!=2 ? nup_mf :
+                  long(std::round(std::accumulate(occ(1,nda::ellipsis{}).begin(),
+                                                  occ(1,nda::ellipsis{}).end(),double(0.0)))) );
+
+  app_log(2, " Total number of electrons in wavefunction: nup:{}, ndown:{}", nup_mf, ndn_mf);
+
+  // Sort all (eigval, flat_idx) pairs globally; take the lowest nel.
+  auto make_det = [&](int ispin, long nel) {
+    std::vector<std::pair<double,int>> ev_idx;
+    ev_idx.reserve(nkpts*nbnd);
+    for(int ik=0; ik<nkpts; ++ik)
+      for(int ib=0; ib<nbnd; ++ib)
+        ev_idx.emplace_back(eigval(ispin,ik,ib), ib+ik*int(nbnd));
+    std::sort(ev_idx.begin(), ev_idx.end());
+    auto result = nda::array<int,1>(nel);
+    for(long i=0; i<nel; ++i)
+      result(i) = ev_idx[i].second;
+    std::sort(result.begin(), result.end());
+    return result;
+  };
+
+  auto det_up = make_det(0, nup_mf);
+  {
+    nda::array<int,1> nk(nkpts);
+    for(int ik=0; ik<nkpts; ++ik)
+      nk(ik) = int(std::count_if(det_up.begin(), det_up.end(),
+                [&](auto&& n){ return (n >= ik*int(nbnd)) and (n < (ik+1)*int(nbnd)); }));
+    app_log(2, " spin up occupied per kpoint: {}", nk);
+  }
+
+  h5::group wgrp_ = grp.create_group("Wavefunction");
+  h5::group wgrp = wgrp_.create_group("NOMSD");
+  detail::add_occM_dense(wgrp, "Psi0_alpha", nbnd, nkpts, det_up);
+  detail::add_occM_sparse(wgrp, "PsiT_0", nbnd, nkpts, det_up);
+  if(nspins == 2) {
+    // use spin index 0 for down if MF is closed-shell (mf_nspins==1)
+    auto det_dn = make_det(mf_nspins==2 ? 1 : 0, ndn_mf);
+    {
+      nda::array<int,1> nk(nkpts);
+      for(int ik=0; ik<nkpts; ++ik)
+        nk(ik) = int(std::count_if(det_dn.begin(), det_dn.end(),
+                  [&](auto&& n){ return (n >= ik*int(nbnd)) and (n < (ik+1)*int(nbnd)); }));
+      app_log(2, " spin down occupied per kpoint: {}", nk);
+    }
+    detail::add_occM_dense(wgrp, "Psi0_beta", nbnd, nkpts, det_dn);
+    detail::add_occM_sparse(wgrp, "PsiT_1", nbnd, nkpts, det_dn);
+  }
+  {
+    auto ci = nda::array<ComplexType,1>::zeros({1});
+    ci() = ComplexType(1.0);
+    nda::h5_write(wgrp, "ci_coeffs", ci);
+  }
+  {
+    auto dims = nda::array<int,1>::zeros({5});
+    dims(0) = nbnd*nkpts;
+    dims(1) = nup_mf;
+    dims(2) = ndn_mf;
+    dims(3) = nspins;      // collinear spin structure
+    dims(4) = 1;           // single determinant
+    nda::h5_write(wgrp, "dims", dims);
+  }
+}
+
 }
 
 /*
@@ -200,7 +289,12 @@ void add_wavefunction(h5::group & grp, mf::MF &mf, ptree const& pt)
   if( add_wfn == "default" ) {
     app_log(2, " Adding default wavefunction (assuming MO basis) ");
 
-    detail::psi_from_occ_vector(grp,mf,pt,nspins,occ);        
+    if(detail::is_metal(occ, pt)) {
+      app_log(2, " Detected fractional occupations (metal). Using eigenvalue-based filling.");
+      detail::psi_from_eigval(grp, mf, pt, nspins);
+    } else {
+      detail::psi_from_occ_vector(grp,mf,pt,nspins,occ);
+    }
 
   } else if(add_wfn == "ph_excited") { 
   
