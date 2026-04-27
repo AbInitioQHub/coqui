@@ -56,4 +56,6 @@ from . import mean_field
 from . import interaction
 from . import mbpt
 from . import embed
-from . import wannier 
+from . import wannier
+from . import post_proc
+from . import dmft

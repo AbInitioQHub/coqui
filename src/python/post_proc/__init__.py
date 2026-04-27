@@ -19,15 +19,45 @@ limitations under the License.
 """
 
 from .post_proc import (
-    ac,
-    band_interpolation,
-    spectral_interpolation,
-    local_dos,
-    unfold_bz,
-    dump_vxc,
-    dump_hartree
+  ac,
+  band_interpolation,
+  spectral_interpolation,
+  local_dos,
+  unfold_bz,
+  dump_vxc,
+  dump_hartree
 )
+from . import plot_utils
 
-__all__ = ["ac", "band_interpolation", "spectral_interpolation",
-           "local_dos", "unfold_bz", "dump_vxc", "dump_hartree",
-           "plot_utils"]
+_TRIQS_AVAILABLE = False
+_TRIQS_IMPORT_ERROR = None
+
+try:
+  from .analytic_cont import (
+    maxent_sigma,
+    maxent_sigma_k,
+  )
+  _TRIQS_AVAILABLE = True
+except ImportError as _e:
+  _TRIQS_IMPORT_ERROR = _e
+
+# Names from analytic_cont that require TRIQS
+_TRIQS_AC_NAMES = frozenset(["maxent_sigma", "maxent_sigma_k"])
+
+def __getattr__(name):
+  if name in _TRIQS_AC_NAMES:
+    raise ImportError(
+      f"'{name}' is not available because it requires TRIQS. "
+      f"Ensure TRIQS is installed (https://triqs.github.io). "
+      f"Original error: {_TRIQS_IMPORT_ERROR}"
+    )
+  raise AttributeError(f"module 'coqui.post_proc' has no attribute '{name}'")
+
+__all__ = [
+  "ac", "band_interpolation", "spectral_interpolation",
+  "local_dos", "unfold_bz", "dump_vxc", "dump_hartree",
+  "plot_utils",
+]
+
+if _TRIQS_AVAILABLE:
+  __all__.extend(["maxent_sigma", "maxent_sigma_k"])

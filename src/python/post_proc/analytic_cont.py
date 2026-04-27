@@ -21,13 +21,7 @@ limitations under the License.
 import sys
 import numpy as np
 from h5 import HDFArchive
-
-try:
-    from triqs.gf import *
-except ImportError:
-    raise ImportError("Fails to import triqs! \n"
-                      "The utility functions in the AC module requires triqs package. \n"
-                      "(https://github.com/TRIQS/triqs). Please ensure that it is installed. ")
+from triqs.gf import *
 
 """ 
 Analytical continuation utilities based on TRIQS application  
