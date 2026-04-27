@@ -40,9 +40,19 @@ def test_downfold(mpi):
     thc = coqui.make_thc_coulomb(mf, eri_params)
 
     gw_params = {
-        "restart": False, "output": "gw", "niter": 1,
-        "beta": 300, "wmax": 4.0, "iaft_prec": "medium",
-        "iter_alg": {"alg": "damping", "mixing": 0.7}
+        "restart": False, 
+        "output": "gw", 
+        "niter": 1,
+        "div_treatment": "gygi",
+        "beta": 100, 
+        "iaft": {
+            "prec": "medium",
+            "basis": "dlr"
+        },
+        "iter_alg": {
+            "alg": "damping", 
+            "mixing": 0.7
+        }
     }
     coqui.run_gw(gw_params, h_int=thc)
     mpi.barrier()
@@ -51,25 +61,36 @@ def test_downfold(mpi):
 
     # downfold the local Green's function
     gloc_params = {
-        "outdir": "./", "prefix": "gw",
-        "greens_func_source": "scf", "greens_func_iteration": 1,
+        "outdir": "./", 
+        "prefix": "gw",
+        "greens_func_source": "scf", 
+        "greens_func_iteration": 1,
         "wannier_file": mf.outdir() + "/lih_wan.h5",
         "force_real": True
     }
     Gloc_t = coqui.downfold_local_gf(mf, gloc_params)
 
+
+    print(f"Gloc_t[-1,0,0,0] = {Gloc_t[-1,0,0,0]}")
+    print(f"Gloc_t[-1,0,1,0] = {Gloc_t[-1,0,1,0]}")
+    print(f"Gloc_t[-1,0,1,1] = {Gloc_t[-1,0,1,1]}")
     assert np.allclose(Gloc_t.imag, 0.0, atol=1e-10), "Imaginary part of Gloc(t) is not negligible"
-    assert Gloc_t[-1,0,0,0] == pytest.approx(-0.9921589287308954, abs=1e-10)
-    assert Gloc_t[-1,0,1,0] == pytest.approx(-2.3062352653523378e-05, abs=1e-10)
-    assert Gloc_t[-1,0,1,1] == pytest.approx(-0.9677107811482517, abs=1e-10)
+    assert Gloc_t[-1,0,0,0] == pytest.approx(-0.990216810442369, abs=1e-10)
+    assert Gloc_t[-1,0,1,0] == pytest.approx(-2.0127730737525417e-05, abs=1e-10)
+    assert Gloc_t[-1,0,1,1] == pytest.approx(-0.9671840734138286, abs=1e-10)
 
     # downfold the local screened interaction
     wloc_params = {
-        "outdir": "./", "prefix": "gw",
+        "outdir": "./", 
+        "prefix": "gw",
         "screen_type": "gw_edmft_density",
-        "greens_func_source": "scf", "greens_func_iteration": 1,
+        "greens_func_source": "scf", 
+        "greens_func_iteration": 1,
         "wannier_file": mf.outdir() + "/lih_wan.h5",
-        "permut_symm": True, "force_real": True, "output_in_tau": True
+        "div_treatment": "gygi_smallest_q",
+        "permut_symm": True, 
+        "force_real": True, 
+        "output_in_tau": True
     }
     Vloc, Wloc_t = coqui.downfold_coulomb(thc, wloc_params)
 
@@ -79,21 +100,29 @@ def test_downfold(mpi):
     assert Vloc[0,1,0,1] == pytest.approx(4.286546964169289e-05, abs=1e-12)
     assert Vloc[1,1,1,1] == pytest.approx(0.5557140951494038, abs=1e-12)
 
+    print(f"Wloc_t[0,0,0,0,0] = {Wloc_t[0,0,0,0,0]}")
+    print(f"Wloc_t[0,0,0,1,1] = {Wloc_t[0,0,0,1,1]}")
+    print(f"Wloc_t[0,0,1,0,1] = {Wloc_t[0,0,1,0,1]}")
+    print(f"Wloc_t[0,1,1,1,1] = {Wloc_t[0,1,1,1,1]}")
     assert np.allclose(Wloc_t.imag, 0.0, atol=1e-12), "Imaginary part of Wloc(t) is not negligible"
-    assert Wloc_t[0,0,0,0,0] == pytest.approx(-0.2211111829995033, abs=1e-12)
-    assert Wloc_t[0,0,0,1,1] == pytest.approx(-0.04914695530722674, abs=1e-12)
-    assert Wloc_t[0,0,1,0,1] == pytest.approx(-6.936180205503474e-06, abs=1e-12)
-    assert Wloc_t[0,1,1,1,1] == pytest.approx(-0.10222080762940529, abs=1e-12)
+    assert Wloc_t[0,0,0,0,0] == pytest.approx(-0.2206215541852932, abs=1e-12)
+    assert Wloc_t[0,0,0,1,1] == pytest.approx(-0.04908133825297427, abs=1e-12)
+    assert Wloc_t[0,0,1,0,1] == pytest.approx(-6.915384193746768e-06, abs=1e-12)
+    assert Wloc_t[0,1,1,1,1] == pytest.approx(-0.10210426895593258, abs=1e-12)
 
     # downfold the cRPA local screened interaction
     wloc_params["screen_type"] = "crpa"
     Vloc, Uloc_t = coqui.downfold_coulomb(thc, wloc_params, projector_info=proj_info)
 
+    print(f"Uloc_t[0,0,0,0,0] = {Uloc_t[0,0,0,0,0]}")
+    print(f"Uloc_t[0,0,0,1,1] = {Uloc_t[0,0,0,1,1]}")
+    print(f"Uloc_t[0,0,1,0,1] = {Uloc_t[0,0,1,0,1]}")
+    print(f"Uloc_t[0,1,1,1,1] = {Uloc_t[0,1,1,1,1]}")
     assert np.allclose(Uloc_t.imag, 0.0, atol=1e-12), "Imaginary part of Uloc(t) is not negligible"
-    assert Uloc_t[0,0,0,0,0] == pytest.approx(-0.2152982864315092, abs=1e-12)
-    assert Uloc_t[0,0,0,1,1] == pytest.approx(-0.04781796525814118, abs=1e-12)
-    assert Uloc_t[0,0,1,0,1] == pytest.approx(-6.839510334289843e-06, abs=1e-12)
-    assert Uloc_t[0,1,1,1,1] == pytest.approx(-0.09688743039217523, abs=1e-12)
+    assert Uloc_t[0,0,0,0,0] == pytest.approx(-0.21483386189174042, abs=1e-12)
+    assert Uloc_t[0,0,0,1,1] == pytest.approx(-0.04774705924289125, abs=1e-12)
+    assert Uloc_t[0,0,1,0,1] == pytest.approx(-6.819360600413984e-06, abs=1e-12)
+    assert Uloc_t[0,1,1,1,1] == pytest.approx(-0.09674740361073561, abs=1e-12)
 
     if mpi.root():
         os.remove("./gw.mbpt.h5")
@@ -112,11 +141,20 @@ def test_local_coulomb_from_mf(mpi):
 
     # downfold the local screened interaction
     wloc_params = {
-        "outdir": "./", "prefix": "crpa",
+        "outdir": "./", 
+        "prefix": "crpa",
+        "beta": 100, 
+        "iaft": {
+            "prec": "medium",
+            "basis": "dlr"
+        },
         "screen_type": "crpa",
         "greens_func_source": "mf",
         "wannier_file": mf.outdir() + "/lih_wan.h5",
-        "permut_symm": True, "force_real": True, "output_in_tau": True
+        "div_treatment": "gygi",
+        "permut_symm": True, 
+        "force_real": True, 
+        "output_in_tau": True
     }
     Vloc, Wloc_t = coqui.downfold_coulomb(thc, wloc_params)
 
@@ -126,11 +164,16 @@ def test_local_coulomb_from_mf(mpi):
     assert Vloc[0,1,0,1] == pytest.approx(4.286546964169289e-05, abs=1e-12)
     assert Vloc[1,1,1,1] == pytest.approx(0.5557140951494038, abs=1e-12)
 
+
+    print(f"Wloc_t[0,0,0,0,0] = {Wloc_t[0,0,0,0,0]}")
+    print(f"Wloc_t[0,0,0,1,1] = {Wloc_t[0,0,0,1,1]}")
+    print(f"Wloc_t[0,0,1,0,1] = {Wloc_t[0,0,1,0,1]}")
+    print(f"Wloc_t[0,1,1,1,1] = {Wloc_t[0,1,1,1,1]}")
     assert np.allclose(Wloc_t.imag, 0.0, atol=1e-12), "Imaginary part of Wloc(t) is not negligible"
-    assert Wloc_t[0,0,0,0,0] == pytest.approx(-0.2058301133749745, abs=1e-12)
-    assert Wloc_t[0,0,0,1,1] == pytest.approx(-0.04205916393585766, abs=1e-12)
-    assert Wloc_t[0,0,1,0,1] == pytest.approx(-6.881435931595962e-06, abs=1e-12)
-    assert Wloc_t[0,1,1,1,1] == pytest.approx(-0.08689366256595832, abs=1e-12)
+    assert Wloc_t[0,0,0,0,0] == pytest.approx(-0.2047780731982674, abs=1e-12)
+    assert Wloc_t[0,0,0,1,1] == pytest.approx(-0.04195005851002771, abs=1e-12)
+    assert Wloc_t[0,0,1,0,1] == pytest.approx(-6.82550064519015e-06, abs=1e-12)
+    assert Wloc_t[0,1,1,1,1] == pytest.approx(-0.08664882474619286, abs=1e-12)
 
     if mpi.root():
         os.remove("./crpa.mbpt.h5")
