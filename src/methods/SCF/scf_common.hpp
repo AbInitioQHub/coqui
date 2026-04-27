@@ -28,7 +28,7 @@
 
 #include "mean_field/MF.hpp"
 #include "utilities/mpi_context.h"
-#include "methods/SCF/qp_context.h"
+#include "methods/SCF/qp_params_t.h"
 #include "methods/SCF/mb_solver_t.h"
 #include "methods/mb_state/mb_state.hpp"
 #include "numerics/imag_axes_ft/IAFT.hpp"
@@ -137,14 +137,14 @@ double compute_Nelec(double mu, const mf::MF &mf, const sArray_t<Array_view_3D_t
  * @param sMO_skia      - [INPUT] MO coefficients
  * @param mu            - [INPUT] chemical potential
  * @param FT            - [INPUT] Fourier transform driver on imaginary axes
- * @param qp_context    - [INPUT] setups for quasi-paritcle eqn
+ * @param qp_params    - [INPUT] setups for quasiparticle eqn
  */
 void solve_qp_eqn(sArray_t<Array_view_3D_t> &sE_ska,
                   const sArray_t<Array_view_5D_t> &sSigma_tskij,
                   const sArray_t<Array_view_4D_t> &sVhf_skij,
                   const sArray_t<Array_view_4D_t> &sMO_skia,
                   double mu,
-                  const imag_axes_ft::IAFT &FT, qp_context_t &qp_context);
+                  const imag_axes_ft::IAFT &FT, qp_params_t &qp_params);
 
 /**
  * Given a dynamic self-energy in the primary basis, return the static approximation (Phys. Rev. Lett. 96, 226402 (2006)) of it
@@ -158,48 +158,43 @@ void solve_qp_eqn(sArray_t<Array_view_3D_t> &sE_ska,
  * @param sE_ska       - [INPUT] quasi-particle energies
  * @param mu           - [INPUT] chemical potential
  * @param FT           - [INPUT] Fourier transform driver on imaginary axes
- * @param qp_context   - [INPUT] setups for quasi-paritcle eqn, including mode "qp_energy" or mode "fermi"
+ * @param qp_params   - [INPUT] setups for quasi-paritcle eqn, including mode "qp_energy" or mode "fermi"
  * @return static approximation to the dynamic self-energy in the primary basis
  */
 auto qp_approx(const sArray_t<Array_view_5D_t> &sSigma_tskij,
                const sArray_t<Array_view_4D_t> &sMO_skia,
                const sArray_t<Array_view_3D_t> &sE_ska, double mu,
-               const imag_axes_ft::IAFT &FT, qp_context_t &qp_context)
+               const imag_axes_ft::IAFT &FT, qp_params_t &qp_params)
   -> sArray_t<Array_view_4D_t>;
 
 /**
  * Given a correlated solver, compute the dynamic self-energy and
- * solve the quasi-particle eqn in the presence of correlated potential V_corr(w) in MO basis
+ * solve the quasi-particle Eqn in the presence of correlated potential V_corr(w) in MO basis
  * Specifically, this functions does the following:
  * 1. compute dynamic self-energy from 'corr_solver'
  * 2. compute diagonals of V_corr(iw) in MO basis
  * 3. solve the quasiparticle equations for e_qp with V_corr(w)
  * 4. compute the new Heff using the new e_qp and MO coefficients
  * 5. update e_qp and Heff in-place
- * @tparam update_W      - whether to evaluate the screened interactions using mb_solver_t
  * @tparam eri_t         - THC-ERI
  * @tparam corr_solver_t - correlated solver
- * @param sHeff_skij     - [INPUT] Hartree-Fock Hamiltonian
- *                         [OUTPUT] effective quasiparticle Hamiltonian:
- * @param sE_ska         - [INPUT] initial qp energies
- *                         [OUTPUT] updated qp energies
- * @param sMO_skia       - [INPUT] MO coefficients
+ * @param mb_state       - [INPUT/OUTPUT] many-body state whose contents will be updated 
+ * @param mu             - [INPUT] chemical potential
  * @param mb_solver      - [INPUT] many-body solver context
  * @param eri            - [INPUT] THC-ERI instance
  * @param FT             - [INPUT] Fourier transform driver on imaginary axes
- * @param mu             - [INPUT] chemical potential
- * @param qp_context     - [INPUT] setups for quasi-paritcle eqn
- * @return new qp energies in share memory sE_ska(ns, nkpts, nbnd)
+ * @param qp_params     - [INPUT] setups for quasi-paritcle eqn
+ * @param fixed_w        - [INPUT] whether to keep the screened interactions fixed from mb_state. 
+ *                         If false, the dynamically screened interaction will be updated at each iteration.
  */
-template<bool update_W=true, typename eri_t, typename corr_solver_t>
+template<typename eri_t, typename corr_solver_t>
 void add_evscf_vcorr(MBState &mb_state,
-                     sArray_t<Array_view_3D_t> &sE_ska,
-                     const sArray_t<Array_view_4D_t> &sMO_skia,
                      double mu,
                      solvers::mb_solver_t<corr_solver_t> &mb_solver,
                      eri_t &eri,
                      const imag_axes_ft::IAFT &FT,
-                     qp_context_t &qp_context);
+                     qp_params_t &qp_params, 
+                     bool fixed_w=false);
 /**
  * Add correlated potential V_corr with static approximation to the effective quasiparticle Hamiltonian
  * The static approximation follows T. Kotani et. al., Phys. Rev. B 76, 165106 (2007) in which
@@ -209,25 +204,21 @@ void add_evscf_vcorr(MBState &mb_state,
  * @tparam keep_W        - whether to keep the screened interactions from corr_solver_t fixed
  * @tparam eri_t         - THC-ERI
  * @tparam corr_solver_t - correlated solver
- * @param sHeff_skij     - [INPUT/OUTPUT] effective quasiparticle Hamiltonian:
- * @param sE_ska         - [INPUT/OUTPUT] qp energies
- * @param sMO_skia       - [INPUT] molecular orbitals coefficients
+ * @param mb_state       - [INPUT/OUTPUT] many-body state whose contents will be updated
  * @param corr_solver    - [INPUT] correlated solver instance
  * @param eri            - [INPUT] THC-ERI instance
  * @param FT             - [INPUT] Fourier transform driver on imaginary axes
  * @param mu             - [INPUT] chemical potential
- * @param qp_context     - [INPUT] setups for quasiparitcle eqn
+ * @param qp_params     - [INPUT] setups for quasiparitcle eqn
  * @return new qp energies in share memory sE_ska(ns, nkpts, nbnd)
  */
 template<typename eri_t, typename corr_solver_t>
 void add_qpscf_vcorr(MBState &mb_state,
-                     const sArray_t<Array_view_3D_t> &sE_ska,
-                     const sArray_t<Array_view_4D_t> &sMO_skia,
                      double mu,
                      solvers::mb_solver_t<corr_solver_t> &mb_solver,
                      eri_t &eri,
                      const imag_axes_ft::IAFT &FT,
-                     qp_context_t &qp_context);
+                     qp_params_t &qp_params);
 
 template<typename function_t>
 double qp_eqn_linearized(double Vhf, function_t &Sigma, long I, double mu, double eps_ks, double eta = 0.0);

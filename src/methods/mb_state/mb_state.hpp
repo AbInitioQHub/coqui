@@ -94,29 +94,55 @@ public:
 
   // checkpoint file info
   std::string coqui_prefix = "coqui";
-  long mbpt_iter = -1; // iteration number of the many-body solution
+  long mbpt_iter = -1;  // iteration number of the many-body solution
   long df_1e_iter = -1; // iteration number of the downfolded 1e Hamiltonian
   long df_2e_iter = -1; // iteration number of the downfolded 2e Hamiltonian
   long embed_iter = -1; // iteration number of the embedding solution
 
   /** all components of a many-body state are optional **/
-  // lattice quantities
+  /** lattice quantities **/
+  // Green's function
   std::optional<sArray_t<nda::array_view<ComplexType, 5> > > sG_tskij;
+  // Density matrix
   std::optional<sArray_t<nda::array_view<ComplexType, 4> > > sDm_skij;
+  // Dynamic part of the self-energy
   std::optional<sArray_t<nda::array_view<ComplexType, 5> > > sSigma_tskij;
+  // Static part of the self-energy
   std::optional<sArray_t<nda::array_view<ComplexType, 4> > > sF_skij;
+  // Dynamically screened interaction w/o bare term
   std::optional<dArray_t<nda::array<ComplexType, 4> > > dW_qtPQ;
-  std::optional<nda::array<ComplexType, 1> > eps_inv_head;
+  // Flag to determine screening recipe to calculate the dynamically screened interaction. 
   std::string screen_type = "";
-  // local quantities for quantum embedding
-  std::optional<projector_boson_t> proj_boson; // Since projector is always used with a many-body state, we let MBState own it
+  // Head (G=G'=0) of the inverse dielectric function in the long wavelength limit (q->0 and w->0)
+  std::optional<nda::array<ComplexType, 1> > eps_inv_head;
+
+  /** Quasiparticle SCF specific */
+  // Effective QP Hamiltonian in QP-SCF
+  std::optional<sArray_t<nda::array_view<ComplexType, 4> > > sHeff_skij;
+  // QP coefficients
+  std::optional<sArray_t<nda::array_view<ComplexType, 4> > > sMO_skia;
+  // QP energies
+  std::optional<sArray_t<nda::array_view<ComplexType, 3> > > sE_ska;
+
+  
+  /** local quantities in MLWF basis for quantum embedding */
+  // Projector from Bloch states to MLWFs. 
+  std::optional<projector_boson_t> proj_boson;
+  // Dynamic part of the impurity self-energy
   std::optional<nda::array<ComplexType, 5> > Sigma_imp_wsIab;
+  // Static part of the impurity self-energy
   std::optional<nda::array<ComplexType, 4> > Vhf_imp_sIab;
-  std::optional<nda::array<ComplexType, 4> > Vcorr_dc_sIab;
+  // Dynamic part of the double-counting self-energy
   std::optional<nda::array<ComplexType, 5> > Sigma_dc_wsIab;
+  // Static part of the double-counting self-energy
   std::optional<nda::array<ComplexType, 4> > Vhf_dc_sIab;
+  // Impurity polarizability
   std::optional<sArray_t<nda::array_view<ComplexType, 5> > > sPi_imp_wabcd;
+  // Double-counting polarizability
   std::optional<sArray_t<nda::array_view<ComplexType, 5> > > sPi_dc_wabcd;
+
+  // Quasiparticle approx. to the dynamic part of the double-counting self-energy
+  std::optional<nda::array<ComplexType, 4> > Vcorr_dc_sIab;
 
 };
 

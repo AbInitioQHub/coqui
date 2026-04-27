@@ -30,17 +30,25 @@ def test_hf_thc(mpi):
     mf = construct_qe_mf(mpi, "qe_lih222")
     thc_params = {
         "storage": "incore",
-        "nIpts": mf.nbnd() * 10,
-        "thresh": 1e-10,
+        "thresh": 1e-4,
         "chol_block_size": 1,
         "init": True
     }
     thc = coqui.make_thc_coulomb(mf, thc_params)
 
     hf_params = {
-        "restart": False, "output": "hf", "niter": 1,
-        "beta": 300, "wmax": 4.0, "iaft_prec": "high",
-        "iter_alg": {"alg": "damping", "mixing": 0.7}
+        "restart": False, 
+        "output": "hf", 
+        "niter": 1,
+        "beta": 100, 
+        "iaft": {
+            "prec": "high",
+            "basis": "dlr"
+        },
+        "iter_alg": {
+            "alg": "damping", 
+            "mixing": 0.7
+        }
     }
     coqui.run_hf(hf_params, h_int=thc)
     mpi.barrier()

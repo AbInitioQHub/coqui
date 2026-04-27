@@ -97,11 +97,11 @@ namespace methods {
      *                                (only used when scf_type == many_body)
      * @param dc_type       - [INPUT] dmft: phi-functional; edmft: psi-functional
      *                                (right now, it is only used when scf_type == quasiparticle)
-     * @param qp_context    - [INPUT] quasiparticle approximation parameters
+     * @param qp_params    - [INPUT] quasiparticle approximation parameters
      * @param format_type   - [OPTION] Type of output: "default", "interaction_static"
      */
     void downfolding(MBState &mb_state, ptree const& pt,
-                     qp_context_t *qp_context = nullptr, std::string format_type="default");
+                     qp_params_t *qp_params = nullptr, std::string format_type="default");
 
     template<THC_ERI thc_t>
     void hf_downfolding(std::string outdir, std::string prefix,
@@ -190,7 +190,7 @@ namespace methods {
      * @param filename - [INPUT] checkpoint h5 file
      * @param dc_type  - [INPUT] double counting type
      */
-    void downfold_mb_solution_qp_impl(MBState &mb_state, qp_context_t &qp_context,
+    void downfold_mb_solution_qp_impl(MBState &mb_state, qp_params_t &qp_params,
                                       bool update_dc, std::string dc_type,
                                       bool force_real, std::string format_type = "default");
     /**
@@ -225,14 +225,14 @@ namespace methods {
                             std::string dc_type, long dc_iter, std::string dc_src_grp,
                             long weiss_b_iter, imag_axes_ft::IAFT &ft,
                             double mu, sArray_t<Array_view_4D_t> &sMO_skia, sArray_t<Array_view_3D_t> &sE_ska,
-                            qp_context_t &qp_context, bool force_real, std::string format_type)
+                            qp_params_t &qp_params, bool force_real, std::string format_type)
     -> std::tuple<nda::array<ComplexType, 4>, nda::array<ComplexType, 4>, nda::array<ComplexType, 5>>;
 
     auto double_counting_qp(std::string prefix,
                             std::string dc_type, long dc_iter, std::string dc_src_grp,
                             long weiss_b_iter, imag_axes_ft::IAFT &ft,
                             double mu, sArray_t<Array_view_4D_t> &sMO_skia, sArray_t<Array_view_3D_t> &sE_ska,
-                            qp_context_t &qp_context, bool force_real, std::string format_type)
+                            qp_params_t &qp_params, bool force_real, std::string format_type)
     -> std::tuple<nda::array<ComplexType, 4>, nda::array<ComplexType, 4>, nda::array<ComplexType, 5>>;
 
     /**

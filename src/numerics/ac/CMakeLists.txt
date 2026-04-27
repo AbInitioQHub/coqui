@@ -5,3 +5,7 @@ add_library(ac_lib INTERFACE)
 target_link_libraries(ac_lib INTERFACE utils numerics)
 install(TARGETS ac_lib
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
+if (BUILD_UNIT_TESTS)
+        add_subdirectory(pade/tests)
+endif()

@@ -66,8 +66,15 @@ def run_gw(params, h_int,
               projector_info = projector_info, local_polarizabilities = local_polarizabilities)
 
 
-def run_qpg0w0(params, h_int,
+def run_evgw(params, h_int,
                h_int_hf = None, h_int_hartree = None, h_int_exchange = None):
-    _run_mbpt("evgw0", params, h_int,
+    _run_mbpt("evgw", params, h_int,
+              h_int_hf = h_int_hf, h_int_hartree = h_int_hartree, h_int_exchange = h_int_exchange,
+              projector_info = None, local_polarizabilities = None)
+
+
+def run_qpgw(params, h_int,
+               h_int_hf = None, h_int_hartree = None, h_int_exchange = None):
+    _run_mbpt("qpgw", params, h_int,
               h_int_hf = h_int_hf, h_int_hartree = h_int_hartree, h_int_exchange = h_int_exchange,
               projector_info = None, local_polarizabilities = None)

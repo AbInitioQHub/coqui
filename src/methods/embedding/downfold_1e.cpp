@@ -105,7 +105,7 @@ namespace methods {
   }
 
   void embed_t::downfolding(MBState &mb_state, ptree const& pt,
-                            qp_context_t *qp_context, std::string format_type) {
+                            qp_params_t *qp_params, std::string format_type) {
 
     std::string filename = mb_state.coqui_prefix + ".mbpt.h5";
     utils::check(std::filesystem::exists(filename),
@@ -117,9 +117,9 @@ namespace methods {
         pt, "dc_type", err+"dc_type. Valid types are \"hartree\", \"hf\", \"gw\", \"gw_dynamic_u\" and \"gw_mix_u\".");
     io::tolower(dc_type);
 
-    if (qp_context!=nullptr) {
+    if (qp_params!=nullptr) {
       utils::check(format_type == "default" or update_dc, "embed_t::downfolding: format_type!=default requires update_dc.");
-      downfold_mb_solution_qp_impl(mb_state, *qp_context, update_dc, dc_type,
+      downfold_mb_solution_qp_impl(mb_state, *qp_params, update_dc, dc_type,
                                    io::get_value_with_default<bool>(pt, "force_real", true),
                                    format_type);
     } else {
@@ -511,7 +511,7 @@ namespace methods {
     print_downfold_mb_timers();
   }
 
-  void embed_t::downfold_mb_solution_qp_impl(MBState &mb_state, qp_context_t &qp_context,
+  void embed_t::downfold_mb_solution_qp_impl(MBState &mb_state, qp_params_t &qp_params,
                                              bool update_dc, std::string dc_type,
                                              bool force_real, std::string format_type) {
     using math::shm::make_shared_array;
@@ -609,10 +609,10 @@ namespace methods {
       // b) compute qp energies; sbuff_tskij = Sigma_tskij, sbuff_skij = Vhf_skij
       if (sVhf_skij.node_comm()->root()) sVhf_skij.local() += dyson.H0();
       mpi->comm.barrier();
-      solve_qp_eqn(sE_ska, sSigma_tskij, sVhf_skij, sMO_skia, mu, *ft, qp_context);
+      solve_qp_eqn(sE_ska, sSigma_tskij, sVhf_skij, sMO_skia, mu, *ft, qp_params);
 
       // c) qp approximation for V_QPGW^{k}
-      sVcorr_skij = qp_approx(sSigma_tskij,  sMO_skia, sE_ska, mu, *ft, qp_context);
+      sVcorr_skij = qp_approx(sSigma_tskij,  sMO_skia, sE_ska, mu, *ft, qp_params);
       // this is not necessary but useful.
       double mu_qpgw = update_mu(mu, *_MF, sE_ska, ft->beta());
 
@@ -702,7 +702,7 @@ namespace methods {
     std::string dc_src_grp = (embed_iter!=-1)? "embed" : "scf";
     auto [Vhf_dc_sIab, Vcorr_dc_sIab, Sigma_dc_tsIab] = (update_dc)?
         double_counting_qp(mb_state.coqui_prefix, dc_type, dc_iter, dc_src_grp, weiss_b_iter, *ft,
-                           mu, sMO_skia, sE_ska, qp_context, force_real, format_type) :
+                           mu, sMO_skia, sE_ska, qp_params, force_real, format_type) :
         read_double_counting_qp(filename, weiss_f_iter, *ft);
     nda::array<ComplexType, 5> Sigma_dc_wsIab(ft->nw_f(), _MF->nspin(), nImps, nImpOrbs, nImpOrbs);
     ft->tau_to_w(Sigma_dc_tsIab, Sigma_dc_wsIab, imag_axes_ft::fermion);
@@ -1244,7 +1244,7 @@ namespace methods {
                                 long weiss_b_iter, imag_axes_ft::IAFT &ft,
                                 double mu,
                                 sArray_t<Array_view_4D_t> &sMO_skia, sArray_t<Array_view_3D_t> &sE_ska,
-                                qp_context_t &qp_context, bool force_real, std::string format_type)
+                                qp_params_t &qp_params, bool force_real, std::string format_type)
   -> std::tuple<nda::array<ComplexType, 4>, nda::array<ComplexType, 4>, nda::array<ComplexType, 5>> {
     app_log(2, "Evaluating double counting self-energy with Gloc coming from "
                "\"{}/iter{}\"", dc_src_grp, dc_iter);
@@ -1331,7 +1331,7 @@ namespace methods {
             *_context, {ft.nt_f(), _MF->nspin(), _MF->nkpts_ibz(), _MF->nbnd(), _MF->nbnd()});
         Sigma_dc_tsIab = gw_double_counting_dmft<false>(_context->comm, Gloc_tsIab, Uw0_abcd, ft);
         _proj.value().upfold(sSigma_dc_tskij, Sigma_dc_tsIab); // upfold to the primary basis
-        auto sVcorr_skij = qp_approx(sSigma_dc_tskij,  sMO_skia, sE_ska, mu, ft, qp_context); // static approximation
+        auto sVcorr_skij = qp_approx(sSigma_dc_tskij,  sMO_skia, sE_ska, mu, ft, qp_params); // static approximation
         // downfolding
         Vcorr_dc_sIab = (force_real)?
             _proj.value().downfold_loc<true>(sVcorr_skij, "Vcorr_dc_loc") :
@@ -1354,7 +1354,7 @@ namespace methods {
         nda::h5_read(weiss_b_grp, "iter" + std::to_string(weiss_b_iter) + "/Uloc_wabcd", U_wabcd);
         Sigma_dc_tsIab = gw_double_counting_dmft<false>(_context->comm, Gloc_tsIab, V_abcd, U_wabcd, ft);
         _proj.value().upfold(sSigma_dc_tskij, Sigma_dc_tsIab); // upfold to the primary basis
-        auto sVcorr_skij = qp_approx(sSigma_dc_tskij,  sMO_skia, sE_ska, mu, ft, qp_context); // static approximation
+        auto sVcorr_skij = qp_approx(sSigma_dc_tskij,  sMO_skia, sE_ska, mu, ft, qp_params); // static approximation
         // downfolding
         Vcorr_dc_sIab = (force_real)?
             _proj.value().downfold_loc<true>(sVcorr_skij, "Vcorr_dc_loc") :
@@ -1390,7 +1390,7 @@ namespace methods {
           auto sSigma_dc_tskij = math::shm::make_shared_array<Array_view_5D_t>(
                 *_context, {ft.nt_f(), _MF->nspin(), _MF->nkpts_ibz(), _MF->nbnd(), _MF->nbnd()});
           _proj.value().upfold(sSigma_dc_tskij, Sigma_dc_tsIab); // upfold to the primary basis
-          auto sVcorr_skij = qp_approx(sSigma_dc_tskij,  sMO_skia, sE_ska, mu, ft, qp_context); 
+          auto sVcorr_skij = qp_approx(sSigma_dc_tskij,  sMO_skia, sE_ska, mu, ft, qp_params); 
           // downfolding
           Vcorr_dc_sIab = (force_real)?
                 _proj.value().downfold_loc<true>(sVcorr_skij, "Vcorr_dc_loc") :
@@ -1412,7 +1412,7 @@ namespace methods {
                                    long weiss_b_iter, imag_axes_ft::IAFT &ft,
                                    double mu,
                                    sArray_t<Array_view_4D_t> &sMO_skia, sArray_t<Array_view_3D_t> &sE_ska,
-                                   qp_context_t &qp_context, bool force_real, std::string format_type)
+                                   qp_params_t &qp_params, bool force_real, std::string format_type)
   -> std::tuple<nda::array<ComplexType, 4>, nda::array<ComplexType, 4>, nda::array<ComplexType, 5>> {
     h5::file file(prefix+".mbpt.h5", 'r');
     auto grp = h5::group(file);
@@ -1420,12 +1420,12 @@ namespace methods {
                  "Invalid format_type: {}",format_type);
     if(format_type == "default") {
       return double_counting_qp(grp, grp, prefix, dc_type, dc_iter, dc_src_grp,
-                         weiss_b_iter, ft, mu, sMO_skia, sE_ska, qp_context, force_real, format_type);
+                         weiss_b_iter, ft, mu, sMO_skia, sE_ska, qp_params, force_real, format_type);
     } else {
       h5::file fileV(prefix+".model.h5", 'r');
       auto grpV = h5::group(fileV);
       return double_counting_qp(grp, grpV, prefix, dc_type, dc_iter, dc_src_grp,
-                         weiss_b_iter, ft, mu, sMO_skia, sE_ska, qp_context, force_real, format_type);
+                         weiss_b_iter, ft, mu, sMO_skia, sE_ska, qp_params, force_real, format_type);
     }
   }
 

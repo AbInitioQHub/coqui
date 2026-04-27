@@ -29,6 +29,11 @@
 #include <boost/multiprecision/cpp_dec_float.hpp>
 
 namespace analyt_cont {
+  enum class pade_impl_e {
+    original,
+    updated
+  };
+
   template<int prec=100>
   class pade_t {
   public:
@@ -38,7 +43,7 @@ namespace analyt_cont {
     using mp_complex = std::complex<mp_float>;
 
   public:
-    pade_t() = default;
+    explicit pade_t(pade_impl_e impl = pade_impl_e::original): _impl(impl) {}
     pade_t(pade_t const&) = default;
     pade_t(pade_t &&) = default;
     pade_t& operator=(pade_t const& other) = default;
@@ -55,9 +60,11 @@ namespace analyt_cont {
     void init(iw_mesh_t &&iw_mesh, Array_iw_t &&A_iw) {
       _Nfit = A_iw.shape(0);
       _dim1 = A_iw.shape(1);
+      utils::check(_Nfit >= 1, "pade_t.hpp::init: Nfit ({}) must be at least 1", _Nfit);
 
       _iw_fit = nda::array<mp_complex, 1>(_Nfit);
       _coeffs = nda::array<mp_complex, 2>(_dim1, _Nfit);
+      _orders = nda::array<long, 1>(_dim1);
       nda::array<mp_complex, 1> Ad_iw(_Nfit);
 
       for (long w=0; w<_Nfit; ++w)
@@ -67,7 +74,8 @@ namespace analyt_cont {
         for (long w=0; w<_Nfit; ++w)
           Ad_iw(w) = mp_complex(mp_float(A_iw(w, d).real()),
                                 mp_float(A_iw(w, d).imag()));
-        fit(Ad_iw, _iw_fit, _coeffs(d,nda::range::all));
+        // the effective order of the pade approx. can be smaller than Nfit due to truncation. 
+        _orders(d) = fit(Ad_iw, _iw_fit, _coeffs(d,nda::range::all));
       }
     }
 
@@ -77,17 +85,8 @@ namespace analyt_cont {
       nda::array<ComplexType, 2> A_wI(Nw, _dim1);
       for (long d1 = 0; d1 < _dim1; ++d1) {
         for (long w = 0; w < Nw; ++w) {
-          // a(Nfit) * (w - z_fit(Nfit-1) )
           mp_complex w_hpc( mp_float(w_mesh(w).real()), mp_float(w_mesh(w).imag()) );
-          // Xw = _coeffs(d1,_Nfit-1) * ( w_hpc - _iw_fit(_Nfit-2) );
-          mp_complex Xw = _mul_sub(_coeffs(d1,_Nfit-1), w_hpc, _iw_fit(_Nfit-2));
-          for (long f = 1; f < _Nfit-1; ++f) {
-            long idx = _Nfit - f - 1;
-            // Xw = _coeffs(d1,idx) * ( w_hpc - _iw_fit(idx-1) ) / ( (mp_complex)1.0 + Xw);
-            Xw = _mul_sub_div_add(_coeffs(d1,idx), w_hpc, _iw_fit(idx-1), Xw);
-          }
-          // Xw = _coeffs(d1,0) / ( (mp_complex)1.0 + Xw);
-          Xw = _div_add(_coeffs(d1,0), Xw);
+          mp_complex Xw = _evaluate_impl(w_hpc, d1);
           A_wI(w, d1) = ComplexType(Xw.real().template convert_to<RealType>(),
                                     Xw.imag().template convert_to<RealType>());
         }
@@ -101,19 +100,7 @@ namespace analyt_cont {
       nda::array<ComplexType, 1> A_w(Nw);
       for (long w = 0; w < Nw; ++w) {
         mp_complex w_hpc( mp_float(w_mesh(w).real()), mp_float(w_mesh(w).imag()) );
-
-        // Xw = _coeffs(d1,_Nfit-1) * ( w_hpc - _iw_fit(_Nfit-2) );
-        mp_complex Xw = _mul_sub(_coeffs(d1,_Nfit-1), w_hpc, _iw_fit(_Nfit-2));
-
-        for (long f = 1; f < _Nfit-1; ++f) {
-          long idx = _Nfit - f - 1;
-
-          // Xw = _coeffs(d1,idx) * ( w_hpc - _iw_fit(idx-1) ) / ( (mp_complex)1.0 + Xw);
-          Xw = _mul_sub_div_add(_coeffs(d1,idx), w_hpc, _iw_fit(idx-1), Xw);
-        }
-
-        // Xw = _coeffs(d1,0) / ( (mp_complex)1.0 + Xw);
-        Xw = _div_add(_coeffs(d1,0), Xw);
+        mp_complex Xw = _evaluate_impl(w_hpc, d1);
 
         A_w(w) = ComplexType(Xw.real().template convert_to<RealType>(),
                              Xw.imag().template convert_to<RealType>());
@@ -123,20 +110,7 @@ namespace analyt_cont {
 
     ComplexType evaluate(ComplexType w, long d1) {
       mp_complex w_hpc( mp_float(w.real()), mp_float(w.imag()) );
-
-      // Xw = _coeffs(d1,_Nfit-1) * ( w_hpc - _iw_fit(_Nfit-2) );
-      mp_complex Xw = _mul_sub(_coeffs(d1,_Nfit-1), w_hpc, _iw_fit(_Nfit-2));
-
-      for (long f = 1; f < _Nfit-1; ++f) {
-        long idx = _Nfit-f-1;
-
-        // Xw = _coeffs(d1,idx) * ( w_hpc - _iw_fit(idx-1) ) / ( (mp_complex)1.0 + Xw);
-        Xw = _mul_sub_div_add(_coeffs(d1,idx), w_hpc, _iw_fit(idx-1), Xw);
-
-      }
-
-      // Xw = _coeffs(d1,0) / ( (mp_complex)1.0 + Xw);
-      Xw = _div_add(_coeffs(d1,0), Xw);
+      mp_complex Xw = _evaluate_impl(w_hpc, d1);
 
       return ComplexType(Xw.real().template convert_to<RealType>(),
                          Xw.imag().template convert_to<RealType>());
@@ -145,7 +119,10 @@ namespace analyt_cont {
     void reset() {
       _iw_fit = nda::array<mp_complex, 1>();
       _coeffs = nda::array<mp_complex, 2>();
+      _orders = nda::array<long, 1>();
     }
+
+    pade_impl_e implementation() const { return _impl; }
 
   private:
     /**
@@ -174,24 +151,69 @@ namespace analyt_cont {
     }
 
     template<nda::ArrayOfRank<1> Az_t, nda::ArrayOfRank<1> w_mesh_t, nda::ArrayOfRank<1> coeff_t>
-    void fit(Az_t &&Az, w_mesh_t &&z_fit, coeff_t &&coeffs) {
+    long fit(Az_t &&Az, w_mesh_t &&z_fit, coeff_t &&coeffs) {
       // g(i, j) = g_i(z_j)
       nda::array<mp_complex, 2> g(_Nfit, _Nfit);
+      g() = mp_complex{mp_float(0), mp_float(0)};
       g(0, nda::range::all) = Az();
 
+      long order = 1;
+
       for (long i=1; i<_Nfit; ++i) {
+        if (_impl == pade_impl_e::updated && _norm(g(i-1, i-1)) < _tiny_pivot_tol()) break;
+
         for (long j=i; j<_Nfit; ++j) {
           // g(i, j) = ( g(i-1,i-1) - g(i-1,j) ) / ( (z_fit(j) - z_fit(i-1)) * g(i-1, j) );
           g(i, j) = _sub_div_mul(g(i-1,i-1), g(i-1,j), z_fit(j), z_fit(i-1), g(i-1,j));
         }
+        order = i + 1;
       }
       coeffs() = nda::diagonal(g);
+      return order;
+    }
+
+    mp_complex _evaluate_impl(const mp_complex& w, long d1) const {
+      return (_impl == pade_impl_e::updated)? _evaluate_updated(w, d1) : _evaluate_original(w, d1);
+    }
+
+    mp_complex _evaluate_original(const mp_complex& w, long d1) const {
+      long order = _orders(d1);
+      if (order <= 0) return mp_complex{mp_float(0), mp_float(0)};
+      if (order == 1) return _coeffs(d1, 0);
+
+      mp_complex Xw = _mul_sub(_coeffs(d1, order-1), w, _iw_fit(order-2));
+      for (long f = 1; f < order-1; ++f) {
+        long idx = order - f - 1;
+        Xw = _mul_sub_div_add(_coeffs(d1, idx), w, _iw_fit(idx-1), Xw);
+      }
+      return _div_add(_coeffs(d1, 0), Xw);
+    }
+
+    mp_complex _evaluate_updated(const mp_complex& w, long d1) const {
+      long order = _orders(d1);
+      if (order <= 0) return mp_complex{mp_float(0), mp_float(0)};
+
+      mp_complex A1{mp_float(0), mp_float(0)};
+      mp_complex A2 = _coeffs(d1, 0);
+      mp_complex B1{mp_float(1), mp_float(0)};
+
+      for (long i = 0; i < order - 1; ++i) {
+        mp_complex scaled = _mul_sub(_coeffs(d1, i+1), w, _iw_fit(i));
+        mp_complex Anew = _add(A2, _mul(scaled, A1));
+        mp_complex Bnew = _add(mp_complex{mp_float(1), mp_float(0)}, _mul(scaled, B1));
+        mp_complex inv_Bnew = _inverse(Bnew, "pade_t.hpp::_evaluate_new");
+        A1 = _mul(A2, inv_Bnew);
+        A2 = _mul(Anew, inv_Bnew);
+        B1 = inv_Bnew;
+      }
+
+      return A2;
     }
 
     // helper functions to avoid std::complex<mp_float> arithmetics directly
     // Sadly, boost multiprecision number type is not fully compatible with std::complex<...> arithmetics
     // A * (B - C)
-    inline mp_complex _mul_sub(const mp_complex& A, const mp_complex& B, const mp_complex& C) {
+    inline mp_complex _mul_sub(const mp_complex& A, const mp_complex& B, const mp_complex& C) const {
       mp_float br = B.real() - C.real();
       mp_float bi = B.imag() - C.imag();
       mp_float ar = A.real();
@@ -202,8 +224,40 @@ namespace analyt_cont {
           ar * bi + ai * br
       };
     }
+
+    inline mp_complex _mul(const mp_complex& A, const mp_complex& B) const {
+      mp_float ar = A.real();
+      mp_float ai = A.imag();
+      mp_float br = B.real();
+      mp_float bi = B.imag();
+
+      return mp_complex{
+          ar * br - ai * bi,
+          ar * bi + ai * br
+      };
+    }
+
+    inline mp_complex _add(const mp_complex& A, const mp_complex& B) const {
+      return mp_complex{A.real() + B.real(), A.imag() + B.imag()};
+    }
+
+    inline mp_float _norm(const mp_complex& A) const {
+      return A.real() * A.real() + A.imag() * A.imag();
+    }
+
+    inline mp_complex _inverse(const mp_complex& A, const char* func_name) const {
+      mp_float ar = A.real();
+      mp_float ai = A.imag();
+      mp_float denom = ar * ar + ai * ai;
+      utils::check(denom != mp_float(0), "{}: division by zero in normalized Pad\u00e9 recurrence", func_name);
+      return mp_complex{ar / denom, -ai / denom};
+    }
+
+    static mp_float _tiny_pivot_tol() {
+      return mp_float("1e-20");
+    }
     // A * (B - C) / (1 + D)
-    inline mp_complex _mul_sub_div_add(const mp_complex& A, const mp_complex& B, const mp_complex& C, const mp_complex& D) {
+    inline mp_complex _mul_sub_div_add(const mp_complex& A, const mp_complex& B, const mp_complex& C, const mp_complex& D) const {
       // Numerator: A * (B - C)
       mp_float br = B.real() - C.real();
       mp_float bi = B.imag() - C.imag();
@@ -224,7 +278,7 @@ namespace analyt_cont {
       };
     }
     // A / (1 + B)
-    inline mp_complex _div_add(const mp_complex& A, const mp_complex& B) {
+    inline mp_complex _div_add(const mp_complex& A, const mp_complex& B) const {
       // Denominator: 1 + B
       mp_float br = mp_float(1) + B.real();
       mp_float bi = B.imag();
@@ -239,11 +293,12 @@ namespace analyt_cont {
       };
     }
 
-    mp_complex _sub_div_mul(const mp_complex& A,
-                           const mp_complex& B,
-                           const mp_complex& C,
-                           const mp_complex& D,
-                           const mp_complex& E) {
+    mp_complex _sub_div_mul(
+      const mp_complex& A,
+      const mp_complex& B,
+      const mp_complex& C,
+      const mp_complex& D,
+      const mp_complex& E) const {
       // U = A - B
       mp_float ur = A.real() - B.real();
       mp_float ui = A.imag() - B.imag();
@@ -271,10 +326,12 @@ namespace analyt_cont {
     }
 
   private:
+    pade_impl_e _impl = pade_impl_e::original;
     long _dim1 = 0;
     long _Nfit = 0;
     nda::array<mp_complex, 1> _iw_fit;
     nda::array<mp_complex, 2> _coeffs;
+    nda::array<long, 1> _orders;
   };
 } // analyt_cont
 

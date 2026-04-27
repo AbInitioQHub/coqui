@@ -32,7 +32,7 @@
 namespace analyt_cont {
   struct pade_driver {
   public:
-    pade_driver() = default;
+    explicit pade_driver(pade_impl_e impl = pade_impl_e::original): _pade_kernel(impl) {}
 
     pade_driver(const pade_driver& other) = default;
     pade_driver(pade_driver&& other) = default;
@@ -53,9 +53,11 @@ namespace analyt_cont {
 
       long niw_pos = (is_iw_pos_only)? niw : niw/2;
       if (Nfit == -1) Nfit = niw_pos;
-      utils::check(Nfit <= niw_pos,
-                   "pade_driver::init: Nfit ({}) > number of positive imaginary frequency points ({})",
-                   Nfit, niw_pos);
+      if (Nfit > niw_pos) {
+        app_log(4, "[WARNING]: Pade: Nfit ({}) is larger than the number of positive imaginary frequency points ({}). "
+                   "Setting Nfit to {}.\n", Nfit, niw_pos, niw_pos);
+        Nfit = niw_pos;
+      }
 
       // determine the imaginary frequencies for fitting
       auto Aiw_2D = nda::reshape(A_iw, std::array<long, 2>{niw, dim1});
@@ -81,7 +83,8 @@ namespace analyt_cont {
         A_fit(nda::ellipsis{}) = Aiw_2D(fit_iw_rng, nda::range::all);
       }
 
-      app_log(2, "Solving {}-point Pade interpolation.\n", Nfit);
+      app_log(2, "Solving {}-point Pade interpolation using {} implementation.\n",
+              Nfit, (_pade_kernel.implementation() == pade_impl_e::updated)? "updated" : "original");
       _pade_kernel.init(iw_fit, A_fit);
     }
 

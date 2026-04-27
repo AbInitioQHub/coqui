@@ -57,10 +57,10 @@ namespace bdft_tests {
       thc_reader_t thc(mf, make_thc_reader_ptree(mf->nbnd()*24, "", "incore", "", "bdft",
                                                  1e-10, mf->ecutrho(), 1, 1024));
       auto eri = mb_eri_t(thc, thc);
-      qp_context_t qp_context("sc", "pade", 18, 0.0001, 1e-8);
+      qp_params_t qp_params("sc", "pade", 18, 0.0001, 1e-8, "evscf");
       iter_scf::iter_scf_t iter_sol("damping");
       MBState mb_state(mpi_context, ft, output);
-      [[maybe_unused]] double e_hf = qp_scf_loop<true>(mb_state, eri, ft, qp_context,
+      [[maybe_unused]] double e_hf = qp_scf_loop(mb_state, eri, ft, qp_params,
                                       solvers::mb_solver_t(&hf,&gw,&scr_eri), &iter_sol, 1, false, 1e-8);
       mpi_context->comm.barrier();
 

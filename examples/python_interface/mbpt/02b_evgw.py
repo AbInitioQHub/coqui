@@ -24,31 +24,28 @@ svo_mf = coqui.make_mf(mpi, params=mf_params, mf_type="qe")
 
 # construct thc handler and compute the thc integrals during initialization
 eri_params = {
-    "ecut": svo_mf.ecutwfc()*1.2,
-    "thresh": 1e-3,
+    "ecut": svo_mf.ecutrho()*0.4,
+    "thresh": 1e-5,
 }
 svo_thc = coqui.make_thc_coulomb(mf=svo_mf, params=eri_params)
 
 # GW
 gw_params = {
-    "output": "qpg0w0",
+    "output": "svo.evgw",
     "niter": 1,
     "beta": 200,
     "iaft": {
-        "wmax": 3.0,
         "prec": "medium"
     },
-    "qp_type": "sc",
-    "ac_alg": "pade",
-    "eta": 1e-6,
-    "Nfit": 26
+    "Nfit": -1, 
+    "keep_scr_coulomb_fixed": False # True for evgw0, False for evgw
 }
-coqui.run_qpg0w0(params=gw_params, h_int=svo_thc)
+coqui.run_evgw(params=gw_params, h_int=svo_thc)
 
 # Wannier interpolation for G0W0
 winter_params = {
     "outdir": "./",
-    "prefix": "qpg0w0",
+    "prefix": "svo.evgw",
     "iteration": 1,
     "wannier_file": wan_h5, 
     "bands_num_npoints": 100, 
@@ -71,15 +68,14 @@ mpi.barrier()
 # Plotting
 if mpi.root():
   fig, ax = plt.subplots(1, figsize=(7,5.5), dpi=80)
-  plot_utils.band_plot(ax, "qpg0w0.mbpt.h5", iteration=0, color='tab:blue', linestyle="--",  
+  plot_utils.band_plot(ax, "svo.evgw.mbpt.h5", iteration=0, color='tab:blue', linestyle="--",  
                        linewidth=2.0, label='PBE', fontsize=16)
-  plot_utils.band_plot(ax, "qpg0w0.mbpt.h5", iteration=1, color='tab:red', linestyle="-", 
-                       linewidth=2.0, label='G0W0@PBE', fontsize=16)
+  plot_utils.band_plot(ax, "svo.evgw.mbpt.h5", iteration=1, color='tab:red', linestyle="-", 
+                       linewidth=2.0, label='evGW', fontsize=16)
   ax.axhline(y=0, color = 'black', linestyle = '-', linewidth=2.0, alpha=0.5)
-  #ax.set_ylim(-10.884, 10.884)
   ax.legend(loc=1, fontsize=16)
   plt.tight_layout()
   
-  plt.savefig("qpg0w0.png", format="png")
+  plt.savefig("svo.evgw.png", format="png")
 
 mpi.barrier()
