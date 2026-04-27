@@ -130,8 +130,8 @@ auto dets_from_occupation_vector(int nbnd, int maxdet, int nspin, int nup, int n
         weights[ic].first = 1.0;
         weights[ic].second = ic;
         for(auto& ip: cfg[ic]) {
-          int ik=ip/nkpts;
-          int ib=ip-ik*nkpts;
+          int ik=ip/nbnd;
+          int ib=ip-ik*nbnd;
           weights[ic].first *= occ(0,ik,ib);
           // do I want to put some constrains here? e.g. minimize momentum? Do it here...
         } 
@@ -178,8 +178,8 @@ auto dets_from_occupation_vector(int nbnd, int maxdet, int nspin, int nup, int n
       for(int icu=0, ic=0; icu<cfg_up.size(); ++icu) {
         double wup = 1.0;
         for(auto& ip: cfg_up[icu]) {
-          int ik=ip/nkpts;
-          int ib=ip-ik*nkpts;
+          int ik=ip/nbnd;
+          int ib=ip-ik*nbnd;
           wup *= occ_up(ik,ib);
         }        
         for(int icd=0; icd<cfg_dn.size(); ++icd, ++ic) {
@@ -188,8 +188,8 @@ auto dets_from_occupation_vector(int nbnd, int maxdet, int nspin, int nup, int n
           std::get<1>(weights[ic]) = icu;
           std::get<2>(weights[ic]) = icd;
           for(auto& ip: cfg_dn[icd]) {
-            int ik=ip/nkpts;
-            int ib=ip-ik*nkpts;
+            int ik=ip/nbnd;
+            int ib=ip-ik*nbnd;
             w *= occ_dn(ik,ib);
           }
         }
