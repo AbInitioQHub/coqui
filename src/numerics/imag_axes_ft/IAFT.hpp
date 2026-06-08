@@ -129,6 +129,9 @@ namespace imag_axes_ft {
     template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
     void tau_to_w(ndaArray_A &&X_ti, ndaArray_B &&X_wi, stats_e stats) const;
 
+    template<nda::MemoryArray ndaArray_A_t, nda::MemoryArray ndaArray_B_t>
+    void tau_to_w(ndaArray_A_t &&X_wi, stats_e stats_A, ndaArray_B_t &&X_ti, stats_e stats_B) const;
+ 
     template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
     void tau_to_w(ndaArray_A &&X_ti, ndaArray_B &&Xw_i, stats_e stats, size_t iw) const;
  
@@ -188,6 +191,15 @@ namespace imag_axes_ft {
      */
     template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
     void tau_to_beta(ndaArray_A &&A_ti, ndaArray_B &&A_beta_i) const;
+ 
+    /**
+     * Interpolation from bosonic sparse sampling nodes to tau = beta^{-} with particle-hole symmetry.
+     * This function is useful for Matsubara frequency summation: 1/beta \sum_{n} A(iwn) = -1.0 * A(tau=beta^{-})
+     * @param A_ti_pos - [INPUT] imaginary-time tensor on bosonic tau grid
+     * @param A_beta_i - [OUTPUT] imaginary-time tensor at tau = beta^{-}
+     */
+    template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
+    void tau_to_beta_PHsym(ndaArray_A &&A_ti_pos, ndaArray_B &&A_beta_i) const;
  
     /**
      * Interpolation from fermionic sparse sampling nodes to tau = 0^{+}.
