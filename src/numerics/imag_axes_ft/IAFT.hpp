@@ -327,7 +327,7 @@ namespace imag_axes_ft {
       return std::visit( [&](auto&& v) { return v.nt_f; }, grid_var);
     }
     int nt_b() const {
-      return std::visit( [&](auto&& v) { return v.nt_f; }, grid_var);
+      return std::visit( [&](auto&& v) { return v.nt_b; }, grid_var);
     }
     int nw_f() const {
       return std::visit( [&](auto&& v) { return v.nw_f; }, grid_var);
