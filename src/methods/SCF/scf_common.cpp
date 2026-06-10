@@ -154,6 +154,137 @@ double eval_corr_energy(comm_t& comm, const imag_axes_ft::IAFT &FT,
   return e_corr.real();
 }
 
+// JHL: This function only works for HF and GW
+template<typename dyson_type, typename X_t, typename Xt_t>
+void eval_thermodynamic_properties(dyson_type &dyson, const X_t &sF_skij,
+                                   const Xt_t &sG_tskij, const Xt_t &sSigma_tskij,
+                                   const std::vector<double> &energies, double e_rpa,
+                                   double mu, bool F_has_H0) {
+  decltype(nda::range::all) all;
+
+  auto MF = dyson.MF();
+  auto FT = dyson.FT();
+
+  auto ns = MF->nspin();
+  auto nkpts = MF->nkpts();
+  auto nbnd = MF->nbnd();
+  auto npol = MF->npol();
+  auto k_weight = MF->k_weight();
+
+  auto beta = FT->beta();
+  auto nt = FT->nt_f();
+  auto nw = FT->nw_f();
+
+  RealType spin_factor = 0;
+  ComplexType Phi_1(0.0, 0.0);
+  ComplexType Phi_2(0.0, 0.0);
+  ComplexType Phi(0.0, 0.0);
+  ComplexType tr_Sigma_G_1(0.0, 0.0);
+  ComplexType tr_Sigma_G_2(0.0, 0.0);
+  ComplexType tr_Sigma_G(0.0, 0.0);
+  ComplexType tr_ln_G0(0.0, 0.0);
+  ComplexType grand_potential(0.0, 0.0);
+  auto tr_ln_1_minus_G0_Sigma_t = nda::array<ComplexType, 2>::zeros({nt, 1});
+  auto tr_ln_1_minus_G0_Sigma_w = nda::array<ComplexType, 2>::zeros({nw, 1});
+  auto tr_ln_1_minus_G0_Sigma_beta = nda::array<ComplexType, 1>::zeros({1});
+
+  Phi_1 = energies[1];
+  Phi_2 = e_rpa;
+  Phi = Phi_1 + Phi_2;
+
+  tr_Sigma_G_1 = energies[1] * 2;
+  tr_Sigma_G_2 = energies[2] * 2;
+  tr_Sigma_G = tr_Sigma_G_1 + tr_Sigma_G_2;
+
+  for (size_t is = 0; is < ns; ++is) {
+    for (size_t ik = 0; ik < nkpts; ++ik) {
+      nda::matrix_const_view<ComplexType> F_ij = sF_skij.local()(is, ik, all, all);
+      nda::matrix_const_view<ComplexType> H0_ij = dyson.sH0_skij().local()(is, ik, all, all);
+      nda::matrix_const_view<ComplexType> S_ij = dyson.sS_skij().local()(is, ik, all, all);
+      nda::matrix<ComplexType> F = F_has_H0 ? nda::make_regular(F_ij) : nda::make_regular(F_ij + H0_ij);
+      auto eigenvalues = nda::linalg::eigenvalues(F, nda::make_regular(S_ij));
+      ComplexType buffer(0.0, 0.0);
+      for (size_t ibnd = 0; ibnd < nbnd; ++ibnd) {
+        if (eigenvalues(ibnd) - mu > 0) {
+          buffer += std::log(1.0 + std::exp(-beta * (nda::real(eigenvalues(ibnd)) - mu)));
+        } else {
+          buffer += std::log(1.0 + std::exp(beta * (nda::real(eigenvalues(ibnd)) - mu)));
+          buffer -= (eigenvalues(ibnd) - mu) * beta;
+        }
+      }
+      tr_ln_G0 += buffer * k_weight(ik);
+    }
+  }
+  spin_factor = (npol == 1 and ns == 1) ? 2.0 : 1.0;
+  tr_ln_G0 *= spin_factor / beta;
+
+  for (size_t n = 0; n < nw; ++n) {
+    nda::array<ComplexType, 4> Sigmaw_skij({ns, nkpts, nbnd, nbnd});
+    auto wn = FT->wn_mesh()(n);
+    ComplexType omega_mu = FT->omega(wn) + mu;
+    FT->tau_to_w(sSigma_tskij.local(), Sigmaw_skij, imag_axes_ft::fermion, n);
+    for (size_t is = 0; is < ns; ++is) {
+      for (size_t ik = 0; ik < nkpts; ++ik) {
+        nda::matrix_const_view<ComplexType> F_ij = sF_skij.local()(is, ik, all, all);
+        nda::matrix_const_view<ComplexType> H0_ij = dyson.sH0_skij().local()(is, ik, all, all);
+        nda::matrix_const_view<ComplexType> S_ij = dyson.sS_skij().local()(is, ik, all, all);
+        nda::matrix<ComplexType> F = F_has_H0 ? nda::make_regular(F_ij) : nda::make_regular(F_ij + H0_ij);
+        nda::matrix<ComplexType> G0_inv = omega_mu * S_ij - F;
+        nda::matrix<ComplexType> G0 = nda::inverse(G0_inv);
+        nda::matrix<ComplexType> buffer = nda::eye<ComplexType>(nbnd);
+        nda::matrix<ComplexType> buffer2 = nda::matrix<ComplexType>::zeros({nbnd, nbnd});
+        nda::blas::gemm(-1.0, G0, Sigmaw_skij(is, ik, all, all), 1.0, buffer);
+        // JHL: Is (1-G_0\Sigma) hermitian?
+        nda::blas::gemm(1.0, nda::conj(nda::transpose(buffer)), buffer, 0.0, buffer2);
+        auto eigenvalues = nda::linalg::eigenvalues(buffer2);
+        tr_ln_1_minus_G0_Sigma_w(n, 0) += nda::sum(nda::log(eigenvalues)) * 0.5 * k_weight(ik);
+      }
+    }
+  }
+  FT->w_to_tau(tr_ln_1_minus_G0_Sigma_w, tr_ln_1_minus_G0_Sigma_t, imag_axes_ft::fermion);
+  FT->tau_to_beta(tr_ln_1_minus_G0_Sigma_t, tr_ln_1_minus_G0_Sigma_beta);
+  spin_factor = (npol == 1 and ns == 1) ? 2.0 : 1.0;
+  tr_ln_1_minus_G0_Sigma_beta(0) *= -1 * spin_factor;
+
+  grand_potential = Phi - tr_Sigma_G - tr_ln_G0 - tr_ln_1_minus_G0_Sigma_beta(0);
+
+  app_log(1, "\n");
+  app_log(1, "Grand potential contributions");
+  app_log(1, "--------------------");
+  app_log(1, "  Luttinger-Ward:                  {:>20.12f} a.u.", Phi.real());
+  app_log(1, "  tr G*Sigma:                      {:>20.12f} a.u.", -tr_Sigma_G.real());
+  app_log(1, "  tr ln(-G0):                      {:>20.12f} a.u.", -tr_ln_G0.real());
+  app_log(1, "  tr ln(1-G0*Sigma):               {:>20.12f} a.u.", -tr_ln_1_minus_G0_Sigma_beta(0).real());
+  app_log(1, "  total grand potential:           {:>20.12f} a.u.", grand_potential.real());
+  app_log(1, "\n");
+
+  if (std::abs(tr_ln_1_minus_G0_Sigma_beta(0).imag() / tr_ln_1_minus_G0_Sigma_beta(0).real()) >= 1e-8) {
+    app_log(1, "[WARNING] Abs (Tr ln(1-G0*Sigma).imag() / Tr ln(1-G0*Sigma).real()) = {},\n",
+            tr_ln_1_minus_G0_Sigma_beta(0).imag() / tr_ln_1_minus_G0_Sigma_beta(0).real());
+    app_log(1, "          (Tr ln(1-G0*Sigma)).imag() = {},\n", tr_ln_1_minus_G0_Sigma_beta(0).imag());
+    app_log(1, "          (Tr ln(1-G0*Sigma)).real() = {} \n", tr_ln_1_minus_G0_Sigma_beta(0).real());
+  }
+
+  nda::array<ComplexType, 4> spectra(FT->nw_f(), MF->nspin(), MF->nkpts_ibz(), MF->nbnd());
+  dyson.compute_eigenspectra(sF_skij, sSigma_tskij, spectra);
+  double n_electron = compute_Nelec(mu, spectra, *MF, *FT);
+  double helmholtz_free_energy = grand_potential.real() + mu * n_electron;
+  double entropy = (energies[3] - helmholtz_free_energy) * beta;
+
+  app_log(1, "\n");
+  app_log(1, "Electron thermodynamic properties");
+  app_log(1, "--------------------");
+  app_log(1, "  energy:                          {:>20.12f} a.u.", energies[3]);
+  app_log(1, "  grand potential:                 {:>20.12f} a.u.", grand_potential.real());
+  app_log(1, "  Helmholtz free energy:           {:>20.12f} a.u.", helmholtz_free_energy);
+  app_log(1, "  beta:                            {:>20.12f} a.u.", beta);
+  app_log(1, "  entropy:                         {:>20.12f} a.u.", entropy);
+  app_log(1, "  chemical potential:              {:>20.12f} a.u.", mu);
+  app_log(1, "  number of electrons:             {:>20.12f}", n_electron);
+  app_log(1, "\n");
+
+}
+
 template<typename dyson_type, typename X_t, typename Xt_t>
 void update_G(dyson_type &dyson, const mf::MF &mf, const imag_axes_ft::IAFT &FT, X_t & Dm, Xt_t &G,
               const X_t & F, const Xt_t &Sigma, double &mu, bool const_mu) {
@@ -470,6 +601,10 @@ template auto eval_hf_energy(const sArray_t<Array_view_4D_t>&, const sArray_t<Ar
 template double eval_corr_energy(mpi3::communicator& comm, const imag_axes_ft::IAFT &,
                                  const sArray_t<Array_view_5D_t> &, const sArray_t<Array_view_5D_t> &,
                                  nda::array_contiguous_const_view<double, 1>&);
+
+template void eval_thermodynamic_properties(simple_dyson&, const sArray_t<Array_view_4D_t>&,
+                                            const sArray_t<Array_view_5D_t>&, const sArray_t<Array_view_5D_t>&,
+                                            const std::vector<double>&, double, double, bool);
 
 template void update_G(simple_dyson &, const mf::MF &, const imag_axes_ft::IAFT &,
                        sArray_t<Array_view_4D_t> & Dm, sArray_t<Array_view_5D_t> &G,
