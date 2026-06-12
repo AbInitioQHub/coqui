@@ -218,6 +218,9 @@ void eval_thermodynamic_properties(dyson_type &dyson, const X_t &sF_skij,
   spin_factor = (npol == 1 and ns == 1) ? 2.0 : 1.0;
   tr_ln_G0 *= spin_factor / beta;
 
+  auto I = nda::eye<ComplexType>(nbnd);
+  nda::matrix<ComplexType> G0_Sigma_w(nbnd, nbnd);
+  nda::matrix<ComplexType> one_minus_G0_Sigma_w(nbnd, nbnd);
   for (size_t n = 0; n < nw; ++n) {
     nda::array<ComplexType, 4> Sigmaw_skij({ns, nkpts, nbnd, nbnd});
     auto wn = FT->wn_mesh()(n);
@@ -230,14 +233,22 @@ void eval_thermodynamic_properties(dyson_type &dyson, const X_t &sF_skij,
         nda::matrix_const_view<ComplexType> S_ij = dyson.sS_skij().local()(is, ik, all, all);
         nda::matrix<ComplexType> F = F_has_H0 ? nda::make_regular(F_ij) : nda::make_regular(F_ij + H0_ij);
         nda::matrix<ComplexType> G0_inv = omega_mu * S_ij - F;
-        nda::matrix<ComplexType> G0 = nda::inverse(G0_inv);
-        nda::matrix<ComplexType> buffer = nda::eye<ComplexType>(nbnd);
-        nda::matrix<ComplexType> buffer2 = nda::matrix<ComplexType>::zeros({nbnd, nbnd});
-        nda::blas::gemm(-1.0, G0, Sigmaw_skij(is, ik, all, all), 1.0, buffer);
+        // calculate G_0 \Sigma by solving G_0^{-1} X = \Sigma
+        G0_Sigma_w = Sigmaw_skij(is, ik, all, all);
+        // nda tensor branch requies F_layout
+        nda::matrix<ComplexType, nda::F_layout> G0_Sigma_w_F_layout = G0_Sigma_w;
+        nda::array<int, 1> ipiv(G0_inv.extent(0));
+        nda::lapack::getrf(G0_inv, ipiv);
+        nda::lapack::getrs(G0_inv, G0_Sigma_w_F_layout, ipiv);
+        G0_Sigma_w = G0_Sigma_w_F_layout;
+        one_minus_G0_Sigma_w = I - G0_Sigma_w;
         // JHL: Is (1-G_0\Sigma) hermitian?
-        nda::blas::gemm(1.0, nda::conj(nda::transpose(buffer)), buffer, 0.0, buffer2);
-        auto eigenvalues = nda::linalg::eigenvalues(buffer2);
-        tr_ln_1_minus_G0_Sigma_w(n, 0) += nda::sum(nda::log(eigenvalues)) * 0.5 * k_weight(ik);
+        nda::matrix<ComplexType> buffer(nbnd, nbnd);
+        nda::blas::gemm(1.0, nda::conj(nda::transpose(one_minus_G0_Sigma_w)), one_minus_G0_Sigma_w, 0.0, buffer);
+        nda::lapack::getrf(buffer, ipiv);
+        for (size_t ibnd = 0; ibnd < nbnd; ++ibnd) {
+          tr_ln_1_minus_G0_Sigma_w(n, 0) += nda::log(std::abs(buffer(ibnd, ibnd).real())) * 0.5 * k_weight(ik);
+        }
       }
     }
   }
