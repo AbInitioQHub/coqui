@@ -30,11 +30,11 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
 
     # Copy top-level gw_edmft settings
     gw_edmft_params = {}
-    niter = gw_edmft_group.get('niter')
-    gw_iter_per_loop = gw_edmft_group.get('gw_iter_per_loop', 1)
-    edmft_iter_per_loop = gw_edmft_group.get('edmft_iter_per_loop', 1)
-    if gw_edmft_group.get('wannier_file'):
-        gw_edmft_params['wannier_file'] = gw_edmft_group.get('wannier_file')
+    niter = gw_edmft_group.pop('niter')
+    gw_iter_per_loop = gw_edmft_group.pop('gw_iter_per_loop', 1)
+    edmft_iter_per_loop = gw_edmft_group.pop('edmft_iter_per_loop', 1)
+    if 'wannier_file' in gw_edmft_group:
+        gw_edmft_params['wannier_file'] = gw_edmft_group.pop('wannier_file')
     if niter is None:
         raise KeyError("Missing 'niter' parameter to specify the total number of GW+EDMFT cycles.")
     if not isinstance(niter, int) or niter <= 0:
@@ -58,13 +58,13 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
     gw_edmft_params['gw_iter_per_loop'] = gw_iter_per_loop
     gw_edmft_params['edmft_iter_per_loop'] = edmft_iter_per_loop
     
-    screen_type = gw_edmft_group.get('screen_type', 'gw_edmft')
-    div_treatment = gw_edmft_group.get('div_treatment', 'gygi')
-    outdir = gw_edmft_group.get('outdir', './')
-    prefix = gw_edmft_group.get('prefix', 'coqui')
+    screen_type = gw_edmft_group.pop('screen_type', 'gw_edmft')
+    div_treatment = gw_edmft_group.pop('div_treatment', 'gygi')
+    outdir = gw_edmft_group.pop('outdir', './')
+    prefix = gw_edmft_group.pop('prefix', 'coqui')
     # restart = False implies the workflow will start from a fresh checkpoint where both GW and EDMFT parts start from scratch;
     # this is not available yet in the current implementation as the GW part is always assumed to restart from a previous checkpoint.
-    restart = gw_edmft_group.get('restart', True)
+    restart = gw_edmft_group.pop('restart', True)
     if restart is False:
         raise NotImplementedError(
             "Starting the GW+EDMFT workflow from scratch (restart=False) is not implemented yet. " \
@@ -110,7 +110,7 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
     # embed parameters
     gw_edmft_params['dmft_embed'] = {
         'outdir': outdir, 'prefix': prefix, 
-        'corr_only': gw_edmft_group.get('corr_only', True), 
+        'corr_only': gw_edmft_group.pop('corr_only', True),
         # disable iterative solver for the embedding step. The iterative solve happens somewhere else. 
         'iter_alg': {'enable': False} 
     }
@@ -125,6 +125,10 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
         'iter_alg': edmft_iter_params,
         'chkpt_h5': edmft_section.pop('chkpt_h5', outdir+"/"+prefix+".mbpt.h5")
     }
+
+    if 'iaft' in gw_edmft_group:
+        iaft_params = gw_edmft_group.pop('iaft')
+        gw_edmft_params['impurity']['iaft'] = iaft_params
   
     # Convert 'impurity' (new) to 'solver' (old)
     if 'impurity' in edmft_section:
@@ -133,14 +137,18 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
             solver_list = [solver_list]
     
         for solver_params in solver_list:
-            if solver_params.get('degenerate_blk'):
+            if 'degenerate_blk' in solver_params:
                 solver_params['degenerate_blk'] = [np.array(x) for x in solver_params['degenerate_blk']]
         
         gw_edmft_params['impurity']['solver'] = solver_list
 
-    # Copy any remaining keys
+    # Copy any remaining keys in the edmft section
     for key, value in edmft_section.items():
         gw_edmft_params['impurity'][key] = value
+
+    # Copy any remaining keys in the top-level gw_edmft section
+    for key, value in gw_edmft_group.items():
+        gw_edmft_params[key] = value
 
     return gw_edmft_params
 
