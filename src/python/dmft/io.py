@@ -30,13 +30,13 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
 
     # Copy top-level gw_edmft settings
     gw_edmft_params = {}
+    if 'niter' not in gw_edmft_group:
+        raise KeyError("'niter' is required: specify the total number of GW+EDMFT cycles as a positive integer.")
     niter = gw_edmft_group.pop('niter')
     gw_iter_per_loop = gw_edmft_group.pop('gw_iter_per_loop', 1)
     edmft_iter_per_loop = gw_edmft_group.pop('edmft_iter_per_loop', 1)
     if 'wannier_file' in gw_edmft_group:
         gw_edmft_params['wannier_file'] = gw_edmft_group.pop('wannier_file')
-    if niter is None:
-        raise KeyError("Missing 'niter' parameter to specify the total number of GW+EDMFT cycles.")
     if not isinstance(niter, int) or niter <= 0:
         raise ValueError("'niter' must be a positive integer.")
     if not isinstance(gw_iter_per_loop, int) or gw_iter_per_loop < 0:

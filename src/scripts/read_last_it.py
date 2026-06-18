@@ -76,10 +76,5 @@ def copy_all_and_last_iters(g_in, g_out, keep_first_iter=False):
                 raise ValueError("The key final_iter is not found!")
 
 
-g_in = h5.HDFArchive(finput, 'r')
-g_out = h5.HDFArchive(foutput, 'w')
-
-copy_all_and_last_iters(g_in, g_out, keep_first_it)
-
-del g_out
-del g_in
+with h5.HDFArchive(finput, 'r') as g_in, h5.HDFArchive(foutput, 'w') as g_out:
+    copy_all_and_last_iters(g_in, g_out, keep_first_it)
