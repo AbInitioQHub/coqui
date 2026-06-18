@@ -313,6 +313,11 @@ namespace methods {
       Heff_path = grp_name + "/iter" + std::to_string(iter) + (iter_grp.has_subgroup("qp_approx")? "/qp_approx/Heff_skij" : "/Heff_skij");
     }
     _context.comm.broadcast_n(&mu, 1, 0);
+    // broadcast_n() does not communicate `count` argrument, 
+    // we must ensure all ranks have the same Heff_path.size() before broadcasting Heff_path.data().
+    long Heff_path_size = Heff_path.size();
+    _context.comm.broadcast_n(&Heff_path_size, 1, 0);
+    if (!_context.comm.root()) Heff_path.resize(Heff_path_size);
     _context.comm.broadcast_n(Heff_path.data(), Heff_path.size(), 0);
     _context.comm.broadcast_n(&iter, 1, 0);
 
