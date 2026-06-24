@@ -154,11 +154,10 @@ double eval_corr_energy(comm_t& comm, const imag_axes_ft::IAFT &FT,
   return e_corr.real();
 }
 
-// JHL: This function only works for HF and GW
 template<typename dyson_type, typename X_t, typename Xt_t>
 void eval_thermodynamic_properties(dyson_type &dyson, const X_t &sF_skij,
                                    const Xt_t &sG_tskij, const Xt_t &sSigma_tskij,
-                                   const std::vector<double> &energies, double e_rpa,
+                                   const std::vector<double> &energies, double Phi_dynamical,
                                    double mu, bool F_has_H0) {
   decltype(nda::range::all) all;
 
@@ -175,9 +174,7 @@ void eval_thermodynamic_properties(dyson_type &dyson, const X_t &sF_skij,
   auto nt = FT->nt_f();
   auto nw = FT->nw_f();
 
-  RealType spin_factor = 0;
-  ComplexType Phi_1(0.0, 0.0);
-  ComplexType Phi_2(0.0, 0.0);
+  RealType spin_factor = (npol == 1 and ns == 1) ? 2.0 : 1.0;
   ComplexType Phi(0.0, 0.0);
   ComplexType tr_Sigma_G_1(0.0, 0.0);
   ComplexType tr_Sigma_G_2(0.0, 0.0);
@@ -188,9 +185,8 @@ void eval_thermodynamic_properties(dyson_type &dyson, const X_t &sF_skij,
   auto tr_ln_1_minus_G0_Sigma_w = nda::array<ComplexType, 2>::zeros({nw, 1});
   auto tr_ln_1_minus_G0_Sigma_beta = nda::array<ComplexType, 1>::zeros({1});
 
-  Phi_1 = energies[1];
-  Phi_2 = e_rpa;
-  Phi = Phi_1 + Phi_2;
+  double Phi_static = energies[1];
+  Phi = Phi_static + Phi_dynamical;
 
   tr_Sigma_G_1 = energies[1] * 2;
   tr_Sigma_G_2 = energies[2] * 2;
@@ -215,7 +211,6 @@ void eval_thermodynamic_properties(dyson_type &dyson, const X_t &sF_skij,
       tr_ln_G0 += buffer * k_weight(ik);
     }
   }
-  spin_factor = (npol == 1 and ns == 1) ? 2.0 : 1.0;
   tr_ln_G0 *= spin_factor / beta;
 
   auto I = nda::eye<ComplexType>(nbnd);
@@ -247,14 +242,13 @@ void eval_thermodynamic_properties(dyson_type &dyson, const X_t &sF_skij,
         nda::blas::gemm(1.0, nda::conj(nda::transpose(one_minus_G0_Sigma_w)), one_minus_G0_Sigma_w, 0.0, buffer);
         nda::lapack::getrf(buffer, ipiv);
         for (size_t ibnd = 0; ibnd < nbnd; ++ibnd) {
-          tr_ln_1_minus_G0_Sigma_w(n, 0) += nda::log(std::abs(buffer(ibnd, ibnd).real())) * 0.5 * k_weight(ik);
+          tr_ln_1_minus_G0_Sigma_w(n, 0) += std::log(std::abs(buffer(ibnd, ibnd).real())) * 0.5 * k_weight(ik);
         }
       }
     }
   }
   FT->w_to_tau(tr_ln_1_minus_G0_Sigma_w, tr_ln_1_minus_G0_Sigma_t, imag_axes_ft::fermion);
   FT->tau_to_beta(tr_ln_1_minus_G0_Sigma_t, tr_ln_1_minus_G0_Sigma_beta);
-  spin_factor = (npol == 1 and ns == 1) ? 2.0 : 1.0;
   tr_ln_1_minus_G0_Sigma_beta(0) *= -1 * spin_factor;
 
   grand_potential = Phi - tr_Sigma_G - tr_ln_G0 - tr_ln_1_minus_G0_Sigma_beta(0);

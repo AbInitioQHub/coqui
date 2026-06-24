@@ -450,10 +450,21 @@ double eval_corr_energy(comm_t& comm, const imag_axes_ft::IAFT &FT,
                         const X_t & G_shm, const X_t & Sigma_shm,
                         Array1D &k_weight);
 
+/**
+ * Evaluation thermodynamic properties
+ * @param dyson         - [INPUT] dyson object
+ * @param sF_skij       - [INPUT] Fock matrix
+ * @param sG_tskij      - [INPUT] Green's function
+ * @param sSigma_tskij  - [INPUT] dynamic self-energy
+ * @param energies      - [INPUT] a vector storing energy information: 0 for one-electron; 1 for HF; 2 for correlation; 3 for total
+ * @param Phi_dynamical - [INPUT] dynamical part of Luttinger-Ward functional Phi
+ * @param mu            - [INPUT] chemical potential
+ * @param F_has_H0      - [INPUT] whether the Fock matrix includes non-interacting Hamiltonian
+ */
 template<typename dyson_type, typename X_t, typename Xt_t>
 void eval_thermodynamic_properties(dyson_type &dyson, const X_t &sF_skij,
                                    const Xt_t &sG_tskij, const Xt_t &sSigma_tskij,
-                                   const std::vector<double> &energies, double e_rpa,
+                                   const std::vector<double> &energies, double Phi_dynamical,
                                    double mu, bool F_has_H0);
 
 template<typename X_t, nda::ArrayOfRank<1> Array1D>
