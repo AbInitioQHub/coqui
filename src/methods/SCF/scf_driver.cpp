@@ -227,31 +227,32 @@ auto scf_loop(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri, const imag_ax
   app_log(2, "    Iterative alg:        {0:.3f} sec", Timer.elapsed("ITERATIVE"));
   app_log(2, "    Write:                {0:.3f} sec\n", Timer.elapsed("WRITE"));
 
-  if (mb_solver.hf != nullptr and mb_solver.corr == nullptr) {
-
-    eval_thermodynamic_properties(dyson, sF_skij, sG_tskij, sSigma_tskij, energies, 0.0, mu, false);
-
-  } else if (std::is_same_v<corr_solver_t, solvers::gw_t> and mb_solver.corr != nullptr) {
-
+  {
     Timer.add("THERMODYNAMICS");
     Timer.start("THERMODYNAMICS");
-    double e_rpa = 0.0;
+
+    double Phi_dynamical = 0.0;
+
+    Timer.add("PHI_DYNAMICAL");
+    Timer.start("PHI_DYNAMICAL");
+    // TODO: GF2
     if constexpr (requires { mb_solver.corr->rpa_energy(sG_tskij.local(), mb_eri.corr_eri->get()); }) {
-      Timer.add("PHI");
-      Timer.start("PHI");
-      e_rpa = mb_solver.corr->rpa_energy(sG_tskij.local(), mb_eri.corr_eri->get());
-      Timer.stop("PHI");
+      Phi_dynamical = mb_solver.corr->rpa_energy(sG_tskij.local(), mb_eri.corr_eri->get());
     }
+    Timer.stop("PHI_DYNAMICAL");
+
     Timer.add("OTHERS");
     Timer.start("OTHERS");
-    eval_thermodynamic_properties(dyson, sF_skij, sG_tskij, sSigma_tskij, energies, e_rpa, mu, false);
+    eval_thermodynamic_properties(dyson, sF_skij, sG_tskij, sSigma_tskij, energies, Phi_dynamical, mu, false);
     Timer.stop("OTHERS");
+
     Timer.stop("THERMODYNAMICS");
+
     app_log(2, "\n  Thermodynamic property evaluation timers");
     app_log(2, "  ----------------");
-    app_log(2, "    Total:                {0:.3f} sec", Timer.elapsed("THERMODYNAMICS"));
-    app_log(2, "    Phi (via RPA):        {0:.3f} sec", Timer.elapsed("PHI"));
-    app_log(2, "    Other properties:     {0:.3f} sec", Timer.elapsed("OTHERS"));
+    app_log(2, "    Total:                 {0:.3f} sec", Timer.elapsed("THERMODYNAMICS"));
+    app_log(2, "    Dynamical part of Phi: {0:.3f} sec", Timer.elapsed("PHI_DYNAMICAL"));
+    app_log(2, "    Other properties:      {0:.3f} sec", Timer.elapsed("OTHERS"));
     app_log(2, "\n");
 
   }
