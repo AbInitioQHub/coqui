@@ -47,7 +47,7 @@ template<typename dyson_type, typename eri_t, typename corr_solver_t>
 auto scf_loop(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri, const imag_axes_ft::IAFT& FT,
               solvers::mb_solver_t<corr_solver_t> mb_solver, iter_scf::iter_scf_t *iter_solver = nullptr,
               int niter = 1, bool restart = false, double conv_tol = 1e-9, bool const_mu = false,
-              std::string input_grp = "scf", int input_iter = -1)
+              std::string input_grp = "scf", int input_iter = -1, bool eval_thermodynamics = false)
               -> std::tuple<double, double>;
 
 /**

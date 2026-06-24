@@ -142,6 +142,8 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
   auto greens_func_source = io::get_value_with_default<std::string>(pt,"greens_func_source", "scf");
   auto greens_func_iteration = io::get_value_with_default<long>(pt, "greens_func_iteration", -1);
 
+  auto eval_thermodynamics = io::get_value_with_default<bool>(pt, "eval_thermodynamics", true);
+
   bool chkpt_exist = std::filesystem::exists(output + ".mbpt.h5");
   if (restart and !chkpt_exist) {
     restart = false;
@@ -190,7 +192,7 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
     MBState mb_state(mpi, ft, output);
     scf_loop(mb_state, dyson, eri, ft, mb_solver_t(&hf),
              iter_solver.get(), niter, restart, conv_thr, const_mu,
-             greens_func_source, greens_func_iteration);
+             greens_func_source, greens_func_iteration, eval_thermodynamics);
 
   } else if(solver_type == "gw") {
     auto screen_type = io::get_value_with_default<std::string>(pt,"screen_type", "rpa");
@@ -230,7 +232,7 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
       MBState mb_state(mpi, ft, output);
       scf_loop(mb_state, dyson, eri, ft, mb_solver_t(&hf, &gw, &scr_eri),
                iter_solver.get(), niter, restart, conv_thr, const_mu,
-               greens_func_source, greens_func_iteration);
+               greens_func_source, greens_func_iteration, eval_thermodynamics);
 
       auto dump_w_to_h5 = io::get_value_with_default<bool>(pt,"dump_w_to_h5", false);
       if (dump_w_to_h5) {

@@ -38,7 +38,7 @@ template<typename dyson_type, typename eri_t, typename corr_solver_t>
 auto scf_loop(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri, const imag_axes_ft::IAFT& FT,
               solvers::mb_solver_t<corr_solver_t> mb_solver, iter_scf::iter_scf_t *iter_solver,
               int niter, bool restart, double conv_tol, bool const_mu,
-              std::string input_grp, int input_iter)
+              std::string input_grp, int input_iter, bool eval_thermodynamics)
               -> std::tuple<double, double> {
   utils::TimerManager Timer;
   auto mpi = mb_eri.corr_eri->get().mpi();
@@ -227,21 +227,26 @@ auto scf_loop(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri, const imag_ax
   app_log(2, "    Iterative alg:        {0:.3f} sec", Timer.elapsed("ITERATIVE"));
   app_log(2, "    Write:                {0:.3f} sec\n", Timer.elapsed("WRITE"));
 
-  {
-    Timer.add("THERMODYNAMICS");
+  if (eval_thermodynamics) {
+    
+    for (auto &v: {"THERMODYNAMICS", "PHI_DYNAMICAL", "OTHERS"}) {
+      Timer.add(v);
+    }
+
     Timer.start("THERMODYNAMICS");
 
     double Phi_dynamical = 0.0;
 
-    Timer.add("PHI_DYNAMICAL");
     Timer.start("PHI_DYNAMICAL");
     // TODO: GF2
-    if constexpr (requires { mb_solver.corr->rpa_energy(sG_tskij.local(), mb_eri.corr_eri->get()); }) {
-      Phi_dynamical = mb_solver.corr->rpa_energy(sG_tskij.local(), mb_eri.corr_eri->get());
+    // GW
+    if (std::is_same_v<corr_solver_t, solvers::gw_t> and mb_solver.corr != nullptr) {
+      if constexpr (requires { mb_solver.corr->rpa_energy(sG_tskij.local(), mb_eri.corr_eri->get()); }) {
+        Phi_dynamical = mb_solver.corr->rpa_energy(sG_tskij.local(), mb_eri.corr_eri->get());
+      }
     }
     Timer.stop("PHI_DYNAMICAL");
 
-    Timer.add("OTHERS");
     Timer.start("OTHERS");
     eval_thermodynamic_properties(dyson, sF_skij, sG_tskij, sSigma_tskij, energies, Phi_dynamical, mu, false);
     Timer.stop("OTHERS");
@@ -445,7 +450,7 @@ scf_loop(MBState&, simple_dyson&, \
          const imag_axes_ft::IAFT&, \
          solvers::mb_solver_t<solvers::gw_t>, \
          iter_scf::iter_scf_t*, \
-         int, bool, double, bool, std::string, int);
+         int, bool, double, bool, std::string, int, bool);
 
 // All combinations of thc/chol for 4 eri slots
 GW_SCF_LOOP_INST(thc_reader_t, thc_reader_t, thc_reader_t, thc_reader_t)
@@ -476,7 +481,7 @@ scf_loop(MBState&, simple_dyson&, \
          const imag_axes_ft::IAFT&, \
          solvers::mb_solver_t<solvers::gf2_t>, \
          iter_scf::iter_scf_t*, \
-         int, bool, double, bool, std::string, int);
+         int, bool, double, bool, std::string, int, bool);
 
 // All combinations of thc/chol for 4 eri slots
 GF2_SCF_LOOP_INST(thc_reader_t, thc_reader_t, thc_reader_t, thc_reader_t)
