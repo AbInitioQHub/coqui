@@ -145,8 +145,29 @@ def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: 
                          ``degenerate_blk`` from hybridization when explicit blocks are absent.
                      - ``screen_j`` (bool, default ``False``): include screened Hund's
                          coupling in density-density mapping.
-                     - ``causal_projection`` (dict, default ``None``): options forwarded to
-                         bosonic causal projection utilities.
+                     - ``causal_projection`` (dict, default ``None``): options for bosonic
+                         causal projection. A fitting step is skipped when its
+                         ``nbath_per_orbital_*`` key is absent or set to ``-1``.
+                         Keys:
+
+                         - ``nbath_per_orbital_wloc`` (int, default ``-1``): bath orbitals for
+                           local screened interaction ``Wloc`` fitting.
+                         - ``nbath_per_orbital_u_weiss`` (int, default ``-1``): bath orbitals for
+                           bosonic Weiss field ``U_weiss`` fitting.
+                         - ``nbath_per_orbital_impurity`` (int, default ``-1``): bath orbitals for
+                           impurity ``Pi_iw`` / ``W_iw`` fitting.
+                         - ``n_exclude_low_freq_wloc`` / ``n_exclude_low_freq_u_weiss`` /
+                           ``n_exclude_low_freq_impurity`` (int, default ``0`` = no exclusion):
+                           number of lowest-frequency Matsubara shells to drop from that
+                           target's fit input (the fitted function is still evaluated on the
+                           full mesh). ``1`` excludes only ``w=0``.
+                         - ``w0_treatment_for_pi`` / ``w0_treatment_for_w`` / ``w0_treatment_for_weiss``
+                           (str, optional): regularization applied to ``A(iw=0)`` before fitting
+                           (``"flatten"`` or ``"extrapolate_order_<n>"``).
+
+                         Example — fit only ``Wloc`` and ``U_weiss`` with 3 poles each::
+
+                             {"nbath_per_orbital_wloc": 3, "nbath_per_orbital_u_weiss": 3}
                      - ``chemical_potential`` (dict, optional): auxiliary impurity chemical-
                          potential solver controls:
                          - ``tolerance`` (float, default ``0.1``)
