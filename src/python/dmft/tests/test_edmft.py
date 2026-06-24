@@ -138,8 +138,9 @@ def test_causal_projection_boson_with_real_downfold_coulomb(downfold_inputs):
     wloc_fit_iw = causal_projection_boson(
         wloc_dd_iw,
         ir_kernel,
-        {"nbath_per_orbital": 2, "exclude_w0": False},
+        2,
         ph_symmetry=True,
+        n_exclude_low_freq=0,
         target_name="Wloc downfolded",
     )
 

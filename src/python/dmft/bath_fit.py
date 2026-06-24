@@ -70,56 +70,66 @@ def bath_fitting(A_wsab, iw_mesh, statistics, Np=5,
     return A_out
 
 
-def causal_projection_boson(A_iw, iaft, causal_params, 
-                            ph_symmetry=False, w0_regularization=None, target_name=""):
+def causal_projection_boson(A_iw, iaft, nbath_per_orbital,
+                            ph_symmetry=False, n_exclude_low_freq=0,
+                            w0_regularization=None, target_name=""):
     """
     Perform causal projection for bosonic Green's functions.
 
     This function fits the input bosonic Green's function `A_iw` to a causal
     representation using bath fitting. It supports optional particle-hole
-    symmetry enforcement and allows for customization of the fitting process
-    through `causal_params`.
+    symmetry enforcement and allows for customization of the fitting process.
 
     Parameters:
         A_iw (numpy.ndarray): Input bosonic Green's function data.
         iaft: Kernel object providing the Matsubara frequency mesh and
                    other transformations.
-        causal_params (dict): Parameters for the causal projection, including:
-                              - 'nbath_per_orbital': Number of bath orbitals.
-                              - 'exclude_w0' (optional): Whether to exclude
-                                the zero-frequency component.
+        nbath_per_orbital (int): Number of bath orbitals for the fit. If <= 0,
+                                 the function returns the input `A_iw` unchanged.
         ph_symmetry (bool): If True, enforces particle-hole symmetry by
                             setting the imaginary part to zero.
+        n_exclude_low_freq (int): Number of lowest-|iw_n| Matsubara frequency
+                            shells to exclude from the fit input (default 0 = no
+                            exclusion). Each shell groups the degenerate +/- pair,
+                            so on a symmetric mesh both members are dropped
+                            together. The fitted function is still evaluated on the
+                            full mesh. On the positive-only (ph_symmetry=True) mesh
+                            this is simply the first `n` points.
         w0_regularization (optional): Regularization to A(iw=0) before causal projection.
         target_name (str, optional): Name of the target for reporting purposes.
-    
-    Note: If `causal_params` is None or `causal_params["nbath_per_orbital"]` <= 0, 
-          the function returns the input `A_iw` unchanged.
 
     Returns:
         numpy.ndarray: The fitted bosonic Green's function in causal form.
     """
-    if causal_params is None:
-        return A_iw
-
     iw_mesh_b = iaft.wn_mesh('b', positive_only=ph_symmetry) * np.pi / iaft.beta
 
     if w0_regularization is not None:
         A_iw = apply_w0_regularization(A_iw, iw_mesh_b, w0_regularization, target_name)
 
-    if causal_params["nbath_per_orbital"] <= 0:
+    if nbath_per_orbital <= 0:
         app_log(2, f"Skipping causal projection for {target_name} as nbath_per_orbital <= 0")
         return A_iw
 
-    exclude_w0 = causal_params.get('exclude_w0', False)
-    zero_index = np.where(iw_mesh_b == 0.0)[0][0]
-    iw_inputs = np.delete(iw_mesh_b, zero_index) if exclude_w0 else iw_mesh_b
-    A_iw_input = np.delete(A_iw, zero_index, axis=0) if exclude_w0 else A_iw
+    if n_exclude_low_freq > 0:
+        unique_mags = np.unique(np.abs(iw_mesh_b))   # ascending; +/-w_n collapse to one entry
+        if n_exclude_low_freq >= unique_mags.size:
+            raise ValueError(
+                f"bath_fit::causal_projection_boson: n_exclude_low_freq="
+                f"{n_exclude_low_freq} removes all {unique_mags.size} frequency "
+                f"shells for {target_name}."
+            )
+        app_log(2, f"  --> Excluding {n_exclude_low_freq} lowest Matsubara frequency "
+                   f"shell(s) from the fit input for {target_name}.")
+        drop_mask = np.isin(np.abs(iw_mesh_b), unique_mags[:n_exclude_low_freq])
+        iw_inputs = iw_mesh_b[~drop_mask]
+        A_iw_input = A_iw[~drop_mask]
+    else:
+        iw_inputs, A_iw_input = iw_mesh_b, A_iw
 
     A_iw_fit = bath_fitting(
         A_iw_input, 1j*iw_inputs,
         statistics="boson", name=target_name,
-        Np=causal_params["nbath_per_orbital"],
+        Np=nbath_per_orbital,
         iw_mesh_out=1j*iw_mesh_b
     )
     if ph_symmetry is True:
@@ -129,20 +139,26 @@ def causal_projection_boson(A_iw, iaft, causal_params,
 
 
 def fit_impurity_results_boson(imp_res, iaft, causal_params):
-    if causal_params is None or causal_params.get("target", "both")=="local":
+    if causal_params is None:
+        return
+    nbath = causal_params.get("nbath_per_orbital_impurity", -1)
+    if nbath == -1:
         return
 
+    n_exclude = causal_params.get("n_exclude_low_freq_impurity", 0)
     fit_res = {}
     if mpi.is_master_node():
         fit_res = {
             "Pi_iw_data": causal_projection_boson(
-                imp_res["Pi_iw_data"][0], iaft, causal_params, 
-                ph_symmetry=True, w0_regularization=causal_params.get("w0_treatment_for_pi", None), 
+                imp_res["Pi_iw_data"][0], iaft, nbath,
+                ph_symmetry=True, n_exclude_low_freq=n_exclude,
+                w0_regularization=causal_params.get("w0_treatment_for_pi", None),
                 target_name="impurity polarizability"
             ),
             "W_iw_data": causal_projection_boson(
-                imp_res["W_iw_data"][0], iaft, causal_params, 
-                ph_symmetry=True, w0_regularization=causal_params.get("w0_treatment_for_w", None), 
+                imp_res["W_iw_data"][0], iaft, nbath,
+                ph_symmetry=True, n_exclude_low_freq=n_exclude,
+                w0_regularization=causal_params.get("w0_treatment_for_w", None),
                 target_name="impurity screened interaction"
             )
         }
@@ -152,16 +168,21 @@ def fit_impurity_results_boson(imp_res, iaft, causal_params):
 
 
 def fit_local_results_boson(local_res, iaft, causal_params):
-    if causal_params is None or causal_params.get("target", "both")=="impurity":
+    if causal_params is None:
+        return
+    nbath = causal_params.get("nbath_per_orbital_wloc", -1)
+    if nbath == -1:
         return
 
+    n_exclude = causal_params.get("n_exclude_low_freq_wloc", 0)
     wloc_t_fit = None
     if mpi.is_master_node():
         wloc_iw = iaft.tau_to_w_phsym(local_res["Wloc_t"], 'b')
         nbnd = wloc_iw.shape[-1]
         wloc_iw_fit = causal_projection_boson(
-            wloc_iw.reshape(-1, nbnd*nbnd, nbnd*nbnd), iaft, causal_params,
-            ph_symmetry=True, w0_regularization=causal_params.get("w0_treatment_for_w", None), 
+            wloc_iw.reshape(-1, nbnd*nbnd, nbnd*nbnd), iaft, nbath,
+            ph_symmetry=True, n_exclude_low_freq=n_exclude,
+            w0_regularization=causal_params.get("w0_treatment_for_w", None),
             target_name="local screened interaction"
         )
         wloc_t_fit = iaft.w_to_tau_phsym(
@@ -173,15 +194,20 @@ def fit_local_results_boson(local_res, iaft, causal_params):
 
 
 def fit_u_weiss(u_weiss_iw, iaft, causal_params):
-    if causal_params is None or causal_params.get("target", "both")=="impurity":
+    if causal_params is None:
+        return u_weiss_iw
+    nbath = causal_params.get("nbath_per_orbital_u_weiss", -1)
+    if nbath == -1:
         return u_weiss_iw
 
+    n_exclude = causal_params.get("n_exclude_low_freq_u_weiss", 0)
     u_iw_fit = None
     if mpi.is_master_node():
         nbnd = u_weiss_iw.shape[-1]
         u_iw_fit = causal_projection_boson(
-            u_weiss_iw.reshape(-1, nbnd*nbnd, nbnd*nbnd), iaft, causal_params,
-            ph_symmetry=True, w0_regularization=causal_params.get("w0_treatment_for_weiss", None), 
+            u_weiss_iw.reshape(-1, nbnd*nbnd, nbnd*nbnd), iaft, nbath,
+            ph_symmetry=True, n_exclude_low_freq=n_exclude,
+            w0_regularization=causal_params.get("w0_treatment_for_weiss", None),
             target_name="bosonic Weiss field"
         )
         u_iw_fit = u_iw_fit.reshape(-1, nbnd, nbnd, nbnd, nbnd)
