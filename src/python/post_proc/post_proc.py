@@ -687,3 +687,141 @@ def minipole(g_iw, iaft, stats, wmin, wmax, Nw, *,
         g_w = g_w.reshape(-1)
 
     return g_w, w_mesh
+
+
+def matsubara_renormalization_factor(Sigma_w, iaft, n_fit=6, fit_order=3):
+    r"""
+    Quasiparticle renormalization factor Z from a fermionic correlation function
+    on the Matsubara axis, via the LQSGW low-frequency linearization.
+
+    The lowest few Matsubara points of the imaginary part are fitted to the
+    odd-power form ``Im Σ(iω_n) = a₁ω_n + a₃ω_n³ + …`` (through the origin) to
+    obtain the slope ``a₁ = ∂Im Σ(iω)/∂ω|_{ω→0}``, and
+
+    .. math::
+
+        Z = \left[ 1 - a_1 \right]^{-1}.
+
+    The trailing axes of ``Sigma_w`` are treated independently, so this works for
+    a scalar, an orbital-diagonal stack, etc.
+
+    Parameters
+    ----------
+    Sigma_w : np.ndarray
+        Correlation function on the IAFT fermionic Matsubara sampling mesh,
+        shape ``(Nw, ...)``. The leading axis must match the length of
+        ``iaft.wn_mesh('fermion')``; the trailing axes are arbitrary.
+    iaft : IAFT
+        Imaginary-axis Fourier transform object defining the Matsubara mesh and β.
+    n_fit : int, optional
+        Number of lowest positive fermionic Matsubara frequencies used in the
+        fit. Default: ``6``.
+    fit_order : int, optional
+        Highest odd power retained in the fit (``3`` → ``a₁ω + a₃ω³``). The number
+        of fit parameters ``(fit_order + 1) // 2`` must not exceed ``n_fit``.
+        Default: ``3``.
+
+    Returns
+    -------
+    Z : np.ndarray
+        Quasiparticle renormalization factor, real-valued, shape ``Sigma_w.shape[1:]``.
+    """
+    if not isinstance(iaft, IAFT):
+        raise ValueError("matsubara_renormalization_factor: iaft must be an instance of IAFT.")
+    if fit_order < 1 or fit_order % 2 == 0:
+        raise ValueError(f"matsubara_renormalization_factor: fit_order must be a positive odd "
+                         f"integer, got {fit_order}.")
+    n_params = (fit_order + 1) // 2
+    if n_fit < n_params:
+        raise ValueError(f"matsubara_renormalization_factor: n_fit ({n_fit}) must be >= number of "
+                         f"fit parameters ({n_params}) implied by fit_order={fit_order}.")
+
+    Sigma_w = np.asarray(Sigma_w, dtype=np.complex128)
+    trailing_shape = Sigma_w.shape[1:]
+
+    # Interpolate onto the lowest few uniform fermionic Matsubara frequencies.
+    omega_idx = np.arange(1, 2 * n_fit, 2)
+    Sigma_low = iaft.w_interpolate(Sigma_w, omega_idx, 'fermion')   # (n_fit, ...)
+    omega = omega_idx * np.pi / iaft.beta
+
+    # Fit Im Σ(iω_n) = a₁ω + a₃ω³ + ... (through the origin), extract the slope a₁.
+    poly_powers = np.arange(1, fit_order + 1, 2)
+    # element-wise exponentiation between (n_fit, 1) and (1, n_params)
+    design = omega[:, None] ** poly_powers[None, :]                 # (n_fit, n_params)
+    im_sigma_low = Sigma_low.imag.reshape(n_fit, -1)                # (n_fit, prod(trailing))
+    coeffs, *_ = np.linalg.lstsq(design, im_sigma_low, rcond=None)  # (n_params, prod(trailing))
+    sigma_1 = coeffs[0]
+
+    return (1.0 / (1.0 - sigma_1)).reshape(trailing_shape)
+
+
+def quasiparticle_renormalization_factor(coqui_h5, h5_grp="scf", iteration=-1, *,
+                                         n_fit=6, fit_order=3):
+    r"""
+    Compute the quasiparticle renormalization factor Z for every Kohn-Sham orbital
+    at every k-point, using the linearized quasiparticle self-consistent GW (LQSGW)
+    prescription.
+
+    On the fermionic Matsubara axis the diagonal correlation self-energy of a
+    Fermi liquid behaves as ``Im Σ_aa(iω) ≃ ω·B_aa + O(ω³)``, and the
+    orbital-resolved renormalization factor is
+
+    .. math::
+
+        Z_a = \left[ 1 - \left.\frac{\partial\,\mathrm{Im}\,\Sigma_{aa}(i\omega)}
+                                   {\partial \omega}\right|_{\omega\to 0} \right]^{-1}.
+
+    The slope is obtained by fitting the lowest few Matsubara points to a
+    low-frequency form ``Im Σ(iω_n) = a₁ω_n + a₃ω_n³ + …`` (through the origin),
+    giving ``Z = 1/(1 - a₁)``. No analytic continuation is required. 
+
+    Parameters
+    ----------
+    coqui_h5 : str
+        Path to the CoQuí MBPT checkpoint file (HDF5).
+    h5_grp : str, optional
+        Top-level HDF5 group in the checkpoint (``"scf"`` for standard MBPT,
+        ``"embed"`` for embedding). Default: ``"scf"``.
+    iteration : int, optional
+        MBPT iteration to read from. ``-1`` selects the latest (read from
+        ``{h5_grp}/final_iter``). Default: ``-1``.
+    n_fit : int, optional
+        Number of lowest positive fermionic Matsubara frequencies used in the
+        fit. Default: ``6``.
+    fit_order : int, optional
+        Highest odd power retained in the low-frequency fit (``3`` →
+        ``a₁ω + a₃ω³``). The number of fit parameters ``(fit_order + 1) // 2``
+        must not exceed ``n_fit``. Default: ``3``.
+
+    Returns
+    -------
+    Z_ski : np.ndarray
+        Quasiparticle renormalization factors for each spin, k-point, and orbital,
+        shape ``(nspin, nkpts_ibz, norb)``. Real-valued.
+    """
+    from h5 import HDFArchive
+
+    # Reconstruct the imaginary-axis Fourier transform from the checkpoint metadata.
+    iaft = IAFT.from_coqui_chkpt(coqui_h5, verbose=False)
+
+    # Read the imaginary-time self-energy Sigma_tskij from the requested iteration.
+    with HDFArchive(coqui_h5, 'r') as ar:
+        if h5_grp not in ar:
+            raise KeyError(f"quasiparticle_renormalization_factor: group '{h5_grp}' not "
+                           f"found in {coqui_h5}.")
+        it = ar[f"{h5_grp}/final_iter"] if iteration == -1 else iteration
+        iter_grp = f"{h5_grp}/iter{it}"
+        if "Sigma_tskij" not in ar[iter_grp]:
+            raise KeyError(f"quasiparticle_renormalization_factor: 'Sigma_tskij' not found "
+                           f"in {coqui_h5}:{iter_grp}.")
+        Sigma_tskij = ar[f"{iter_grp}/Sigma_tskij"]
+
+    # Diagonal in orbital space: (nt, ns, nk, norb, norb) -> (nt, ns, nk, norb).
+    Sigma_tski = np.diagonal(Sigma_tskij, axis1=-2, axis2=-1)
+
+    # tau -> iw on the IAFT sampling mesh, then extract Z from the low-frequency
+    # Im-Σ slope independently for each (spin, k-point, orbital).
+    Sigma_wski = iaft.tau_to_w(Sigma_tski, 'fermion')
+    Z_ski = matsubara_renormalization_factor(Sigma_wski, iaft, n_fit=n_fit, fit_order=fit_order)
+    return Z_ski
+    
