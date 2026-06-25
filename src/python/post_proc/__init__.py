@@ -30,6 +30,8 @@ from .post_proc import (
   aaa_adapol,
   aaa_adapol_imag,
   minipole,
+  matsubara_renormalization_factor,
+  quasiparticle_renormalization_factor,
 )
 from .plot_utils import band_plot, spectral_plot
 
@@ -63,6 +65,7 @@ __all__ = [
   "band_interpolation", "spectral_interpolation",
   "local_dos", "unfold_bz", "dump_vxc", "dump_hartree",
   "pade", "aaa_adapol_on_mesh", "aaa_adapol", "aaa_adapol_imag", "minipole",
+  "matsubara_renormalization_factor", "quasiparticle_renormalization_factor",
   "band_plot", "spectral_plot",
 ]
 
