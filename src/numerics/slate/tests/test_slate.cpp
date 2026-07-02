@@ -33,7 +33,7 @@
 
 #include "utilities/test_common.hpp"
 
-#include "slate/slate.hh"
+#include "numerics/distributed_array/detail/slate_include.hpp"
 
 namespace bdft_tests
 {
