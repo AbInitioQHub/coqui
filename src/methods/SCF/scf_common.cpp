@@ -19,6 +19,9 @@
  */
 
 
+#include <algorithm>
+#include <limits>
+
 #include "scf_common.hpp"
 #include "hamiltonian/one_body_hamiltonian.hpp"
 #include "mean_field/MF.hpp"
@@ -154,51 +157,47 @@ double eval_corr_energy(comm_t& comm, const imag_axes_ft::IAFT &FT,
   return e_corr.real();
 }
 
-template<typename dyson_type, typename X_t, typename Xt_t>
-void eval_thermodynamic_properties(dyson_type &dyson, const X_t &sF_skij,
-                                   const Xt_t &sG_tskij, const Xt_t &sSigma_tskij,
-                                   const std::vector<double> &energies, double Phi_dynamical,
+template<typename comm_t, typename dyson_type, typename X_t, typename Xt_t>
+void eval_thermodynamic_properties(comm_t& comm, dyson_type &dyson, 
+                                   const X_t &sF_skij, const Xt_t &sSigma_tskij,
+                                   const std::vector<double> &elec_energies, double Phi_dynamical,
                                    double mu, bool F_has_H0) {
   decltype(nda::range::all) all;
 
   auto MF = dyson.MF();
   auto FT = dyson.FT();
 
-  auto ns = MF->nspin();
-  auto nkpts = MF->nkpts();
-  auto nbnd = MF->nbnd();
   auto npol = MF->npol();
   auto k_weight = MF->k_weight();
 
   auto beta = FT->beta();
   auto nt = FT->nt_f();
   auto nw = FT->nw_f();
+  auto [ns, nkpts_ibz, nbnd, nbnd2] = sF_skij.shape();
 
   RealType spin_factor = (npol == 1 and ns == 1) ? 2.0 : 1.0;
-  ComplexType Phi(0.0, 0.0);
-  ComplexType tr_Sigma_G_1(0.0, 0.0);
-  ComplexType tr_Sigma_G_2(0.0, 0.0);
-  ComplexType tr_Sigma_G(0.0, 0.0);
+
+  ComplexType Phi = elec_energies[1] + Phi_dynamical;
+  ComplexType tr_Sigma_G = 2 * (elec_energies[1] + elec_energies[2]);
+
+  int size = comm.size();
+  int rank = comm.rank();
+
+  // Evaluate Tr ln(-G0) in the (F, S) eigenbasis.
   ComplexType tr_ln_G0(0.0, 0.0);
-  ComplexType grand_potential(0.0, 0.0);
-  auto tr_ln_1_minus_G0_Sigma_t = nda::array<ComplexType, 2>::zeros({nt, 1});
-  auto tr_ln_1_minus_G0_Sigma_w = nda::array<ComplexType, 2>::zeros({nw, 1});
-  auto tr_ln_1_minus_G0_Sigma_beta = nda::array<ComplexType, 1>::zeros({1});
-
-  double Phi_static = energies[1];
-  Phi = Phi_static + Phi_dynamical;
-
-  tr_Sigma_G_1 = energies[1] * 2;
-  tr_Sigma_G_2 = energies[2] * 2;
-  tr_Sigma_G = tr_Sigma_G_1 + tr_Sigma_G_2;
-
-  for (size_t is = 0; is < ns; ++is) {
-    for (size_t ik = 0; ik < nkpts; ++ik) {
-      nda::matrix_const_view<ComplexType> F_ij = sF_skij.local()(is, ik, all, all);
-      nda::matrix_const_view<ComplexType> H0_ij = dyson.sH0_skij().local()(is, ik, all, all);
-      nda::matrix_const_view<ComplexType> S_ij = dyson.sS_skij().local()(is, ik, all, all);
-      nda::matrix<ComplexType> F = F_has_H0 ? nda::make_regular(F_ij) : nda::make_regular(F_ij + H0_ij);
-      auto eigenvalues = nda::linalg::eigenvalues(F, nda::make_regular(S_ij));
+  if (rank < ns * nkpts_ibz) {
+    nda::matrix<ComplexType> F(nbnd, nbnd);
+    nda::matrix<ComplexType> S_ij(nbnd, nbnd);
+    for (size_t sk = rank; sk < ns * nkpts_ibz; sk += size) {
+      size_t is = sk / nkpts_ibz;
+      size_t ik = sk % nkpts_ibz;
+      if (F_has_H0) {
+        F = sF_skij.local()(is, ik, all, all);
+      } else {
+        F = sF_skij.local()(is, ik, all, all) + dyson.sH0_skij().local()(is, ik, all, all);
+      }
+      S_ij = dyson.sS_skij().local()(is, ik, all, all);
+      auto eigenvalues = nda::linalg::eigenvalues(F, S_ij);
       ComplexType buffer(0.0, 0.0);
       for (size_t ibnd = 0; ibnd < nbnd; ++ibnd) {
         if (eigenvalues(ibnd) - mu > 0) {
@@ -211,47 +210,94 @@ void eval_thermodynamic_properties(dyson_type &dyson, const X_t &sF_skij,
       tr_ln_G0 += buffer * k_weight(ik);
     }
   }
+  comm.all_reduce_in_place_n(&tr_ln_G0, 1, std::plus<>{});
   tr_ln_G0 *= spin_factor / beta;
 
-  auto I = nda::eye<ComplexType>(nbnd);
-  nda::matrix<ComplexType> G0_Sigma_w(nbnd, nbnd);
-  nda::matrix<ComplexType> one_minus_G0_Sigma_w(nbnd, nbnd);
-  for (size_t n = 0; n < nw; ++n) {
-    nda::array<ComplexType, 4> Sigmaw_skij({ns, nkpts, nbnd, nbnd});
-    auto wn = FT->wn_mesh()(n);
-    ComplexType omega_mu = FT->omega(wn) + mu;
-    FT->tau_to_w(sSigma_tskij.local(), Sigmaw_skij, imag_axes_ft::fermion, n);
-    for (size_t is = 0; is < ns; ++is) {
-      for (size_t ik = 0; ik < nkpts; ++ik) {
-        nda::matrix_const_view<ComplexType> F_ij = sF_skij.local()(is, ik, all, all);
-        nda::matrix_const_view<ComplexType> H0_ij = dyson.sH0_skij().local()(is, ik, all, all);
-        nda::matrix_const_view<ComplexType> S_ij = dyson.sS_skij().local()(is, ik, all, all);
-        nda::matrix<ComplexType> F = F_has_H0 ? nda::make_regular(F_ij) : nda::make_regular(F_ij + H0_ij);
-        nda::matrix<ComplexType> G0_inv = omega_mu * S_ij - F;
-        // calculate G_0 \Sigma by solving G_0^{-1} X = \Sigma
-        G0_Sigma_w = Sigmaw_skij(is, ik, all, all);
-        // nda tensor branch requies F_layout
-        nda::matrix<ComplexType, nda::F_layout> G0_Sigma_w_F_layout = G0_Sigma_w;
-        nda::array<int, 1> ipiv(G0_inv.extent(0));
-        nda::lapack::getrf(G0_inv, ipiv);
-        nda::lapack::getrs(G0_inv, G0_Sigma_w_F_layout, ipiv);
-        G0_Sigma_w = G0_Sigma_w_F_layout;
-        one_minus_G0_Sigma_w = I - G0_Sigma_w;
-        // JHL: Is (1-G_0\Sigma) hermitian?
-        nda::matrix<ComplexType> buffer(nbnd, nbnd);
-        nda::blas::gemm(1.0, nda::conj(nda::transpose(one_minus_G0_Sigma_w)), one_minus_G0_Sigma_w, 0.0, buffer);
-        nda::lapack::getrf(buffer, ipiv);
-        for (size_t ibnd = 0; ibnd < nbnd; ++ibnd) {
-          tr_ln_1_minus_G0_Sigma_w(n, 0) += std::log(std::abs(buffer(ibnd, ibnd).real())) * 0.5 * k_weight(ik);
-        }
+  auto tr_ln_1_minus_G0_Sigma_w = nda::array<ComplexType, 2>::zeros({nw, 1});
+  size_t n_wsk = nw * ns * nkpts_ibz;
+  // Diagnostic for the |det(1 - G0 Sigma)| evaluation. 
+  double min_U_diag_abs = std::numeric_limits<double>::max();
+  double max_U_diag_abs = 0.0;
+  
+  if (rank < n_wsk) {
+    auto I = nda::eye<ComplexType>(nbnd);
+    nda::array<ComplexType, 3> Sigma_t_ij(nt, nbnd, nbnd);
+    // Buffer allocations
+    //   buffer_a: Sigma_w_ij -> one_minus_G0_Sigma_w
+    //   buffer_b: F
+    //   buffer_c: G0_inv    -> gemm/LU buffer
+    nda::matrix<ComplexType> buffer_a(nbnd, nbnd);
+    nda::matrix<ComplexType> buffer_b(nbnd, nbnd);
+    nda::matrix<ComplexType> buffer_c(nbnd, nbnd);
+    nda::matrix<ComplexType, nda::F_layout> G0_Sigma_w_F_layout(nbnd, nbnd);
+    nda::array<int, 1> ipiv(nbnd);
+    auto& Sigma_w_ij            = buffer_a;
+    auto& one_minus_G0_Sigma_w = buffer_a;
+    auto& F                    = buffer_b;
+    auto& G0_inv               = buffer_c;
+
+    for (size_t wsk = rank; wsk < n_wsk; wsk += size) {
+      size_t n  = wsk / (ns * nkpts_ibz);
+      size_t sk = wsk % (ns * nkpts_ibz);
+      size_t is = sk / nkpts_ibz;
+      size_t ik = sk % nkpts_ibz;
+
+      auto wn = FT->wn_mesh()(n);
+      ComplexType omega_mu = FT->omega(wn) + mu;
+
+      // tau_to_w reshapes (hence requires a contiguous input), so copy the
+      // (nt, nbnd, nbnd) slice for this (is, ik) into the contiguous scratch
+      // buffer before transforming frequency n.
+      Sigma_t_ij = sSigma_tskij.local()(all, is, ik, all, all);
+      FT->tau_to_w(Sigma_t_ij, Sigma_w_ij, imag_axes_ft::fermion, n);
+
+      if (F_has_H0) {
+        F = sF_skij.local()(is, ik, all, all);
+      } else {
+        F = sF_skij.local()(is, ik, all, all) + dyson.sH0_skij().local()(is, ik, all, all);
+      }
+      // calculate G_0 \Sigma by solving G_0^{-1} X = \Sigma
+      G0_inv = omega_mu * dyson.sS_skij().local()(is, ik, all, all) - F;
+      // nda tensor branch requies F_layout. 
+      G0_Sigma_w_F_layout = Sigma_w_ij;
+      nda::lapack::getrf(G0_inv, ipiv);
+      nda::lapack::getrs(G0_inv, G0_Sigma_w_F_layout, ipiv);
+      one_minus_G0_Sigma_w = I - G0_Sigma_w_F_layout;
+      // JHL: Is (1-G_0\Sigma) hermitian?
+      nda::blas::gemm(1.0, nda::conj(nda::transpose(one_minus_G0_Sigma_w)), one_minus_G0_Sigma_w, 0.0, buffer_c);
+      nda::lapack::getrf(buffer_c, ipiv);
+      for (size_t ibnd = 0; ibnd < nbnd; ++ibnd) {
+        // Due to the pivoting in getrf, diagonals of U are not necessarily real, the determinant 
+        // is therefore the product of the absolute values of diagonal elements of U. 
+        double U_diag_abs = std::abs(buffer_c(ibnd, ibnd));
+        min_U_diag_abs = std::min(min_U_diag_abs, U_diag_abs);
+        max_U_diag_abs = std::max(max_U_diag_abs, U_diag_abs);
+        tr_ln_1_minus_G0_Sigma_w(n, 0) += std::log(U_diag_abs) * 0.5 * k_weight(ik);
       }
     }
   }
+  comm.all_reduce_in_place_n(tr_ln_1_minus_G0_Sigma_w.data(),
+                             tr_ln_1_minus_G0_Sigma_w.size(), std::plus<>{});
+
+  // Checking min/max |U(i,i)| as a proxy for see whether 1-G0S is singular or not. 
+  comm.all_reduce_in_place_n(&min_U_diag_abs, 1, mpi3::min<>{});
+  comm.all_reduce_in_place_n(&max_U_diag_abs, 1, mpi3::max<>{});
+  constexpr double rcond_thresh = 1e-12;
+  if (min_U_diag_abs < rcond_thresh * max_U_diag_abs) {
+    app_log(1, "[WARNING] eval_thermodynamic_properties: (1-G0*Sigma) is (near-)singular "
+               "(min/max |U(i,i)| of (1-G0*Sigma)^dag (1-G0*Sigma) = {} < {}); "
+               "Tr ln(1-G0*Sigma) is unreliable.",
+            min_U_diag_abs / max_U_diag_abs, rcond_thresh);
+  }
+
+  auto tr_ln_1_minus_G0_Sigma_t = nda::array<ComplexType, 2>::zeros({nt, 1});
   FT->w_to_tau(tr_ln_1_minus_G0_Sigma_w, tr_ln_1_minus_G0_Sigma_t, imag_axes_ft::fermion);
+
+  auto tr_ln_1_minus_G0_Sigma_beta = nda::array<ComplexType, 1>::zeros({1});
   FT->tau_to_beta(tr_ln_1_minus_G0_Sigma_t, tr_ln_1_minus_G0_Sigma_beta);
   tr_ln_1_minus_G0_Sigma_beta(0) *= -1 * spin_factor;
 
-  grand_potential = Phi - tr_Sigma_G - tr_ln_G0 - tr_ln_1_minus_G0_Sigma_beta(0);
+  ComplexType grand_potential = Phi - tr_Sigma_G - tr_ln_G0 - tr_ln_1_minus_G0_Sigma_beta(0);
 
   app_log(1, "\n");
   app_log(1, "Grand potential contributions");
@@ -263,23 +309,25 @@ void eval_thermodynamic_properties(dyson_type &dyson, const X_t &sF_skij,
   app_log(1, "  total grand potential:           {:>20.12f} a.u.", grand_potential.real());
   app_log(1, "\n");
 
-  if (std::abs(tr_ln_1_minus_G0_Sigma_beta(0).imag() / tr_ln_1_minus_G0_Sigma_beta(0).real()) >= 1e-8) {
-    app_log(1, "[WARNING] Abs (Tr ln(1-G0*Sigma).imag() / Tr ln(1-G0*Sigma).real()) = {},\n",
-            tr_ln_1_minus_G0_Sigma_beta(0).imag() / tr_ln_1_minus_G0_Sigma_beta(0).real());
+  // Sanity check for the imaginary-time Fourier-transform accuracy: the input
+  // to w_to_tau is real, so a non-negligible imaginary part in the result is FT
+  // noise. The threshold is therefore tied to the FT accuracy.
+  if (std::abs(tr_ln_1_minus_G0_Sigma_beta(0).imag()) >= 1e2 * FT->eps()) {
+    app_log(1, "[WARNING] Abs (Tr ln(1-G0*Sigma).imag()) = {},\n", tr_ln_1_minus_G0_Sigma_beta(0).imag());
     app_log(1, "          (Tr ln(1-G0*Sigma)).imag() = {},\n", tr_ln_1_minus_G0_Sigma_beta(0).imag());
-    app_log(1, "          (Tr ln(1-G0*Sigma)).real() = {} \n", tr_ln_1_minus_G0_Sigma_beta(0).real());
   }
 
+  // evaluate n_electron on-the-fly here. 
   nda::array<ComplexType, 4> spectra(FT->nw_f(), MF->nspin(), MF->nkpts_ibz(), MF->nbnd());
   dyson.compute_eigenspectra(sF_skij, sSigma_tskij, spectra);
   double n_electron = compute_Nelec(mu, spectra, *MF, *FT);
   double helmholtz_free_energy = grand_potential.real() + mu * n_electron;
-  double entropy = (energies[3] - helmholtz_free_energy) * beta;
+  double entropy = (elec_energies[3] - helmholtz_free_energy) * beta;
 
   app_log(1, "\n");
   app_log(1, "Electron thermodynamic properties");
   app_log(1, "--------------------");
-  app_log(1, "  energy:                          {:>20.12f} a.u.", energies[3]);
+  app_log(1, "  energy:                          {:>20.12f} a.u.", elec_energies[3]);
   app_log(1, "  grand potential:                 {:>20.12f} a.u.", grand_potential.real());
   app_log(1, "  Helmholtz free energy:           {:>20.12f} a.u.", helmholtz_free_energy);
   app_log(1, "  beta:                            {:>20.12f} a.u.", beta);
@@ -607,8 +655,8 @@ template double eval_corr_energy(mpi3::communicator& comm, const imag_axes_ft::I
                                  const sArray_t<Array_view_5D_t> &, const sArray_t<Array_view_5D_t> &,
                                  nda::array_contiguous_const_view<double, 1>&);
 
-template void eval_thermodynamic_properties(simple_dyson&, const sArray_t<Array_view_4D_t>&,
-                                            const sArray_t<Array_view_5D_t>&, const sArray_t<Array_view_5D_t>&,
+template void eval_thermodynamic_properties(mpi3::communicator&, simple_dyson&, const sArray_t<Array_view_4D_t>&,
+                                            const sArray_t<Array_view_5D_t>&,
                                             const std::vector<double>&, double, double, bool);
 
 template void update_G(simple_dyson &, const mf::MF &, const imag_axes_ft::IAFT &,

@@ -228,38 +228,43 @@ auto scf_loop(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri, const imag_ax
   app_log(2, "    Write:                {0:.3f} sec\n", Timer.elapsed("WRITE"));
 
   if (eval_thermodynamics) {
-    
     for (auto &v: {"THERMODYNAMICS", "PHI_DYNAMICAL", "OTHERS"}) {
       Timer.add(v);
     }
-
     Timer.start("THERMODYNAMICS");
 
-    double Phi_dynamical = 0.0;
-
+    // Obtain the dynamical part of the Luttinger-Ward functional Phi. 
+    // std::nullopt is returned when the phi functional is not implemented for 
+    // a given solver. In such case the grand potential is incomplete and the
+    // evaluation below is skipped. 
+    // A null corr solver (HF-only) has no dynamic self-energy, so Phi_dynamical = 0.
     Timer.start("PHI_DYNAMICAL");
-    // TODO: GF2
-    // GW
-    if (std::is_same_v<corr_solver_t, solvers::gw_t> and mb_solver.corr != nullptr) {
-      if constexpr (requires { mb_solver.corr->rpa_energy(sG_tskij.local(), mb_eri.corr_eri->get()); }) {
-        Phi_dynamical = mb_solver.corr->rpa_energy(sG_tskij.local(), mb_eri.corr_eri->get());
-      }
+    std::optional<double> Phi_dynamical = 0.0;
+    if (mb_solver.corr != nullptr) {
+      Phi_dynamical = mb_solver.corr->eval_phi_dynamical(sG_tskij.local(), mb_eri.corr_eri->get());
     }
     Timer.stop("PHI_DYNAMICAL");
 
-    Timer.start("OTHERS");
-    eval_thermodynamic_properties(dyson, sF_skij, sG_tskij, sSigma_tskij, energies, Phi_dynamical, mu, false);
-    Timer.stop("OTHERS");
+    // Evaluate the thermodynamic properties only when Phi_dynamical is available.
+    if (Phi_dynamical) {
+      Timer.start("OTHERS");
+      eval_thermodynamic_properties(mpi->comm, dyson, sF_skij, sSigma_tskij, energies, *Phi_dynamical, mu, false);
+      Timer.stop("OTHERS");
+      Timer.stop("THERMODYNAMICS");
 
-    Timer.stop("THERMODYNAMICS");
-
-    app_log(2, "\n  Thermodynamic property evaluation timers");
-    app_log(2, "  ----------------");
-    app_log(2, "    Total:                 {0:.3f} sec", Timer.elapsed("THERMODYNAMICS"));
-    app_log(2, "    Dynamical part of Phi: {0:.3f} sec", Timer.elapsed("PHI_DYNAMICAL"));
-    app_log(2, "    Other properties:      {0:.3f} sec", Timer.elapsed("OTHERS"));
-    app_log(2, "\n");
-
+      app_log(2, "\n  Thermodynamic property evaluation timers");
+      app_log(2, "  ----------------");
+      app_log(2, "    Total:                 {0:.3f} sec", Timer.elapsed("THERMODYNAMICS"));
+      app_log(2, "    Dynamical part of Phi: {0:.3f} sec", Timer.elapsed("PHI_DYNAMICAL"));
+      app_log(2, "    Other properties:      {0:.3f} sec", Timer.elapsed("OTHERS"));
+      app_log(2, "\n");
+    } else {
+      Timer.stop("THERMODYNAMICS");
+      app_log(1, "\n[WARNING] scf_loop: thermodynamic-property (grand potential) evaluation "
+                 "is not yet supported for this correlated solver; skipping it. "
+                 "Set eval_thermodynamics = false to silence this message.\n");
+    }
+    
   }
 
   app_log(1, "####### SCF routines end #######\n");
