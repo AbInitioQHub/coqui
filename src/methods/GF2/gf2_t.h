@@ -22,6 +22,8 @@
 #ifndef COQUI_GF2_T_H
 #define COQUI_GF2_T_H
 
+#include <optional>
+
 #include "nda/nda.hpp"
 #include "numerics/distributed_array/nda.hpp"
 #include "numerics/shared_array/nda.hpp"
@@ -106,6 +108,18 @@ namespace methods {
        * @param chol         - [INPUT] chol_reader_t ERI object
        */
       void evaluate(MBState &mb_state, Cholesky_ERI auto &chol);
+
+      /**
+       * Evaluate the dynamical part of the Luttinger-Ward functional Phi.
+       * This is not yet implemented for GF2, so this returns an empty
+       * optional to signal that the grand potential cannot be formed.
+       * @param G_tskij - [INPUT] Green's function: (nts, ns, nkpts_ibz, nbnd, nbnd)
+       * @param eri     - [INPUT] THC or Cholesky ERI object
+       * @return - std::nullopt (not implemented for GF2)
+       */
+      std::optional<double> eval_phi_dynamical(const nda::MemoryArrayOfRank<5> auto &, auto &) {
+        return std::nullopt;
+      }
 
       // print timers
       void print_chol_gf2_timers();

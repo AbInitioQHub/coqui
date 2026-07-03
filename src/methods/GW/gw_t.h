@@ -22,6 +22,8 @@
 #ifndef COQUI_GW_T_H
 #define COQUI_GW_T_H
 
+#include <optional>
+
 #include "nda/nda.hpp"
 #include "numerics/distributed_array/nda.hpp"
 #include "numerics/shared_array/nda.hpp"
@@ -132,6 +134,17 @@ namespace methods {
        * @return - RPA correlation energy
        */
       double rpa_energy(const nda::MemoryArrayOfRank<5> auto &G_tskij, Cholesky_ERI auto &chol);
+
+      /**
+       * Evaluate the dynamical part of the Luttinger-Ward functional Phi.
+       * For GW the dynamical Phi is the RPA (ring-diagram) correlation energy. 
+       * @param G_tskij - [INPUT] Green's function: (nts, ns, nkpts_ibz, nbnd, nbnd)
+       * @param eri     - [INPUT] THC or Cholesky ERI object
+       * @return - the dynamical part of Phi
+       */
+      std::optional<double> eval_phi_dynamical(const nda::MemoryArrayOfRank<5> auto &G_tskij, auto &eri) {
+        return rpa_energy(G_tskij, eri);
+      }
 
       template<nda::MemoryArray Array_3D_t>
       void evaluate_P0(size_t iq,

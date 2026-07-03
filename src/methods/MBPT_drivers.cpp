@@ -190,9 +190,11 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
     MBState mb_state(mpi, ft, output);
     scf_loop(mb_state, dyson, eri, ft, mb_solver_t(&hf),
              iter_solver.get(), niter, restart, conv_thr, const_mu,
-             greens_func_source, greens_func_iteration);
+             greens_func_source, greens_func_iteration, 
+             io::get_value_with_default<bool>(pt, "eval_thermodynamics", false));
 
   } else if(solver_type == "gw") {
+
     auto screen_type = io::get_value_with_default<std::string>(pt,"screen_type", "rpa");
 
     simple_dyson dyson(mf.get(), &ft, mu_tol, mu_update_alg);
@@ -211,7 +213,8 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
       MBState mb_state(ft, output, mf, wannier_file, trans_home_cell);
       scf_loop(mb_state, dyson, eri, ft, mb_solver_t(&hf, &gw, &scr_eri),
                iter_solver.get(), niter, restart, conv_thr, const_mu,
-               greens_func_source, greens_func_iteration);
+               greens_func_source, greens_func_iteration, 
+               io::get_value_with_default<bool>(pt, "eval_thermodynamics", false));
 
       auto dump_w_to_h5 = io::get_value_with_default<bool>(pt,"dump_w_to_h5", false);
       if (dump_w_to_h5) {
@@ -225,12 +228,14 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
           math::nda::h5_write(grp, "W_qtPQ", W_qtPQ);
         }
       }
+
     } else {
 
       MBState mb_state(mpi, ft, output);
       scf_loop(mb_state, dyson, eri, ft, mb_solver_t(&hf, &gw, &scr_eri),
                iter_solver.get(), niter, restart, conv_thr, const_mu,
-               greens_func_source, greens_func_iteration);
+               greens_func_source, greens_func_iteration, 
+               io::get_value_with_default<bool>(pt, "eval_thermodynamics", false));
 
       auto dump_w_to_h5 = io::get_value_with_default<bool>(pt,"dump_w_to_h5", false);
       if (dump_w_to_h5) {
@@ -255,6 +260,11 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
     auto gf2_sosex_save_memory = io::get_value_with_default<bool>(pt,"gf2_sosex_save_memory",true);
     auto t_prescreen_thresh = io::get_value_with_default<double>(pt,"t_prescreen_thresh",0.0);
 
+    auto eval_thermodynamics = io::get_value_with_default<bool>(pt, "eval_thermodynamics", false);
+    if (eval_thermodynamics) {
+      utils::check(false, "thermodynamic-property (grand potential) evaluation is not yet supported for the GF2 solver.");
+    }
+
     simple_dyson dyson(mf.get(), &ft, mu_tol, mu_update_alg);
     if (io::get_value_with_default<bool>(pt,"iter_alg.enable", true)) {
       iter_solver = std::make_unique<iter_scf::iter_scf_t>(iter_scf::make_iter_scf(pt));
@@ -271,12 +281,12 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
     if (gf2_direct_type == "gf2") {
       scf_loop(mb_state, dyson, eri, ft, mb_solver_t(&hf, &gf2),
                iter_solver.get(), niter, restart, conv_thr, const_mu,
-               greens_func_source, greens_func_iteration);
+               greens_func_source, greens_func_iteration, eval_thermodynamics);
     } else {
       solvers::scr_coulomb_t scr_eri(&ft, "rpa", div_treatment);
       scf_loop(mb_state, dyson, eri, ft, mb_solver_t(&hf, &gf2, &scr_eri),
                iter_solver.get(), niter, restart, conv_thr, const_mu,
-               greens_func_source, greens_func_iteration);
+               greens_func_source, greens_func_iteration, eval_thermodynamics);
     }
 
   } else if(solver_type == "gw_dca") {
@@ -435,7 +445,8 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt,
 
     scf_loop(mb_state, dyson, eri, ft, mb_solver_t(&hf, &gw, &scr_eri),
              iter_solver.get(), niter, restart, conv_thr, const_mu,
-             greens_func_source, greens_func_iteration);
+             greens_func_source, greens_func_iteration, 
+             io::get_value_with_default<bool>(pt, "eval_thermodynamics", false));
 
   } else
     APP_ABORT("mbpt: Unknown solver type: {}",solver_type);

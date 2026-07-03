@@ -22,6 +22,8 @@
 #ifndef COQUI_MBSTATE_H
 #define COQUI_MBSTATE_H
 
+#include <optional>
+
 #include "IO/app_loggers.h"
 #include "nda/nda.hpp"
 #include "nda/h5.hpp"
@@ -34,6 +36,17 @@
 #include "methods/embedding/projector_boson_t.h"
 
 namespace methods {
+
+/**
+ * Thermodynamic observables evaluated from a Dyson-SCF solution
+ * (see methods::eval_thermodynamic_properties).
+ */
+struct thermodynamics_t {
+  double grand_potential;        // Omega
+  double helmholtz_free_energy;  // A = Omega + mu * n_electron
+  double entropy;                // S = beta * (E - A)
+  double n_electron;            
+};  
 
 /**
  * @class MBState
@@ -98,6 +111,9 @@ public:
   long df_1e_iter = -1; // iteration number of the downfolded 1e Hamiltonian
   long df_2e_iter = -1; // iteration number of the downfolded 2e Hamiltonian
   long embed_iter = -1; // iteration number of the embedding solution
+
+  // Thermodynamic observables (grand potential, Helmholtz free energy, entropy, electron number)
+  std::optional<thermodynamics_t> thermodynamics;
 
   /** all components of a many-body state are optional **/
   /** lattice quantities **/
