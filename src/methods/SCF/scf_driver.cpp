@@ -248,7 +248,8 @@ auto scf_loop(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri, const imag_ax
     // Evaluate the thermodynamic properties only when Phi_dynamical is available.
     if (Phi_dynamical) {
       Timer.start("OTHERS");
-      eval_thermodynamic_properties(mpi->comm, dyson, sF_skij, sSigma_tskij, energies, *Phi_dynamical, mu, false);
+      mb_state.thermodynamics = eval_thermodynamic_properties(mpi->comm, dyson, sF_skij, sSigma_tskij,
+                                                              energies, *Phi_dynamical, mu, false);
       Timer.stop("OTHERS");
       Timer.stop("THERMODYNAMICS");
 

@@ -475,12 +475,14 @@ double eval_corr_energy(comm_t& comm, const imag_axes_ft::IAFT &FT,
  * @param mu             - [INPUT] chemical potential
  * @param F_has_H0       - [INPUT] whether sF_skij already includes the non-interacting
  *                                Hamiltonian H0; if false, H0 is added internally
+ * @return - thermodynamic observables (Omega, A, S, N)
  */
 template<typename comm_t, typename dyson_type, typename X_t, typename Xt_t>
-void eval_thermodynamic_properties(comm_t& comm, dyson_type &dyson, 
-                                   const X_t &sF_skij, const Xt_t &sSigma_tskij,
-                                   const std::vector<double> &elec_energies, double Phi_dynamical,
-                                   double mu, bool F_has_H0);
+auto eval_thermodynamic_properties(comm_t& comm, dyson_type &dyson, 
+                                   const X_t &sF_skij, const Xt_t &sSigma_tskij, 
+                                   const std::vector<double> &elec_energies, double Phi_dynamical, 
+                                   double mu, bool F_has_H0)
+-> thermodynamics_t;
 
 template<typename X_t, nda::ArrayOfRank<1> Array1D>
 auto eval_hf_energy(const X_t &sDm_skij, const X_t &sF_skij, const X_t &sH0_skij,

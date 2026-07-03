@@ -158,10 +158,11 @@ double eval_corr_energy(comm_t& comm, const imag_axes_ft::IAFT &FT,
 }
 
 template<typename comm_t, typename dyson_type, typename X_t, typename Xt_t>
-void eval_thermodynamic_properties(comm_t& comm, dyson_type &dyson, 
-                                   const X_t &sF_skij, const Xt_t &sSigma_tskij,
-                                   const std::vector<double> &elec_energies, double Phi_dynamical,
-                                   double mu, bool F_has_H0) {
+auto eval_thermodynamic_properties(comm_t& comm, dyson_type &dyson, 
+                                   const X_t &sF_skij, const Xt_t &sSigma_tskij, 
+                                   const std::vector<double> &elec_energies, double Phi_dynamical, 
+                                   double mu, bool F_has_H0) 
+  -> thermodynamics_t {
   decltype(nda::range::all) all;
 
   auto MF = dyson.MF();
@@ -336,6 +337,8 @@ void eval_thermodynamic_properties(comm_t& comm, dyson_type &dyson,
   app_log(1, "  number of electrons:             {:>20.12f}", n_electron);
   app_log(1, "\n");
 
+  return thermodynamics_t{grand_potential.real(), helmholtz_free_energy, 
+                          entropy, n_electron};
 }
 
 template<typename dyson_type, typename X_t, typename Xt_t>
@@ -655,9 +658,10 @@ template double eval_corr_energy(mpi3::communicator& comm, const imag_axes_ft::I
                                  const sArray_t<Array_view_5D_t> &, const sArray_t<Array_view_5D_t> &,
                                  nda::array_contiguous_const_view<double, 1>&);
 
-template void eval_thermodynamic_properties(mpi3::communicator&, simple_dyson&, const sArray_t<Array_view_4D_t>&,
-                                            const sArray_t<Array_view_5D_t>&,
-                                            const std::vector<double>&, double, double, bool);
+template auto eval_thermodynamic_properties(mpi3::communicator&, simple_dyson&, const sArray_t<Array_view_4D_t>&, 
+                                            const sArray_t<Array_view_5D_t>&, const std::vector<double>&, 
+                                            double, double, bool)
+    -> thermodynamics_t;
 
 template void update_G(simple_dyson &, const mf::MF &, const imag_axes_ft::IAFT &,
                        sArray_t<Array_view_4D_t> & Dm, sArray_t<Array_view_5D_t> &G,
