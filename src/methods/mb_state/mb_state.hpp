@@ -22,6 +22,8 @@
 #ifndef COQUI_MBSTATE_H
 #define COQUI_MBSTATE_H
 
+#include <optional>
+
 #include "IO/app_loggers.h"
 #include "nda/nda.hpp"
 #include "nda/h5.hpp"

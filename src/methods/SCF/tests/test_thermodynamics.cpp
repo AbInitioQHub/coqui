@@ -23,6 +23,7 @@
 
 #include <iostream>
 #include <iomanip>
+#include <cstdio>
 
 #include "catch2/catch.hpp"
 
@@ -94,7 +95,7 @@ namespace bdft_tests {
 
       mpi_context->comm.barrier();
       if (mpi_context->comm.root()) {
-        remove((output+".mbpt.h5").c_str());
+        std::remove((output+".mbpt.h5").c_str());
       }
       mpi_context->comm.barrier();
     };

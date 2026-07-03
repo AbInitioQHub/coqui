@@ -187,6 +187,7 @@ auto eval_thermodynamic_properties(comm_t& comm, dyson_type &dyson,
   // Evaluate Tr ln(-G0) in the (F, S) eigenbasis.
   ComplexType tr_ln_G0(0.0, 0.0);
   if (rank < ns * nkpts_ibz) {
+
     nda::matrix<ComplexType> F(nbnd, nbnd);
     nda::matrix<ComplexType> S_ij(nbnd, nbnd);
     for (size_t sk = rank; sk < ns * nkpts_ibz; sk += size) {
@@ -202,9 +203,9 @@ auto eval_thermodynamic_properties(comm_t& comm, dyson_type &dyson,
       ComplexType buffer(0.0, 0.0);
       for (size_t ibnd = 0; ibnd < nbnd; ++ibnd) {
         if (eigenvalues(ibnd) - mu > 0) {
-          buffer += std::log(1.0 + std::exp(-beta * (nda::real(eigenvalues(ibnd)) - mu)));
+          buffer += std::log(1.0 + std::exp(-beta * (eigenvalues(ibnd) - mu)));
         } else {
-          buffer += std::log(1.0 + std::exp(beta * (nda::real(eigenvalues(ibnd)) - mu)));
+          buffer += std::log(1.0 + std::exp(beta * (eigenvalues(ibnd) - mu)));
           buffer -= (eigenvalues(ibnd) - mu) * beta;
         }
       }
@@ -259,7 +260,7 @@ auto eval_thermodynamic_properties(comm_t& comm, dyson_type &dyson,
       }
       // calculate G_0 \Sigma by solving G_0^{-1} X = \Sigma
       G0_inv = omega_mu * dyson.sS_skij().local()(is, ik, all, all) - F;
-      // nda tensor branch requies F_layout. 
+      // nda tensor branch requires F_layout. 
       G0_Sigma_w_F_layout = Sigma_w_ij;
       nda::lapack::getrf(G0_inv, ipiv);
       nda::lapack::getrs(G0_inv, G0_Sigma_w_F_layout, ipiv);
@@ -280,7 +281,7 @@ auto eval_thermodynamic_properties(comm_t& comm, dyson_type &dyson,
   comm.all_reduce_in_place_n(tr_ln_1_minus_G0_Sigma_w.data(),
                              tr_ln_1_minus_G0_Sigma_w.size(), std::plus<>{});
 
-  // Checking min/max |U(i,i)| as a proxy for see whether 1-G0S is singular or not. 
+  // Checking min/max |U(i,i)| as a proxy to see whether 1-G0S is singular or not. 
   comm.all_reduce_in_place_n(&min_U_diag_abs, 1, mpi3::min<>{});
   comm.all_reduce_in_place_n(&max_U_diag_abs, 1, mpi3::max<>{});
   constexpr double rcond_thresh = 1e-12;
