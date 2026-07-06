@@ -2,14 +2,8 @@
 #//////////////////////////////////////////////////////////////////////////////////////
 
 set(fft_src
+     fftw.cpp
    )
-
-if(ENABLE_FFTW)
-  set(fft_src 
-       ${fft_src}
-       fftw.cpp 
-     )
-endif()
 
 if(ENABLE_CUDA)
   set(fft_src 
@@ -28,9 +22,13 @@ if(COQUI_PYTHON_SUPPORT)
 else()
   add_library(fft_lib ${fft_src})
 endif()
-target_link_libraries(fft_lib PUBLIC utils nda_c)
-if(ENABLE_FFTW)
-  target_link_libraries(fft_lib PUBLIC FFTW::Double) 
+if(COQUI_FFT_BACKEND STREQUAL "FFTW")
+  # List FFTW::Double first so libfftw3 precedes MKL in the dynamical linking search order. 
+  # FIXME Technically, it does not guarantee mkl's fftw api will not be linked first... 
+  target_link_libraries(fft_lib PUBLIC FFTW::Double utils nda_c)
+else() # MKL
+  target_link_libraries(fft_lib PUBLIC utils nda_c)  # fftw_* resolves to MKL (only provider)
+  target_include_directories(fft_lib PUBLIC ${MKL_FFTW_INCLUDE_DIR})
 endif()
 if(ENABLE_CUDA)
   target_link_libraries(fft_lib PUBLIC CUDA::cufft) 

@@ -103,7 +103,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 ######################################################################
 option(ENABLE_ROCM " Build device code with ROCM backend" OFF)
 option(ENABLE_OPENMP " Build device code with OPENMP backend" OFF)
-option(ENABLE_FFTW "Build using FFTW3 library." ON)
 option(ENABLE_HEFFTE "Build using heFFTe library." OFF)
 option(ENABLE_SLATE "Build using Slate library." ON)
 option(ENABLE_CUTENSOR "Build using cutensor library. Must set CUTENSOR_ROOT" OFF)
@@ -256,12 +255,33 @@ cmake_print_properties(TARGETS MPI::MPI_CXX PROPERTIES INTERFACE_LINK_LIBRARIES 
 #cmake_print_properties(TARGETS LAPACK::LAPACK PROPERTIES INTERFACE_LINK_LIBRARIES)
 
 ######################################################################
-# FFTW: not using MKL's FFTW yet, figure out how if requested 
+# FFT backend selection (FFTW3 real vs MKL's FFTW3 interface)
 ######################################################################
-if(ENABLE_FFTW)
-  find_package(FFTW REQUIRED DOUBLE_OPENMP_LIB)
-  add_compile_definitions(ENABLE_FFTW)
+
+set(COQUI_FFT_BACKEND FFTW CACHE STRING "FFT backend: FFTW (real FFTW3) or MKL")
+set_property(CACHE COQUI_FFT_BACKEND PROPERTY STRINGS FFTW MKL)
+
+# Disable ENABLE_FFTW from users; use COQUI_FFT_BACKEND instead.  
+if(DEFINED ENABLE_FFTW)
+  message(FATAL_ERROR "ENABLE_FFTW is removed; use -DCOQUI_FFT_BACKEND=FFTW or =MKL.")
 endif()
+
+if(COQUI_FFT_BACKEND STREQUAL "FFTW")
+  find_package(FFTW REQUIRED DOUBLE_OPENMP_LIB)
+  message(STATUS "FFT backend: FFTW3 (real)  [${FFTW_DOUBLE_LIB}]")
+elseif(COQUI_FFT_BACKEND STREQUAL "MKL")
+  set(MKL_FFTW_INCLUDE_DIR "$ENV{MKLROOT}/include/fftw")
+  if(NOT EXISTS "${MKL_FFTW_INCLUDE_DIR}/fftw3.h")
+    message(FATAL_ERROR "COQUI_FFT_BACKEND=MKL but ${MKL_FFTW_INCLUDE_DIR}/fftw3.h "
+                        "was not found. Set MKLROOT.")
+  endif()
+  message(STATUS "FFT backend: MKL FFTW3 interface  [$ENV{MKLROOT}]")
+else()
+  message(FATAL_ERROR "Invalid COQUI_FFT_BACKEND='${COQUI_FFT_BACKEND}' (expected FFTW or MKL).")
+endif()
+
+# fftw-API CPU backend is always compiled in (both backends use fftw_*).
+add_compile_definitions(ENABLE_FFTW)
 
 ######################################################################
 # HEFFTE: Highly Efficient FFT for Exascale
