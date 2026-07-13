@@ -200,6 +200,7 @@ namespace methods {
     /**
      * Read V^{K(ik), K(ik)-Q(iq)}
      * @param iq
+     * @param is
      * @param ik
      */
     void read_V(size_t iq, size_t is, size_t ik) {
@@ -231,6 +232,7 @@ namespace methods {
     /**
      * Read V^{K(ik), K(ik)-Q(iq)} for all ik
      * @param iq
+     * @param is
      */
     void read_Vq(size_t iq, size_t is) {
       utils::check(_read_type == each_q, "Error: read_Vq() can only be called in \"each_q\" read mode");
@@ -257,6 +259,75 @@ namespace methods {
         auto Vqk = _Vq_kQij.value()(ik, Np_range, all, all);
         nda::h5_read(sgrp, "Vq" + std::to_string(iq), Vqk, 
              std::tuple{all, std::min(is,size_t(_ns_in_basis-1)), ik, nda::range(_nbnd), nda::range(_nbnd)});
+      }
+    }
+
+    /**
+     * Read dV^{K(ik), K(ik)-Q(iq)}
+     * @param iq
+     * @param iatom
+     * @param idirection
+     * @param is
+     * @param ik
+     */
+    void read_dV(size_t iq, size_t iatom, size_t idirection, size_t is, size_t ik) {
+      decltype(nda::range::all) all;
+      utils::check(_read_type == single_kpair, "Error: read_dV() can only be called in \"single_kpair\" read mode");
+      if (!_dV_Qij) {
+        _dV_Qij.emplace(nda::array<ComplexType, 3>(_Np, _nbnd, _nbnd));
+      } else {
+        _dV_Qij.value()() = 0.0;
+      }
+
+      //int Np;
+      std::string dataset = "dVq" + std::to_string(iq);
+      std::string filename = _eri_dir + "/" + (_write_type==multi_file       ?
+                                              "Vq"+std::to_string(iq)+".h5" :
+                                              _eri_filename);
+      h5::file file = h5::file(filename, 'r');
+      h5::group grp(file);
+      h5::group sgrp = grp.open_group("Interaction");
+      //h5::h5_read(sgrp, "Np", Np);
+      auto l = h5::array_interface::get_dataset_info(sgrp, dataset);
+      int Np = l.lengths[2];
+      auto Np_range = nda::range(0, Np);
+      auto dVqk = _dV_Qij.value()(Np_range, nda::ellipsis{});
+      nda::h5_read(sgrp, dataset, dVqk,
+        std::tuple{iatom, idirection, all, std::min(is,size_t(_ns_in_basis-1)), ik, nda::range(_nbnd), nda::range(_nbnd)});
+    }
+
+    /**
+     * Read dV^{K(ik), K(ik)-Q(iq)} for all ik
+     * @param iq
+     * @param iatom
+     * @param idirection
+     * @param is
+     */
+    void read_dVq(size_t iq, size_t iatom, size_t idirection, size_t is) {
+      utils::check(_read_type == each_q, "Error: read_Vq() can only be called in \"each_q\" read mode");
+      if (!_dVq_kQij) {
+        _dVq_kQij.emplace(nda::array<ComplexType, 4>(_nkpts, _Np, _nbnd, _nbnd));
+      } else {
+        _dVq_kQij.value()() = 0.0;
+      }
+      std::string filename = _eri_dir + "/" + (_write_type==multi_file       ?
+                                              "Vq"+std::to_string(iq)+".h5" :
+                                              _eri_filename);
+      std::string dataset;
+      //int Np;
+
+      decltype(nda::range::all) all;
+      h5::file file = h5::file(filename, 'r');
+      h5::group grp(file);
+      h5::group sgrp = grp.open_group("Interaction");
+      //h5::h5_read(sgrp, "Np", Np);
+      auto l = h5::array_interface::get_dataset_info(sgrp, "dVq" + std::to_string(iq));
+      int Np = l.lengths[2];
+      auto Np_range = nda::range(0, Np);
+      for (size_t ik = 0; ik < _nkpts; ++ik) {
+        auto dVqk = _dVq_kQij.value()(ik, Np_range, all, all);
+        nda::h5_read(sgrp, "dVq" + std::to_string(iq), dVqk,
+             std::tuple{iatom, idirection, all, std::min(is,size_t(_ns_in_basis-1)), ik, nda::range(_nbnd), nda::range(_nbnd)});
       }
     }
 
@@ -302,6 +373,8 @@ namespace methods {
           _is = std::min(is,size_t(_ns_in_basis-1));
           _ik = ik;
           _iq = iq;
+          _iatom = -1;
+          _idirection = -1;
           return _V_Qij.value()();
         }
       } else { // _read_type == each_q
@@ -316,6 +389,8 @@ namespace methods {
           _Timer.stop("READ");
           _is = std::min(is,size_t(_ns_in_basis-1));
           _iq = iq;
+          _iatom = -1;
+          _idirection = -1;
           return _Vq_kQij.value()(ik, nda::range::all, nda::range::all, nda::range::all);
         }
       }
@@ -335,6 +410,50 @@ namespace methods {
         }
       }
       return V_kmq_k;
+    }
+
+    /**
+     * Return the three index Coulomb tensor dV^{k1,k2} at k1 = K(ik), k2 = K(ik)- Q(iq)
+     */
+    auto dV(size_t iq, size_t iatom, size_t idirection, size_t is, size_t ik) {
+      utils::check( is < _ns, "Error in chol_reader_r::read_dV: is out of bounds: is:{}",is);
+// MAM: should spin also be cached in _V_Qij and _Vq_kQij???
+      if (_read_type == single_kpair) {
+        if (_dVq_kQij) _dVq_kQij = std::nullopt;
+        if (!_dV_Qij) _dV_Qij.emplace(nda::array<ComplexType, 3>(_Np, _nbnd, _nbnd));
+        if (_ik == ik and _iq == iq and _is == std::min(is,size_t(_ns_in_basis-1)) and
+            _iatom == iatom and _idirection == idirection) {
+          return _dV_Qij.value()();
+        } else {
+          // read a new dV_Qij for k1 = K(ik) - Q(iq), k2 = K(ik)
+          _Timer.start("READ");
+          read_dV(iq, iatom, idirection, is, ik);
+          _Timer.stop("READ");
+          _is = std::min(is,size_t(_ns_in_basis-1));
+          _ik = ik;
+          _iq = iq;
+          _iatom = iatom;
+          _idirection = idirection;
+          return _dV_Qij.value()();
+        }
+      } else { // _read_type == each_q
+        if (_dV_Qij) _dV_Qij = std::nullopt;
+        if (!_dVq_kQij) _dVq_kQij.emplace(nda::array<ComplexType, 4>(_nkpts, _Np, _nbnd, _nbnd));
+        if (_iq == iq and _is == std::min(is,size_t(_ns_in_basis-1)) and
+            _iatom == iatom and _idirection == idirection) {
+          return _dVq_kQij.value()(ik, nda::range::all, nda::range::all, nda::range::all);
+        } else {
+          // read a new dVq_kQij for Q(iq)
+          _Timer.start("READ");
+          read_dVq(iq, iatom, idirection, is);
+          _Timer.stop("READ");
+          _is = std::min(is,size_t(_ns_in_basis-1));
+          _iq = iq;
+          _iatom = iatom;
+          _idirection = idirection;
+          return _dVq_kQij.value()(ik, nda::range::all, nda::range::all, nda::range::all);
+        }
+      }
     }
 
     auto& mpi() const { return _mpi; }
@@ -508,9 +627,13 @@ namespace methods {
     int _is = -1;
     int _ik = -1;
     int _iq = -1;
+    int _iatom = -1;
+    int _idirection = -1;
 
     std::optional<nda::array<ComplexType, 3> > _V_Qij;
     std::optional<nda::array<ComplexType, 4> > _Vq_kQij;
+    std::optional<nda::array<ComplexType, 3> > _dV_Qij;
+    std::optional<nda::array<ComplexType, 4> > _dVq_kQij;
     mutable utils::TimerManager _Timer;
   };
 
