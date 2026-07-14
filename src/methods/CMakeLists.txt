@@ -4,6 +4,7 @@
 add_subdirectory(ERI)
 add_subdirectory(tools)
 add_subdirectory(mb_state)
+add_subdirectory(gradient)
 add_subdirectory(HF)
 add_subdirectory(scr_coulomb)
 add_subdirectory(GW)
@@ -30,6 +31,6 @@ endif()
 endif()
 
 add_library(methods_lib ${SRCS})
-target_link_libraries(methods_lib PUBLIC meanfield methods_tools_lib eri_lib hf_lib scr_coulomb_lib gw_lib gf2_lib scf_lib embed_lib pproc_lib)
+target_link_libraries(methods_lib PUBLIC meanfield methods_tools_lib eri_lib gradient_lib hf_lib scr_coulomb_lib gw_lib gf2_lib scf_lib embed_lib pproc_lib)
 install(TARGETS methods_lib
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
