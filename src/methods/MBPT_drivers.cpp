@@ -41,6 +41,7 @@
 #include "methods/SCF/simple_dyson.h"
 #include "methods/embedding/embed_t.h"
 #include "methods/embedding/embed_eri_t.h"
+#include "methods/gradient/gradient_driver.h"
 #include "numerics/imag_axes_ft/IAFT.hpp"
 #include "numerics/iter_scf/iter_scf_utils.hpp"
 
@@ -115,6 +116,8 @@ inline void ensure_checkpoint(std::shared_ptr<mf::MF> mf, std::string const& out
  *  - outdir: "./" Output directory used when output is not provided.
  *  - prefix: "bdft.mbpt" Prefix used when output is not provided.
  *  - restart: "false" Restart from a previous bdft.scf calculation.
+ *  - eval_grad: whether to evaluate nuclear gradient after the SCF calculation.
+ *  - eval_thermodynamics: whether to evaluate thermodynamic properties after the SCF calculation.
  *  - t_prescreen_thresh: "0.0" Threshold for prescreening in time (GF2 only for now)
  */
 template<typename eri_t>
@@ -192,6 +195,12 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
              iter_solver.get(), niter, restart, conv_thr, const_mu,
              greens_func_source, greens_func_iteration, 
              io::get_value_with_default<bool>(pt, "eval_thermodynamics", false));
+    if (io::get_value_with_default<bool>(pt, "eval_grad", false)) {
+      if constexpr (std::is_same_v<decltype(eri.hf_eri), std::optional<std::reference_wrapper<chol_reader_t>>> or
+                    std::is_same_v<decltype(eri.corr_eri), std::optional<std::reference_wrapper<chol_reader_t>>>) {
+        evaluate_gradient(mb_state, dyson, eri, ft, mb_solver_t(&hf), solver_type, "scf", -1);
+      }
+    }
 
   } else if(solver_type == "gw") {
 
