@@ -321,7 +321,9 @@ def mol_dump_to_h5(mf, becke_grid_level=3, mo=False, outdir='./', prefix='pyscf'
     g.create_group("SCF")
     scf_g = g["SCF"]
     scf_g['ovlp'] = S[:,:,:nbnd_out,:nbnd_out]
+    scf_g['ovlp_grad'] = S_grad[:,:,:nbnd_out,:nbnd_out]
     scf_g['H0'] = H0[:,:,:nbnd_out,:nbnd_out]
+    scf_g['H0_grad'] = H0_grad[:,:,:nbnd_out,:nbnd_out]
     scf_g['Fock'] = F[:,:,:nbnd_out,:nbnd_out]
     scf_g['dm'] = dm[:,:,:nbnd_out,:nbnd_out]
     scf_g['mo_coeff'] = mo_coeff[:,:,:nbnd_out,:nbnd_out]

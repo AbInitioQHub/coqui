@@ -250,8 +250,8 @@ def mol_gdf_grad_dump_to_h5(gdf, auxbasis_response=True, mo=False, outdir=None):
         os.system('mkdir ' + outdir)
     filename = outdir + '/chol_info.h5'
     with h5.HDFArchive(filename, 'w') as root:
-        root.create_group("Interaction")
-        g = root["Interaction"]
+        root.create_group('Interaction')
+        g = root['Interaction']
         g['Np'] = np.int32(naux)
         g['tol'] = -1.0
         g['nkpts'] = np.int32(nkpts)
@@ -262,7 +262,8 @@ def mol_gdf_grad_dump_to_h5(gdf, auxbasis_response=True, mo=False, outdir=None):
 
     filename = outdir + '/Vq0.h5'
     with h5.HDFArchive(filename, 'w') as root:
-        root.create_group("Interaction")
+        root.create_group('Interaction')
+        g = root['Interaction']
         g['natoms'] = np.int32(natoms)
         g['Np'] = np.int32(naux)
         g['nbnd'] = np.int32(nbnd)
