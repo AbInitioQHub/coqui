@@ -260,6 +260,10 @@ namespace methods {
       int np_Q_2 = (t_intra_comm.size()/qpools_2) / np_P_2;
       auto dSigma_skPQ_2 = make_distributed_array<local_Array_4D_t>(
           t_intra_comm, {1, qpools_2, np_P_2, np_Q_2}, {ns, nkpts_ibz, NP, NQ});
+      // The two layouts are fixed for every tau point and symmetry operation.
+      // Build their collective metadata once instead of repeating the layout
+      // all-gather in every bounded redistribution.
+      auto Sigma_redistribution_plan = math::nda::make_redistribution_plan(dSigma_skPQ, dSigma_skPQ_2);
       app_log(2, "  Self-energy from THC to primary basis:");
       app_log(2, "    - processor grid for Sigma: (t, q, P, Q) = ({}, {}, {}, {})\n", tpools, qpools_2, np_P_2, np_Q_2);
 
@@ -291,7 +295,8 @@ namespace methods {
           sSigma_tskab.set_zero();
           _Timer.start("SIGMA_AUX_TO_PRIM");
           // redistribute Sigma to improve locality of (P,Q) indices
-          math::nda::redistribute(dSigma_skPQ, dSigma_skPQ_2);
+          math::nda::redistribute(
+              dSigma_skPQ, dSigma_skPQ_2, Sigma_redistribution_plan);
           thc_solver_comm::aux_to_primary(0,0,tpool_id, ComplexType(1.0),dSigma_skPQ_2, sSigma_tskab, thc, MF->ks_to_k(isym));
           _Timer.stop("SIGMA_AUX_TO_PRIM");
 
