@@ -50,6 +50,123 @@ namespace bdft_tests {
   namespace mpi3 = boost::mpi3;
   using namespace methods;
 
+  TEST_CASE("projector upfold_add matches direct Cdagger O C", "[methods][embed][projector]") {
+    auto& mpi = utils::make_unit_test_mpi_context();
+    auto mf = mf::default_MF(mpi, "qe_lih222");
+
+    auto ns = mf.nspin();
+    auto nk = mf.nkpts_ibz();
+    auto nbnd = mf.nbnd();
+    constexpr long nImps = 1;
+    constexpr long nImpOrbs = 2;
+    constexpr long nW = 2;
+    constexpr long W0 = 1;
+    REQUIRE(nbnd >= W0+nW);
+
+    // Keep the coefficients in the test so the reference does not call either
+    // upfold implementation. The in-memory constructor reorders no k points
+    // when the MF k-point array itself is supplied.
+    nda::array<ComplexType, 5> C_ksIai(nk, ns, nImps, nImpOrbs, nW);
+    for (long k = 0; k < nk; ++k)
+      for (long s = 0; s < ns; ++s)
+        for (long a = 0; a < nImpOrbs; ++a)
+          for (long i = 0; i < nW; ++i)
+            C_ksIai(k,s,0,a,i) = ComplexType(
+                0.15*(1+a+i) + 0.01*(1+k+s), 0.025*(1+k)*(a-i));
+
+    nda::array<long, 3> band_window(nImps, nk, 2);
+    for (long k = 0; k < nk; ++k) {
+      band_window(0,k,0) = W0+1;  // 1-based inclusive lower bound
+      band_window(0,k,1) = W0+nW; // 1-based inclusive upper bound
+    }
+    nda::array<RealType, 2> kpts_crys = mf.kpts_crystal();
+    projector_t proj(mf, C_ksIai, band_window, kpts_crys, false, false);
+
+    nda::array<ComplexType, 4> Oloc_sIab(ns, nImps, nImpOrbs, nImpOrbs);
+    for (long s = 0; s < ns; ++s)
+      for (long a = 0; a < nImpOrbs; ++a)
+        for (long b = 0; b < nImpOrbs; ++b)
+          Oloc_sIab(s,0,a,b) = ComplexType(0.1*(1+s+a+2*b), 0.03*(1+a-b));
+
+    nda::array<ComplexType, 4> seed(ns, nk, nbnd, nbnd);
+    seed() = ComplexType(0.375, -0.125);
+    auto static_oracle = [&](ComplexType alpha) {
+      nda::array<ComplexType, 4> expected = seed;
+      for (long s = 0; s < ns; ++s)
+        for (long k = 0; k < nk; ++k)
+          for (long i = 0; i < nW; ++i)
+            for (long j = 0; j < nW; ++j)
+              for (long a = 0; a < nImpOrbs; ++a)
+                for (long b = 0; b < nImpOrbs; ++b)
+                  expected(s,k,W0+i,W0+j) += alpha * std::conj(C_ksIai(k,s,0,a,i))
+                      * Oloc_sIab(s,0,a,b) * C_ksIai(k,s,0,b,j);
+      return expected;
+    };
+
+    auto sTarget = math::shm::make_shared_array<Array_view_4D_t>(
+        *mpi, {ns, nk, nbnd, nbnd});
+    for (ComplexType alpha : {ComplexType(1.0), ComplexType(-1.0)}) {
+      if (sTarget.node_comm()->root()) sTarget.local() = seed;
+      sTarget.node_sync();
+      proj.upfold_add(sTarget, Oloc_sIab, alpha);
+      ARRAY_EQUAL(sTarget.local(), static_oracle(alpha), 1e-12);
+    }
+
+    constexpr long nt = 2;
+    nda::array<ComplexType, 5> Oloc_tsIab(nt, ns, nImps, nImpOrbs, nImpOrbs);
+    for (long t = 0; t < nt; ++t)
+      Oloc_tsIab(t,nda::ellipsis{}) = ComplexType(t+1.0, -0.125*t) * Oloc_sIab;
+
+    nda::array<ComplexType, 5> seed_t(nt, ns, nk, nbnd, nbnd);
+    seed_t() = ComplexType(-0.25, 0.0625);
+    auto time_oracle = [&] {
+      nda::array<ComplexType, 5> expected = seed_t;
+      for (long t = 0; t < nt; ++t)
+        for (long s = 0; s < ns; ++s)
+          for (long k = 0; k < nk; ++k)
+            for (long i = 0; i < nW; ++i)
+              for (long j = 0; j < nW; ++j)
+                for (long a = 0; a < nImpOrbs; ++a)
+                  for (long b = 0; b < nImpOrbs; ++b)
+                    expected(t,s,k,W0+i,W0+j) += std::conj(C_ksIai(k,s,0,a,i))
+                        * Oloc_tsIab(t,s,0,a,b) * C_ksIai(k,s,0,b,j);
+      return expected;
+    };
+
+    auto sTarget_t = math::shm::make_shared_array<Array_view_5D_t>(
+        *mpi, {nt, ns, nk, nbnd, nbnd});
+    if (sTarget_t.node_comm()->root()) sTarget_t.local() = seed_t;
+    sTarget_t.node_sync();
+    proj.upfold_add(sTarget_t, Oloc_tsIab);
+    ARRAY_EQUAL(sTarget_t.local(), time_oracle(), 1e-12);
+
+    nda::array<ComplexType, 6> Oloc_tskIab(nt, ns, nk, nImps, nImpOrbs, nImpOrbs);
+    for (long t = 0; t < nt; ++t)
+      for (long s = 0; s < ns; ++s)
+        for (long k = 0; k < nk; ++k)
+          Oloc_tskIab(t,s,k,nda::ellipsis{}) = ComplexType(1.0+0.2*k, 0.1*t)
+              * Oloc_sIab(s,nda::ellipsis{});
+
+    auto k_time_oracle = [&] {
+      nda::array<ComplexType, 5> expected = seed_t;
+      for (long t = 0; t < nt; ++t)
+        for (long s = 0; s < ns; ++s)
+          for (long k = 0; k < nk; ++k)
+            for (long i = 0; i < nW; ++i)
+              for (long j = 0; j < nW; ++j)
+                for (long a = 0; a < nImpOrbs; ++a)
+                  for (long b = 0; b < nImpOrbs; ++b)
+                    expected(t,s,k,W0+i,W0+j) += std::conj(C_ksIai(k,s,0,a,i))
+                        * Oloc_tskIab(t,s,k,0,a,b) * C_ksIai(k,s,0,b,j);
+      return expected;
+    };
+
+    if (sTarget_t.node_comm()->root()) sTarget_t.local() = seed_t;
+    sTarget_t.node_sync();
+    proj.upfold_add(sTarget_t, Oloc_tskIab);
+    ARRAY_EQUAL(sTarget_t.local(), k_time_oracle(), 1e-12);
+  }
+
   TEST_CASE("downfold_1e_mb", "[methods][embed][df_1e]") {
     auto& mpi = utils::make_unit_test_mpi_context();
 
