@@ -83,4 +83,34 @@ TEST_CASE("distributed_shared_nda", "[math]") {
   array.node_sync();
 }
 
+TEST_CASE("shared_nda_chunked_all_reduce", "[math][shared][all_reduce]") {
+  auto world = mpi3::environment::get_world_instance();
+  auto node_comm = world.split_shared();
+  int node_size = node_comm.size();
+  int color = world.rank() % node_size;
+  int key = world.rank() / node_size;
+  auto internode_comm = world.split(color, key);
+
+  auto check_type = [&]<typename T>() {
+    using Array_view_t = nda::array_view<T, 1>;
+    auto array = make_shared_array<Array_view_t>(world, internode_comm, node_comm, shape_t<1>{17});
+    if (node_comm.root()) {
+      T value = T(internode_comm.rank() + 1);
+      array.local() = value;
+    }
+    array.node_sync();
+
+    // Force the 17 elements through a 3,3,3,3,3,2 chunk sequence.
+    array.all_reduce(3 * sizeof(T));
+
+    double expected = 0.5 * internode_comm.size() * (internode_comm.size() + 1);
+    auto local = array.local();
+    for (long i = 0; i < local.size(); ++i)
+      REQUIRE(std::abs(local(i) - T(expected)) < 1.0e-12);
+  };
+
+  check_type.template operator()<double>();
+  check_type.template operator()<ComplexType>();
+}
+
 } // bdft_tests
