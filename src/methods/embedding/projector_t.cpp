@@ -19,11 +19,30 @@
  */
 
 
+#include <algorithm>
+#include <cstddef>
+
 #include "methods/SCF/scf_common.hpp"
 #include "numerics/nda_functions.hpp"
 #include "methods/embedding/projector_t.h"
 
 namespace methods {
+
+  namespace {
+    // Each node owns one shared reduction tile. Keep its peak size bounded
+    // independently of the number of time/frequency and k points.
+    // A very small tile starves broad-window calculations because one rank
+    // owns each (tau,spin,k) matrix.  256 MiB still removes the multi-GiB
+    // full correction buffer while retaining useful concurrency on large
+    // communicators (for nOrbs_W=300 it holds 186 matrices, not only five).
+    constexpr std::size_t upfold_tile_bytes = 256 * 1024 * 1024;
+
+    long upfold_tile_size(long nmat, long matrix_size) {
+      auto matrices_per_tile = static_cast<long>(
+          upfold_tile_bytes / (sizeof(ComplexType) * static_cast<std::size_t>(matrix_size)));
+      return std::min(nmat, std::max(1L, matrices_per_tile));
+    }
+  }
 
   void projector_t::print_metadata() {
     app_log(1, "  Projector Information");
@@ -37,6 +56,14 @@ namespace methods {
   template<nda::ArrayOfRank<4> Array_base_t, nda::ArrayOfRank<4> Oloc_t>
   void projector_t::upfold(sArray_t<Array_base_t> &O_skij, const Oloc_t &Oloc_sIab) const {
 
+    O_skij.set_zero();
+    upfold_add(O_skij, Oloc_sIab);
+  }
+
+  template<nda::ArrayOfRank<4> Array_base_t, nda::ArrayOfRank<4> Oloc_t>
+  void projector_t::upfold_add(sArray_t<Array_base_t> &O_skij, const Oloc_t &Oloc_sIab,
+                               ComplexType alpha) const {
+
     utils::check(O_skij.shape()[0] == Oloc_sIab.shape(0) and
                  O_skij.shape()[0] == _C_skIai.shape(0), "embed_t::upfold: ns mismatches.{}, {}, {}",
                  O_skij.shape()[0], Oloc_sIab.shape(0), _C_skIai.shape(0));
@@ -45,43 +72,66 @@ namespace methods {
     utils::check(O_skij.shape()[1]==_MF->nkpts_ibz(), "embed_t::upfold: O_skij.shape[1]({})!=nkpts_ibz({}).",
                  O_skij.shape()[1], _MF->nkpts_ibz());
 
-    O_skij.set_zero();
     auto [ns, nkpts_ibz, nbnd, nbnd_b] = O_skij.shape();
+    utils::check(nbnd == nbnd_b, "embed_t::upfold: crystal-basis matrix is not square. {}, {}", nbnd, nbnd_b);
 
     nda::array<ComplexType, 2> buffer_ib(_nOrbs_W, _nImpOrbs);
-
-    auto O_buffer = sArray_t<Array_base_t>(
+    long nsk = ns * nkpts_ibz;
+    long tile_size = upfold_tile_size(nsk, _nOrbs_W * _nOrbs_W);
+    auto O_tile = math::shm::shared_array<nda::array_view<ComplexType, 3>>(
         O_skij.communicator(), O_skij.internode_comm(), O_skij.node_comm(),
-        {ns, nkpts_ibz, _nOrbs_W, _nOrbs_W});
+        {tile_size, _nOrbs_W, _nOrbs_W});
+    auto O_buf = O_tile.local();
+    int rank = O_skij.communicator()->rank();
+    int size = O_skij.communicator()->size();
 
-    auto O_buf_loc = O_buffer.local();
-    int rank = O_buffer.communicator()->rank();
-    int size = O_buffer.communicator()->size();
+    O_skij.node_sync();
+    O_skij.win().fence();
     for (long imp = 0; imp < _nImps; ++imp) {
-      O_buffer.set_zero();
-      O_buffer.win().fence();
-      for (long sk = rank; sk < ns * nkpts_ibz; sk += size) {
-        long is = sk / nkpts_ibz;
-        long ik = sk % nkpts_ibz;
+      for (long tile_begin = 0; tile_begin < nsk; tile_begin += tile_size) {
+        long tile_count = std::min(tile_size, nsk - tile_begin);
+        O_tile.set_zero();
+        O_tile.win().fence();
+        long rank_offset = (rank + size - tile_begin % size) % size;
+        for (long offset = rank_offset; offset < tile_count; offset += size) {
+          long sk = tile_begin + offset;
+          long is = sk / nkpts_ibz;
+          long ik = sk % nkpts_ibz;
 
-        nda::blas::gemm(ComplexType(1.0),
-                        nda::dagger(_C_skIai(is,ik,imp,nda::ellipsis{})),
-                        Oloc_sIab(is,imp,nda::ellipsis{}),
-                        ComplexType(0.0),
-                        buffer_ib);
-        nda::blas::gemm(buffer_ib, _C_skIai(is,ik,imp,nda::ellipsis{}), O_buf_loc(is,ik,nda::ellipsis{}));
-      }
-      O_buffer.win().fence();
-      O_buffer.all_reduce();
-      if (O_skij.node_comm()->root()) {
-        O_skij.local()(nda::range::all, nda::range::all, _W_rng[imp], _W_rng[imp]) += O_buf_loc;
+          nda::blas::gemm(ComplexType(1.0),
+                          nda::dagger(_C_skIai(is,ik,imp,nda::ellipsis{})),
+                          Oloc_sIab(is,imp,nda::ellipsis{}),
+                          ComplexType(0.0), buffer_ib);
+          nda::blas::gemm(alpha, buffer_ib, _C_skIai(is,ik,imp,nda::ellipsis{}),
+                          ComplexType(0.0), O_buf(offset,nda::ellipsis{}));
+        }
+        O_tile.win().fence();
+        O_tile.all_reduce();
+        if (O_skij.node_comm()->root()) {
+          auto O_loc = O_skij.local();
+          for (long offset = 0; offset < tile_count; ++offset) {
+            long sk = tile_begin + offset;
+            long is = sk / nkpts_ibz;
+            long ik = sk % nkpts_ibz;
+            O_loc(is,ik,_W_rng[imp],_W_rng[imp]) += O_buf(offset,nda::ellipsis{});
+          }
+        }
       }
     }
-    O_skij.communicator()->barrier();
+    O_skij.win().fence();
+    O_skij.node_sync();
   }
 
   template<nda::ArrayOfRank<5> Array_base_t, nda::ArrayOfRank<5> Oloc_t>
   void projector_t::upfold(sArray_t<Array_base_t> &O_tskij, const Oloc_t &Oloc_tsIab) const {
+
+    O_tskij.set_zero();
+    upfold_add(O_tskij, Oloc_tsIab);
+  }
+
+  template<nda::ArrayOfRank<5> Array_base_t, nda::ArrayOfRank<5> Oloc_t>
+  void projector_t::upfold_add(sArray_t<Array_base_t> &O_tskij, const Oloc_t &Oloc_tsIab,
+                               ComplexType alpha) const {
 
     utils::check(O_tskij.shape()[0] == Oloc_tsIab.shape(0), "embed_t::upfold: nts mismatches. {}, {}",
                  O_tskij.shape()[0], Oloc_tsIab.shape(0));
@@ -93,47 +143,68 @@ namespace methods {
     utils::check(O_tskij.shape()[2]==_MF->nkpts_ibz(), "embed_t::upfold: O_tskij.shape[2]({})!=nkpts_ibz({}).",
                  O_tskij.shape()[2], _MF->nkpts_ibz());
 
-    O_tskij.set_zero();
     auto [nts, ns, nkpts_ibz, nbnd, nbnd_b] = O_tskij.shape();
+    utils::check(nbnd == nbnd_b, "embed_t::upfold: crystal-basis matrix is not square. {}, {}", nbnd, nbnd_b);
 
     nda::array<ComplexType, 2> buffer_ib(_nOrbs_W, _nImpOrbs);
-
-    auto O_buffer = sArray_t<Array_base_t>(
+    long ntsk = nts * ns * nkpts_ibz;
+    long tile_size = upfold_tile_size(ntsk, _nOrbs_W * _nOrbs_W);
+    auto O_tile = math::shm::shared_array<nda::array_view<ComplexType, 3>>(
         O_tskij.communicator(), O_tskij.internode_comm(), O_tskij.node_comm(),
-        {nts, ns, nkpts_ibz, _nOrbs_W, _nOrbs_W});
+        {tile_size, _nOrbs_W, _nOrbs_W});
+    auto O_buf = O_tile.local();
+    int rank = O_tskij.communicator()->rank();
+    int size = O_tskij.communicator()->size();
 
-    auto O_buf = O_buffer.local();
-    int rank = O_buffer.communicator()->rank();
-    int size = O_buffer.communicator()->size();
+    O_tskij.node_sync();
+    O_tskij.win().fence();
     for (long imp = 0; imp < _nImps; ++imp) {
-      O_buffer.set_zero();
-      O_buffer.win().fence();
-      for (long tsk = rank; tsk < nts*ns*nkpts_ibz; tsk += size) {
-        long it = tsk / (ns*nkpts_ibz); // tsk = it * ns*nkpts_ibz + is * nkpts_ibz + ik
-        long is = (tsk / nkpts_ibz) % ns;
-        long ik = tsk % nkpts_ibz;
+      for (long tile_begin = 0; tile_begin < ntsk; tile_begin += tile_size) {
+        long tile_count = std::min(tile_size, ntsk - tile_begin);
+        O_tile.set_zero();
+        O_tile.win().fence();
+        long rank_offset = (rank + size - tile_begin % size) % size;
+        for (long offset = rank_offset; offset < tile_count; offset += size) {
+          long tsk = tile_begin + offset;
+          long it = tsk / (ns*nkpts_ibz);
+          long is = (tsk / nkpts_ibz) % ns;
+          long ik = tsk % nkpts_ibz;
 
-        nda::blas::gemm(ComplexType(1.0),
-                        nda::dagger(_C_skIai(is,ik,imp,nda::ellipsis{})),
-                        Oloc_tsIab(it,is,imp,nda::ellipsis{}),
-                        ComplexType(0.0),
-                        buffer_ib);
-
-        nda::blas::gemm(buffer_ib, _C_skIai(is,ik,imp,nda::ellipsis{}), O_buf(it,is,ik,nda::ellipsis{}));
+          nda::blas::gemm(ComplexType(1.0),
+                          nda::dagger(_C_skIai(is,ik,imp,nda::ellipsis{})),
+                          Oloc_tsIab(it,is,imp,nda::ellipsis{}),
+                          ComplexType(0.0), buffer_ib);
+          nda::blas::gemm(alpha, buffer_ib, _C_skIai(is,ik,imp,nda::ellipsis{}),
+                          ComplexType(0.0), O_buf(offset,nda::ellipsis{}));
+        }
+        O_tile.win().fence();
+        O_tile.all_reduce();
+        if (O_tskij.node_comm()->root()) {
+          auto O_loc = O_tskij.local();
+          for (long offset = 0; offset < tile_count; ++offset) {
+            long tsk = tile_begin + offset;
+            long it = tsk / (ns*nkpts_ibz);
+            long is = (tsk / nkpts_ibz) % ns;
+            long ik = tsk % nkpts_ibz;
+            O_loc(it,is,ik,_W_rng[imp],_W_rng[imp]) += O_buf(offset,nda::ellipsis{});
+          }
+        }
       }
-      O_buffer.win().fence();
-      O_buffer.all_reduce();
-
-      O_tskij.win().fence();
-      if (O_tskij.node_comm()->root()) {
-        O_tskij.local()(nda::range::all, nda::range::all, nda::range::all, _W_rng[imp], _W_rng[imp]) += O_buf;
-      }
-      O_tskij.win().fence();
     }
+    O_tskij.win().fence();
+    O_tskij.node_sync();
   }
 
   template<nda::ArrayOfRank<5> Array_base_t, nda::ArrayOfRank<6> Ac_t>
   void projector_t::upfold(sArray_t<Array_base_t> &O_tskij, const Ac_t &O_tskIab) const {
+
+    O_tskij.set_zero();
+    upfold_add(O_tskij, O_tskIab);
+  }
+
+  template<nda::ArrayOfRank<5> Array_base_t, nda::ArrayOfRank<6> Ac_t>
+  void projector_t::upfold_add(sArray_t<Array_base_t> &O_tskij, const Ac_t &O_tskIab,
+                               ComplexType alpha) const {
 
     utils::check(O_tskij.shape()[0] == O_tskIab.shape(0), "embed_t::upfold: nts mismatches. {}, {}",
                  O_tskij.shape()[0], O_tskIab.shape(0));
@@ -144,41 +215,55 @@ namespace methods {
     utils::check(O_tskIab.shape(4) == _nImpOrbs, "embed_t::upfold: nImpOrbs mismatches. {}, {}", O_tskIab.shape(4),
                  _nImpOrbs);
 
-    O_tskij.set_zero();
     auto [nts, ns, nkpts, nbnd, nbnd_b] = O_tskij.shape();
+    utils::check(nbnd == nbnd_b, "embed_t::upfold: crystal-basis matrix is not square. {}, {}", nbnd, nbnd_b);
 
     nda::array<ComplexType, 2> buffer_ib(_nOrbs_W, _nImpOrbs);
-
-    auto O_buffer = sArray_t<Array_base_t>(
+    long ntsk = nts * ns * nkpts;
+    long tile_size = upfold_tile_size(ntsk, _nOrbs_W * _nOrbs_W);
+    auto O_tile = math::shm::shared_array<nda::array_view<ComplexType, 3>>(
         O_tskij.communicator(), O_tskij.internode_comm(), O_tskij.node_comm(),
-        {nts, ns, nkpts, _nOrbs_W, _nOrbs_W});
+        {tile_size, _nOrbs_W, _nOrbs_W});
+    auto O_buf = O_tile.local();
+    int rank = O_tskij.communicator()->rank();
+    int size = O_tskij.communicator()->size();
 
-    auto O_buf = O_buffer.local();
-    int rank = O_buffer.communicator()->rank();
-    int size = O_buffer.communicator()->size();
+    O_tskij.node_sync();
+    O_tskij.win().fence();
     for (long imp = 0; imp < _nImps; ++imp) {
-      O_buffer.set_zero();
-      O_buffer.win().fence();
-      for (long tsk = rank; tsk < nts * ns * nkpts; tsk += size) {
-        long it = tsk / (ns * nkpts); // tsk = it * ns*nkpts + is * nkpts + ik
-        long is = (tsk / nkpts) % ns;
-        long ik = tsk % nkpts;
+      for (long tile_begin = 0; tile_begin < ntsk; tile_begin += tile_size) {
+        long tile_count = std::min(tile_size, ntsk - tile_begin);
+        O_tile.set_zero();
+        O_tile.win().fence();
+        long rank_offset = (rank + size - tile_begin % size) % size;
+        for (long offset = rank_offset; offset < tile_count; offset += size) {
+          long tsk = tile_begin + offset;
+          long it = tsk / (ns * nkpts);
+          long is = (tsk / nkpts) % ns;
+          long ik = tsk % nkpts;
 
-        nda::blas::gemm(ComplexType(1.0), nda::dagger(_C_skIai(is, ik, imp, nda::ellipsis{})),
-                        O_tskIab(it, is, ik, imp, nda::ellipsis{}),
-                        ComplexType(0.0), buffer_ib);
-
-        nda::blas::gemm(buffer_ib, _C_skIai(is,ik,imp,nda::ellipsis{}), O_buf(it,is,ik,nda::ellipsis{}));
+          nda::blas::gemm(ComplexType(1.0), nda::dagger(_C_skIai(is, ik, imp, nda::ellipsis{})),
+                          O_tskIab(it, is, ik, imp,nda::ellipsis{}),
+                          ComplexType(0.0), buffer_ib);
+          nda::blas::gemm(alpha, buffer_ib, _C_skIai(is,ik,imp,nda::ellipsis{}),
+                          ComplexType(0.0), O_buf(offset,nda::ellipsis{}));
+        }
+        O_tile.win().fence();
+        O_tile.all_reduce();
+        if (O_tskij.node_comm()->root()) {
+          auto O_loc = O_tskij.local();
+          for (long offset = 0; offset < tile_count; ++offset) {
+            long tsk = tile_begin + offset;
+            long it = tsk / (ns * nkpts);
+            long is = (tsk / nkpts) % ns;
+            long ik = tsk % nkpts;
+            O_loc(it,is,ik,_W_rng[imp],_W_rng[imp]) += O_buf(offset,nda::ellipsis{});
+          }
+        }
       }
-      O_buffer.win().fence();
-      O_buffer.all_reduce();
-
-      O_tskij.win().fence();
-      if (O_tskij.node_comm()->root()) {
-        O_tskij.local()(nda::range::all, nda::range::all, nda::range::all, _W_rng[imp], _W_rng[imp]) += O_buf;
-      }
-      O_tskij.win().fence();
     }
+    O_tskij.win().fence();
+    O_tskij.node_sync();
   }
 
   template<typename comm_t>
@@ -497,6 +582,9 @@ namespace methods {
   template void projector_t::upfold(sArray_t<nda::array_view<ComplexType, 4>>&, const nda::array<ComplexType, 4>&) const;
   template void projector_t::upfold(sArray_t<nda::array_view<ComplexType, 5>>&, const nda::array<ComplexType, 5>&) const;
   template void projector_t::upfold(sArray_t<nda::array_view<ComplexType, 5>>&, const nda::array<ComplexType, 6>&) const;
+  template void projector_t::upfold_add(sArray_t<nda::array_view<ComplexType, 4>>&, const nda::array<ComplexType, 4>&, ComplexType) const;
+  template void projector_t::upfold_add(sArray_t<nda::array_view<ComplexType, 5>>&, const nda::array<ComplexType, 5>&, ComplexType) const;
+  template void projector_t::upfold_add(sArray_t<nda::array_view<ComplexType, 5>>&, const nda::array<ComplexType, 6>&, ComplexType) const;
 
   template nda::array<ComplexType, 6> projector_t::downfold_k_fbz(const sArray_t<nda::array_view<ComplexType, 5>>&) const;
 
