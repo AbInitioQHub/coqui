@@ -642,7 +642,8 @@ TEST_CASE("downfold_1e_mb_qp", "[methods][embed][df_1e]") {
   TEST_CASE("compute_downfolded_coulomb_tensors", "[methods][embed][df_2e]") {
     auto& mpi = utils::make_unit_test_mpi_context();
 
-    auto test_compute = [&](std::shared_ptr<mf::MF> &mf, std::string wannier_file) {
+    auto test_compute = [&](std::shared_ptr<mf::MF> &mf, std::string wannier_file,
+                            bool test_q_dependent_output) {
       int nIpts = mf->nbnd() * 20;
       std::string cd_dir = "";
       std::string storage = "incore";
@@ -730,6 +731,46 @@ TEST_CASE("downfold_1e_mb_qp", "[methods][embed][df_1e]") {
       VALUE_EQUAL(Wloc_crpa(0,1,1,1,1), -0.220910992415, 1e-5);
       VALUE_EQUAL(Wloc_crpa(0,0,0,1,1), -0.115140041097, 1e-5);
 
+      if (test_q_dependent_output) {
+        // The q-resolved implementation keeps the full tensor only on the
+        // HDF5-writing rank. Its public local tensors and on-disk schema must
+        // remain identical. Ignore both divergence corrections here so the
+        // local result is exactly the arithmetic average of the stored q slabs.
+        embed_eri_t embed_q(*mf, "ignore_g0", "ignore_g0");
+        auto [Vloc_crpa_q, Wloc_crpa_q] = embed_q.compute_downfolded_coulomb_tensors(
+          thc, mb_state, screen_type_crpa, false, false, &ft,
+          greens_func_source, greens_func_iteration, true, true);
+
+        if (mpi->comm.root()) {
+          nda::array<ComplexType, 5> V_qabcd;
+          nda::array<ComplexType, 6> U_qwabcd;
+          h5::file file(prefix + ".mbpt.h5", 'r');
+          auto grp = h5::group(file).open_group("scf/iter0/downfolded_model");
+          nda::h5_read(grp, "V_qabcd", V_qabcd);
+          nda::h5_read(grp, "U_qwabcd", U_qwabcd);
+          long nImpOrbs = Vloc_crpa_q.shape()[0];
+          REQUIRE(V_qabcd.shape() == std::array<long, 5>{mf->nqpts(), nImpOrbs,
+                                                        nImpOrbs, nImpOrbs, nImpOrbs});
+          REQUIRE(U_qwabcd.shape() == std::array<long, 6>{Wloc_crpa_q.shape()[0], mf->nqpts(),
+                                                         nImpOrbs, nImpOrbs, nImpOrbs, nImpOrbs});
+          nda::array<ComplexType, 4> V_from_q(nImpOrbs, nImpOrbs, nImpOrbs, nImpOrbs);
+          nda::array<ComplexType, 5> W_from_q(Wloc_crpa_q.shape());
+          V_from_q() = ComplexType(0.0);
+          W_from_q() = ComplexType(0.0);
+          for (long iq = 0; iq < mf->nqpts(); ++iq) {
+            V_from_q += V_qabcd(iq, nda::ellipsis{});
+            W_from_q += U_qwabcd(nda::range::all, iq, nda::ellipsis{});
+          }
+          V_from_q() /= mf->nqpts();
+          W_from_q() /= mf->nqpts();
+          ARRAY_EQUAL(Vloc_crpa_q, V_from_q, 1e-11);
+          ARRAY_EQUAL(Wloc_crpa_q, W_from_q, 1e-11);
+          REQUIRE(nda::sum(nda::abs(V_qabcd(0, nda::ellipsis{}))) > 0.0);
+          REQUIRE(nda::sum(nda::abs(U_qwabcd(0, 0, nda::ellipsis{}))) > 0.0);
+        }
+        mpi->comm.barrier();
+      }
+
       mpi->comm.barrier();
 
       if (mpi->comm.root()) {
@@ -743,14 +784,14 @@ TEST_CASE("downfold_1e_mb_qp", "[methods][embed][df_1e]") {
       auto [outdir, prefix] = utils::utest_filename("qe_lih222");
       auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi, "qe_lih222"));
       std::string wannier_file = outdir + "/lih_wan.h5";
-      test_compute(mf, wannier_file);
+      test_compute(mf, wannier_file, true);
     }
 
     SECTION("sym_qe") {
       auto [outdir, prefix] = utils::utest_filename("qe_lih222_sym");
       auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi, "qe_lih222_sym"));
       std::string wannier_file = outdir + "/lih_wan.h5";
-      test_compute(mf, wannier_file);
+      test_compute(mf, wannier_file, true);
     }
   }
 
