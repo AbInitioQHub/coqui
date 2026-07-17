@@ -531,6 +531,52 @@ TEST_CASE("redistribute_nda_streaming", "[math][redistribute][streaming]")
     for (long i = 0; i < Bloc.shape(0); ++i)
       for (long j = 0; j < Bloc.shape(1); ++j)
         REQUIRE(Bloc(i, j) == static_cast<double>((origin[0] + i) * gshape[1] + origin[1] + j));
+
+    // A reusable plan must observe new source values while retaining the fixed
+    // layouts. The adaptive plan overload retains the collective fast path for
+    // this small regular layout.
+    auto plan = make_redistribution_plan(A, B, 7);
+    Aloc += 1000.0;
+    Bloc = -1.0;
+    redistribute(A, B, plan);
+    for (long i = 0; i < Bloc.shape(0); ++i)
+      for (long j = 0; j < Bloc.shape(1); ++j)
+        REQUIRE(Bloc(i, j) == 1000.0 +
+            static_cast<double>((origin[0] + i) * gshape[1] + origin[1] + j));
+  }
+
+  // Exercise the truthful irregular-block layout used for a selected-axis
+  // transfer: only an active subset of ranks owns source blocks, while the
+  // destination is regularly distributed over every rank.
+  {
+    using larray = nda::array<double, 2>;
+    long active_ranks = std::max(1L, (size + 1) / 2);
+    long global_rows = 2 * active_ranks + 1;
+    bool active = world.rank() < active_ranks;
+    long base_rows = global_rows / active_ranks;
+    long remainder = global_rows % active_ranks;
+    long local_rows = active ? base_rows + (world.rank() < remainder ? 1 : 0) : 0;
+    long row_origin = active ? world.rank() * base_rows + std::min(long(world.rank()), remainder) : 0;
+    std::array<long, 2> local_shape = active ? std::array<long, 2>{local_rows, 5} :
+                                               std::array<long, 2>{0, 0};
+    larray local(local_shape);
+    for (long i = 0; i < local_rows; ++i)
+      for (long j = 0; j < 5; ++j)
+        local(i, j) = static_cast<double>((row_origin + i) * 5 + j);
+
+    memory::irregular_block_darray_t<larray, decltype(world)> selected(
+        std::addressof(world), {global_rows, 5}, {row_origin, 0}, std::move(local));
+    auto B = make_distributed_array<larray>(world, {size, 1}, {global_rows, 5});
+    auto plan = make_redistribution_plan(selected, B, 7);
+    plan.validate_source_coverage();
+    plan.validate_destination_coverage();
+    redistribute_streaming(selected, B, plan);
+
+    auto Bloc = B.local();
+    auto origin = B.origin();
+    for (long i = 0; i < Bloc.shape(0); ++i)
+      for (long j = 0; j < Bloc.shape(1); ++j)
+        REQUIRE(Bloc(i, j) == static_cast<double>((origin[0] + i) * 5 + origin[1] + j));
   }
 
   // Exercise a higher-rank C-layout tensor and the general B = a*A + b*B path.
