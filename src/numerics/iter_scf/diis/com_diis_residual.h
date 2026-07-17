@@ -110,14 +110,17 @@ public:
         utils::check(com_initialized, "DIIS commutator residual is not initialized");
             upload_g_mu(); // TODO if it hasn't been supplied externally
             // Warning! Sigma here is in tau!
-            FockSigma x_last = current_state->get();
+            const FockSigma& x_last = current_state->get_ref();
 
             Array_5D C_t;
             commutator_t(C_t, FT, G_incoming, x_last, mu, _S, _H0);
+            G_incoming = Array_5D{};
+            iter = -1;
 
             auto Fz = x_last.get_fock();
             Fz() = 0;
-            res.set_fock_sigma(Fz, C_t);
+            res.set_fock_sigma(std::move(Fz), std::move(C_t));
+            res.set_mu(0.0);
             
             return true;
         }

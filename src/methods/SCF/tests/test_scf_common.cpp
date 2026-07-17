@@ -43,6 +43,7 @@
 #include "methods/ERI/eri_utils.hpp"
 #include "hamiltonian/pseudo/pseudopot.h"
 #include "numerics/iter_scf/iter_scf_utils.hpp"
+#include "numerics/iter_scf/diis/vspace_fock_sigma.hpp"
 
 namespace bdft_tests {
 
@@ -184,6 +185,69 @@ namespace bdft_tests {
       check_qphf_diis_vs_damping("pyscf_si222", 12, 1e-10,
                                  0.8731465661058635, 1e-6, "commutator", "si222");
     }
+  }
+
+  TEST_CASE("dyson_diis_streamed_commutator", "[methods_scf][diis]") {
+    decltype(nda::range::all) all;
+    imag_axes_ft::IAFT ft(50.0, 1.5, imag_axes_ft::ir_basis, "medium");
+    const long nt = ft.nt_f();
+    const long nw = ft.nw_f();
+    constexpr long ns = 1;
+    constexpr long nk = 2;
+    constexpr long nao = 3;
+    constexpr double mu = 0.17;
+
+    nda::array<ComplexType, 5> G_t(nt, ns, nk, nao, nao);
+    nda::array<ComplexType, 5> Sigma_t(nt, ns, nk, nao, nao);
+    nda::array<ComplexType, 4> F(ns, nk, nao, nao);
+    nda::array<ComplexType, 4> S(ns, nk, nao, nao);
+    nda::array<ComplexType, 4> H0(ns, nk, nao, nao);
+
+    for (long it = 0; it < nt; ++it)
+    for (long k = 0; k < nk; ++k)
+    for (long i = 0; i < nao; ++i)
+    for (long j = 0; j < nao; ++j) {
+      const double x = 1.0 + it + 3*k + 5*i + 7*j;
+      G_t(it, 0, k, i, j) = ComplexType(0.002*x, -0.001*(x + i - j));
+      Sigma_t(it, 0, k, i, j) = ComplexType(-0.0007*(x + j), 0.0003*(x + i));
+    }
+    for (long k = 0; k < nk; ++k)
+    for (long i = 0; i < nao; ++i)
+    for (long j = 0; j < nao; ++j) {
+      const double x = 1.0 + 2*k + 3*i + 5*j;
+      F(0, k, i, j) = ComplexType(0.01*x, 0.002*(i - j));
+      H0(0, k, i, j) = ComplexType(-0.02*x, 0.001*(i + j));
+      S(0, k, i, j) = ComplexType((i == j ? 1.0 : 0.01*x), 0.0005*(i - j));
+    }
+
+    iter_scf::FockSigma fs(F, Sigma_t, mu);
+    nda::array<ComplexType, 5> C_stream;
+    iter_scf::commutator_t(C_stream, &ft, G_t, fs, mu, S, H0);
+
+    // Dense formulation retained in the test as an independent numerical
+    // oracle for the bounded-memory frequency-streaming implementation.
+    nda::array<ComplexType, 5> G_w(nw, ns, nk, nao, nao);
+    nda::array<ComplexType, 5> Sigma_w(nw, ns, nk, nao, nao);
+    nda::array<ComplexType, 5> C_w(nw, ns, nk, nao, nao);
+    nda::array<ComplexType, 5> C_reference(nt, ns, nk, nao, nao);
+    ft.tau_to_w(G_t, G_w, imag_axes_ft::fermion);
+    ft.tau_to_w(Sigma_t, Sigma_w, imag_axes_ft::fermion);
+    for (long iw = 0; iw < nw; ++iw)
+    for (long k = 0; k < nk; ++k) {
+      const auto omega_mu = ft.omega(ft.wn_mesh()(iw)) + mu;
+      auto G_wsk = G_w(iw, 0, k, all, all);
+      auto Sigma_wsk = Sigma_w(iw, 0, k, all, all);
+      auto M = nda::make_regular(omega_mu*S(0, k, all, all) - H0(0, k, all, all)
+                                 - F(0, k, all, all) - Sigma_wsk);
+      nda::array<ComplexType, 2> left(nao, nao);
+      nda::array<ComplexType, 2> right(nao, nao);
+      nda::blas::gemm(G_wsk, M, left);
+      nda::blas::gemm(M, G_wsk, right);
+      C_w(iw, 0, k, all, all) = left - right;
+    }
+    ft.w_to_tau(C_w, C_reference, imag_axes_ft::fermion);
+
+    ARRAY_EQUAL(C_stream, C_reference, 5e-11);
   }
 
   TEST_CASE("dyson_scf_gw_diis_vs_damping", "[methods_scf]") {
