@@ -496,32 +496,79 @@ namespace methods {
         T_skia.win().fence();
         T_skia.all_reduce();
 
-        nda::array<ComplexType, 2> buffer_ib(nbnd, nbnd);
+        utils::check(nbnd == nbnd2, "Sigma_div_correction expects square band matrices: {} != {}", nbnd, nbnd2);
 
-        auto sDelta_tskij = make_shared_array<Array_view_5D_t>(*mpi, sSigma_tskij.shape());
-        auto Delta_loc = sDelta_tskij.local();
-        sDelta_tskij.win().fence();
-        for (size_t tsk = rank; tsk < nts * ns * nkpts; tsk += size) {
-          // tsk = it * ns*nkpts + is * nkpts + ik
-          size_t it = tsk / (ns * nkpts);
-          size_t is = (tsk / nkpts) % ns;
-          size_t ik = tsk % nkpts;
+        // Reduce the correction in bounded tiles and apply each reduced tile
+        // directly to Sigma.  The old full-size sDelta_tskij duplicated the
+        // already resident G and Sigma tensors (6.6 GiB in the production
+        // case).  Keep a full band matrix whenever it fits so the usual path
+        // still uses only two GEMMs per (tau, spin, k) point; band tiling is a
+        // safety fallback for exceptionally large band spaces.
+        constexpr size_t delta_tile_bytes = size_t{32} * 1024 * 1024;
+        size_t max_tile_elements = std::max<size_t>(1, delta_tile_bytes / sizeof(ComplexType));
+        long band_tile = std::min<long>(nbnd, static_cast<long>(std::sqrt(static_cast<double>(max_tile_elements))));
+        band_tile = std::max<long>(1, band_tile);
+        size_t band_tile_elements = static_cast<size_t>(band_tile) * static_cast<size_t>(band_tile);
+        long tsk_tile = static_cast<long>(std::max<size_t>(1, max_tile_elements / band_tile_elements));
+        size_t ntsk = static_cast<size_t>(nts) * static_cast<size_t>(ns) * static_cast<size_t>(nkpts);
 
-          size_t it_pos = (it < nt_half)? it : nts - it - 1;
-          RealType factor = -1.0 * MF->madelung() * eps_inv_head(it_pos).real();
+        using Array_view_3D_t = nda::array_view<ComplexType, 3>;
+        auto sDelta_tile = make_shared_array<Array_view_3D_t>(
+            *mpi, {tsk_tile, band_tile, band_tile});
+        nda::array<ComplexType, 2> buffer_ib(band_tile, nbnd);
+        decltype(nda::range::all) all;
 
-          auto G_ab = G_tskij(it, is, ik, nda::ellipsis{});
-          auto Delta_ij = Delta_loc(it, is, ik, nda::ellipsis{});
-          auto T_ia = T_skia_loc(is, ik, nda::ellipsis{});
-          nda::blas::gemm(T_ia, G_ab, buffer_ib);
-          nda::blas::gemm(ComplexType(factor), buffer_ib, nda::dagger(T_skia_loc(is, ik, nda::ellipsis{})), 
-                     ComplexType(0.0), Delta_ij);
+        for (size_t tsk0 = 0; tsk0 < ntsk; tsk0 += static_cast<size_t>(tsk_tile)) {
+          size_t tsk1 = std::min(ntsk, tsk0 + static_cast<size_t>(tsk_tile));
+          long tsk_count = static_cast<long>(tsk1 - tsk0);
+          for (long i0 = 0; i0 < nbnd; i0 += band_tile) {
+            long i1 = std::min(nbnd, i0 + band_tile);
+            long ni = i1 - i0;
+            for (long j0 = 0; j0 < nbnd; j0 += band_tile) {
+              long j1 = std::min(nbnd, j0 + band_tile);
+              long nj = j1 - j0;
+
+              sDelta_tile.set_zero();
+              auto Delta_tile_loc = sDelta_tile.local();
+              size_t rank_offset = (static_cast<size_t>(rank) + static_cast<size_t>(size) -
+                                    tsk0 % static_cast<size_t>(size)) % static_cast<size_t>(size);
+              for (size_t tsk = tsk0 + rank_offset; tsk < tsk1; tsk += static_cast<size_t>(size)) {
+
+                // tsk = it * ns*nkpts + is * nkpts + ik
+                size_t it = tsk / (static_cast<size_t>(ns) * static_cast<size_t>(nkpts));
+                size_t is = (tsk / static_cast<size_t>(nkpts)) % static_cast<size_t>(ns);
+                size_t ik = tsk % static_cast<size_t>(nkpts);
+                size_t it_pos = (it < static_cast<size_t>(nt_half))? it : static_cast<size_t>(nts) - it - 1;
+                RealType factor = -1.0 * MF->madelung() * eps_inv_head(it_pos).real();
+
+                auto G_ab = G_tskij(it, is, ik, nda::ellipsis{});
+                auto T_ia = T_skia_loc(is, ik, nda::range(i0, i1), all);
+                auto T_ja = T_skia_loc(is, ik, nda::range(j0, j1), all);
+                auto buffer_i = buffer_ib(nda::range(0, ni), all);
+                auto Delta_ij = Delta_tile_loc(
+                    static_cast<long>(tsk - tsk0), nda::range(0, ni), nda::range(0, nj));
+                nda::blas::gemm(T_ia, G_ab, buffer_i);
+                nda::blas::gemm(ComplexType(factor), buffer_i, nda::dagger(T_ja),
+                                ComplexType(0.0), Delta_ij);
+              }
+              sDelta_tile.all_reduce(delta_tile_bytes);
+
+              if (sSigma_tskij.node_comm()->root()) {
+                auto Sigma_loc = sSigma_tskij.local();
+                auto Delta_tile_loc_reduced = sDelta_tile.local();
+                for (long itsk = 0; itsk < tsk_count; ++itsk) {
+                  size_t tsk = tsk0 + static_cast<size_t>(itsk);
+                  size_t it = tsk / (static_cast<size_t>(ns) * static_cast<size_t>(nkpts));
+                  size_t is = (tsk / static_cast<size_t>(nkpts)) % static_cast<size_t>(ns);
+                  size_t ik = tsk % static_cast<size_t>(nkpts);
+                  Sigma_loc(it, is, ik, nda::range(i0, i1), nda::range(j0, j1)) +=
+                      Delta_tile_loc_reduced(itsk, nda::range(0, ni), nda::range(0, nj));
+                }
+              }
+            }
+          }
         }
-        sDelta_tskij.win().fence();
-        sDelta_tskij.all_reduce();
-
-        if (sSigma_tskij.node_comm()->root())
-          sSigma_tskij.local() += sDelta_tskij.local();
+        sSigma_tskij.node_sync();
         sSigma_tskij.communicator()->barrier();
       } else {
         utils::check(false, "Unsupported divergence treatment: {}", div_treatment);
