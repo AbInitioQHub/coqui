@@ -87,6 +87,10 @@ inline std::tuple<std::string,std::string> utest_filename(std::string src)
     return std::make_tuple(std::string(PROJECT_SOURCE_DIR)+
                                "/tests/unit_test_files/qe/si_kp222_nbnd8_so/",
                            std::string("pwscf"));
+  } else if (src == "qe_si333_sym") {
+    return std::make_tuple(std::string(PROJECT_SOURCE_DIR)+
+                               "/tests/unit_test_files/qe/si_kp333_nbnd8_sym/",
+                           std::string("pwscf"));
   } else if (src == "qe_lih222") {
     return std::make_tuple(std::string(PROJECT_SOURCE_DIR)+
                                "/tests/unit_test_files/qe/lih_kp222_nbnd16/",

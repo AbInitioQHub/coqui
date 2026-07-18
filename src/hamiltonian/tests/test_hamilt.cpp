@@ -709,9 +709,25 @@ void test_hartree_impl(std::shared_ptr<mpi_context_t> &mpi)
     check_Hartree<MEM>(*mpi, qe_h5, true); // diagonal density as the input
   }
 
-  SECTION("GaAs222_so") 
+  SECTION("GaAs222_so")
   {
     auto qe_h5 = std::make_shared<mf::MF>(mf::default_MF(mpi, "qe_GaAs222_so", mf::h5_input_type));
+    check_Hartree<MEM>(*mpi, qe_h5, true); // diagonal density as the input
+  }
+
+  // Diamond Si with force_symmorphic: the symmetry list has no inversion, so half
+  // the BZ is reached by time reversal, and the inversion center is off the FFT
+  // grid origin. This exercises the time-reversal branch of v_h (both the full-
+  // density and diagonal-density paths), which the LiH/GaAs fixtures do not.
+  SECTION("si333_sym")
+  {
+    auto qe_h5 = std::make_shared<mf::MF>(mf::default_MF(mpi, "qe_si333_sym", mf::h5_input_type));
+    check_Hartree<MEM>(*mpi, qe_h5);
+  }
+
+  SECTION("si333_sym_diag")
+  {
+    auto qe_h5 = std::make_shared<mf::MF>(mf::default_MF(mpi, "qe_si333_sym", mf::h5_input_type));
     check_Hartree<MEM>(*mpi, qe_h5, true); // diagonal density as the input
   }
 }
