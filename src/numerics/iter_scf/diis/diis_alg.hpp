@@ -25,6 +25,7 @@
 #define DIIS_DEBUG 0
 
 #include <complex>
+#include <sstream>
 #include "nda/linalg/dot.hpp"
 #include <nda/linalg/eigenelements.hpp>
 #include "diis_residual.h"
@@ -96,23 +97,26 @@ private:
     std::string diis_str = "DIIS: ";
 
     void print_B() {
-        std::cout << diis_str << "error overlaps B:" << std::endl;
-        std::cout << std::setprecision(10);
+        std::ostringstream os;
+        os << diis_str << "error overlaps B:" << std::endl;
+        os << std::setprecision(10);
         for(auto i : nda::range(0, m_B.shape()[0])) {
-            for(auto j : nda::range(0, m_B.shape()[1])) 
-                std::cout << m_B(i,j) << " ";
+            for(auto j : nda::range(0, m_B.shape()[1]))
+                os << m_B(i,j) << " ";
 
-            std::cout << std::endl;;
+            os << std::endl;
         }
+        app_log(3, "{}", os.str());
     }
 
     void print_C() {
-        std::cout << diis_str << "Extrapolation coefficients:" << std::endl;
-        std::cout << std::setprecision(10);
+        std::ostringstream os;
+        os << diis_str << "Extrapolation coefficients:" << std::endl;
+        os << std::setprecision(10);
         for(auto i : nda::range(0, m_B.shape()[0]))
-                std::cout << m_C(i) << " ";
+                os << m_C(i) << " ";
 
-            std::cout << std::endl;;
+        app_log(3, "{}", os.str());
     }
 
 public:
@@ -411,8 +415,8 @@ private:
         nda::array<double, 1> x(B.shape()[1]); 
         nda::blas::gemv(1.0, Binv, bb, 0.0, x);
         
-        std::complex<double> sum = std::accumulate(x.begin(), x.end(), 0.0);
-        m_C = make_regular(nda::real(x / sum));
+        double sum = std::accumulate(x.begin(), x.end(), 0.0);
+        m_C = make_regular(x / sum);
      }
 
 
