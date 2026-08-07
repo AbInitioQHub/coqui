@@ -390,17 +390,18 @@ private:
         Binv() = 0;
         eig_inv() = 0;
 
+        auto eig_abs = nda::map([](double x) { return std::abs(x); })(eig);
         double eig_max = nda::max_element(eig);
-        double eig_min = nda::min_element(eig);
-        double cond = eig_max / eig_min;
+        double cond = nda::max_element(eig_abs) / nda::min_element(eig_abs);
 
         const double eig_thresh = 1E-12;
 
         app_log(2, diis_str + "Condition number of B: {}", cond);
 
-        for (auto i : nda::range(0, eig.size())) { 
-            if(eig(i)*cond > eig_thresh) {
-                eig_inv(i,i) = 1.0/(eig(i)); 
+        // Pseudoinverse: only keep positive eigenvalues above eig_thresh*eig_max.
+        for (auto i : nda::range(0, eig.size())) {
+            if(eig(i) > eig_thresh*eig_max) {
+                eig_inv(i,i) = 1.0/(eig(i));
             }
         }
 
