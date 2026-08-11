@@ -497,7 +497,11 @@ if(COQUI_PYTHON_SUPPORT)
     GIT_TAG        unstable
     EXCLUDE_FROM_ALL
   )
-  FetchContent_MakeAvailable(c2py)
+  # NDA's h5 dependency may already provide c2py when Python support is enabled.
+  # Reuse that target instead of adding the same FetchContent project twice.
+  if(NOT TARGET c2py::c2py)
+    FetchContent_MakeAvailable(c2py)
+  endif()
 
   if (COQUI_UPDATE_PYTHON_BINDINGS)
     find_program(clair-c2py clair-c2py REQUIRED)
@@ -561,7 +565,8 @@ if(ENABLE_DLR)
   FetchContent_Declare(
       cppdlr
       GIT_REPOSITORY https://github.com/flatironinstitute/cppdlr.git
-      GIT_TAG        f6bd6ab1823403015486c2c6b3399fd4db4468c1 #main
+      # cppdlr PR #20: include self-symmetric fixed points in SYM grids.
+      GIT_TAG        6f3f2d836d43da7a01b4e53292ad49f896a19667
   )
   FetchContent_MakeAvailable(cppdlr)
   # temporary workaround before cppdlr's nda dependency is updated. 
