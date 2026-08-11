@@ -174,7 +174,10 @@ void IAFT::w_to_tau_partial(ndaArray_A&& Xw_i, ndaArray_B&& X_ti, stats_e stats,
   auto Xw_i_1D = nda::reshape(Xw_i, shape_t<1>{dim1});
   auto T_t = (stats == fermion)?
       nda::make_regular(Ttw_ff()(nda::range::all, iwn)) : nda::make_regular(Ttw_bb()(nda::range::all, iwn));
-  X_ti_2D += nda::blas::outer_product(T_t, Xw_i_1D);
+  // Accumulate the rank-1 update directly into the output.  Constructing an
+  // outer_product here materializes a full (nt, dim1) temporary, which defeats
+  // the bounded-memory purpose of the partial transform for large tensors.
+  nda::blas::ger(ComplexType{1.0, 0.0}, T_t, Xw_i_1D, X_ti_2D);
 }
 
 /**
