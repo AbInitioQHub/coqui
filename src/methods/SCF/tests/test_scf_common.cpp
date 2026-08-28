@@ -189,8 +189,11 @@ namespace bdft_tests {
   TEST_CASE("dyson_scf_gw_diis_vs_damping", "[methods_scf]") {
     auto& mpi_context = utils::make_unit_test_mpi_context();
 
-    // Cheap setup for regression: lower beta/wmax and compact THC factors.
-    imag_axes_ft::IAFT ft(200.0, 0.8, imag_axes_ft::dlr_basis);
+    // Cheap setup for regression: short beta and compact THC factors. wmax must
+    // cover the spectrum of H0+F relative to mu (max|eps-mu| = 2.11 a.u. here);
+    // a narrower window leaves G outside the DLR's representable range, and the
+    // converged energies then vary by ~1e-6 between BLAS/LAPACK implementations.
+    imag_axes_ft::IAFT ft(100.0, 2.4, imag_axes_ft::dlr_basis);
     auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi_context, "qe_lih222"));
 
     auto run_dyson_gw = [&](iter_scf::iter_scf_t &iter_sol, const std::string &output)
@@ -205,7 +208,7 @@ namespace bdft_tests {
       MBState mb_state(mpi_context, ft, output);
       auto [e_hf, e_corr] = scf_loop(mb_state, dyson, eri, ft,
                                      solvers::mb_solver_t(&hf, &gw, &scr_eri), &iter_sol,
-                                     50, false, 1e-7, true);
+                                     50, false, 5e-8, true);
       mpi_context->comm.barrier();
       if (mpi_context->comm.root()) std::remove((output + ".mbpt.h5").c_str());
       mpi_context->comm.barrier();
@@ -219,8 +222,8 @@ namespace bdft_tests {
     auto [e_hf_diis, e_corr_diis] = run_dyson_gw(diis_sol, "dyson_gw_diis_test");
 
     // Damping reference for this cheap setup; DIIS should converge to the same state.
-    constexpr double e_hf_ref = -0.41698958999621144 + -3.7523191620415846;
-    constexpr double e_corr_ref = -0.10985159447702234;
+    constexpr double e_hf_ref = -0.4146530183717176 + -3.8314258924454028;
+    constexpr double e_corr_ref = -0.0887842498009347;
     constexpr double tol = 1e-6;
     VALUE_EQUAL(e_hf_damp, e_hf_ref, tol, tol);
     VALUE_EQUAL(e_corr_damp, e_corr_ref, tol, tol);
