@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #undef NDEBUG
 
 #include "catch2/catch.hpp"
@@ -25,21 +46,21 @@ namespace bdft_tests {
   TEST_CASE("thc_g0w0_qe_bdft", "[methods][thc][gw][qe][bdft]") {
     auto& mpi_context = utils::make_unit_test_mpi_context();
 
-    imag_axes_ft::IAFT ft(1000, 1.2, imag_axes_ft::ir_source);
+    imag_axes_ft::IAFT ft(1000, 1.2, imag_axes_ft::ir_basis, "high");
     std::string output = "coqui";
 
     auto solve_thc_g0w0 = [&](std::shared_ptr<mf::MF> &mf) {
       solvers::hf_t hf;
-      solvers::gw_t gw(&ft, string_to_div_enum("ignore_g0"), output);
-      solvers::scr_coulomb_t scr_eri(&ft, "rpa", string_to_div_enum("ignore_g0"));
+      solvers::gw_t gw(&ft, "ignore_g0", output);
+      solvers::scr_coulomb_t scr_eri(&ft, "rpa", "ignore_g0");
 
       thc_reader_t thc(mf, make_thc_reader_ptree(mf->nbnd()*24, "", "incore", "", "bdft",
                                                  1e-10, mf->ecutrho(), 1, 1024));
       auto eri = mb_eri_t(thc, thc);
-      qp_context_t qp_context("sc", "pade", 18, 0.0001, 1e-8);
+      qp_params_t qp_params("sc", "pade", 18, 0.0001, 1e-8, "evscf");
       iter_scf::iter_scf_t iter_sol("damping");
       MBState mb_state(mpi_context, ft, output);
-      [[maybe_unused]] double e_hf = qp_scf_loop<true>(mb_state, eri, ft, qp_context,
+      [[maybe_unused]] double e_hf = qp_scf_loop(mb_state, eri, ft, qp_params,
                                       solvers::mb_solver_t(&hf,&gw,&scr_eri), &iter_sol, 1, false, 1e-8);
       mpi_context->comm.barrier();
 
@@ -101,13 +122,14 @@ namespace bdft_tests {
     auto& mpi_context = utils::make_unit_test_mpi_context();
 
     auto solve_thc_gw = [&](
-        std::shared_ptr<mf::MF> &mf, double wmax, bool chol_eri_hf=false) {
-      imag_axes_ft::IAFT ft(1000, wmax, imag_axes_ft::ir_source);
+      std::shared_ptr<mf::MF> &mf, double wmax, bool chol_eri_hf=false) {
+
+      imag_axes_ft::IAFT ft(1000, wmax, imag_axes_ft::ir_basis, "high");
       std::string output = "coqui";
 
       solvers::hf_t hf;
-      solvers::gw_t gw(&ft, string_to_div_enum("ignore_g0"), output);
-      solvers::scr_coulomb_t scr_eri(&ft, "rpa", string_to_div_enum("ignore_g0"));
+      solvers::gw_t gw(&ft, "ignore_g0", output);
+      solvers::scr_coulomb_t scr_eri(&ft, "rpa", "ignore_g0");
       simple_dyson dyson(mf.get(), &ft);
       MBState mb_state(mpi_context, ft, output);
 
@@ -166,16 +188,17 @@ namespace bdft_tests {
       auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi_context, "qe_lih222"));
       solve_thc_gw(mf, 1.2, true);
     }
+
   }
 
   TEST_CASE("thc_rpa_qe", "[methods][thc][rpa][qe]") {
     auto& mpi_context = utils::make_unit_test_mpi_context();
 
     auto solve_thc_rpa = [&](std::shared_ptr<mf::MF> &mf, double wmax) {
-      imag_axes_ft::IAFT ft(1000, wmax, imag_axes_ft::ir_source);
+      imag_axes_ft::IAFT ft(1000, wmax, imag_axes_ft::ir_basis, "high");
 
       solvers::hf_t hf;
-      solvers::gw_t gw(&ft);
+      solvers::gw_t gw(&ft, "gygi_smallest_q");
 
       /**
        * Reference value is obtained from Chol-RPA with ERIs converge to 1e-10.
@@ -214,9 +237,9 @@ namespace bdft_tests {
 
     std::string output = "coqui";
     auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi_context, mf::pyscf_source));
-    imag_axes_ft::IAFT ft(1000, 12.0, imag_axes_ft::ir_source);
+    imag_axes_ft::IAFT ft(1000, 12.0, imag_axes_ft::ir_basis, "high");
     solvers::hf_t hf;
-    solvers::gw_t gw(&ft, string_to_div_enum("ignore_g0"), output);
+    solvers::gw_t gw(&ft, "ignore_g0", output);
 
     /**
      * Reference value is obtained from Chol-GW with ERIs converge to 1e-10.
@@ -229,7 +252,7 @@ namespace bdft_tests {
                                                  1e-10, mf->ecutrho(), 1, 1024));
       auto eri = mb_eri_t(thc, thc);
       iter_scf::iter_scf_t iter_sol("damping");
-      solvers::scr_coulomb_t scr_eri(&ft, "rpa", string_to_div_enum("ignore_g0"));
+      solvers::scr_coulomb_t scr_eri(&ft, "rpa", "ignore_g0");
       auto [e_hf, e_corr] = scf_loop(mb_state, dyson, eri, ft,
                                      solvers::mb_solver_t(&hf,&gw,&scr_eri), &iter_sol,
                                      1, false, 1e-9, true);
@@ -246,7 +269,7 @@ namespace bdft_tests {
       thc_reader_t thc(mf, "outcore", "./thc_eri.h5");
       auto eri = mb_eri_t(thc, thc);
       iter_scf::iter_scf_t iter_sol("damping");
-      solvers::scr_coulomb_t scr_eri(&ft, "rpa", string_to_div_enum("ignore_g0"));
+      solvers::scr_coulomb_t scr_eri(&ft, "rpa", "ignore_g0");
       auto [e_hf, e_corr] = scf_loop(mb_state, dyson, eri, ft,
                                      solvers::mb_solver_t(&hf,&gw,&scr_eri), &iter_sol,
                                      1, false, 1e-9, true);
@@ -270,9 +293,9 @@ namespace bdft_tests {
     auto& mpi_context = utils::make_unit_test_mpi_context();
 
     auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi_context, mf::pyscf_source));
-    imag_axes_ft::IAFT ft(1000, 12.0, imag_axes_ft::ir_source);
+    imag_axes_ft::IAFT ft(1000, 12.0, imag_axes_ft::ir_basis, "high");
     solvers::hf_t hf;
-    solvers::gw_t gw(&ft);
+    solvers::gw_t gw(&ft, "gygi_smallest_q");
     solvers::mb_solver_t mb_solver(&hf, &gw);
 
     { // incore thc-rpa
@@ -306,12 +329,12 @@ namespace bdft_tests {
     auto& mpi_context = utils::make_unit_test_mpi_context();
 
     std::string output = "coqui";
-    imag_axes_ft::IAFT ft(2000, 6.0, imag_axes_ft::ir_source);
+    imag_axes_ft::IAFT ft(2000, 6.0, imag_axes_ft::ir_basis, "high");
 
     auto solve_gdf_thc_gw = [&](std::shared_ptr<mf::MF> &mf, std::string gdf_dir) {
       solvers::hf_t hf;
-      solvers::gw_t gw(&ft, string_to_div_enum("ignore_g0"), output);
-      solvers::scr_coulomb_t scr_eri(&ft, "rpa", string_to_div_enum("ignore_g0"));
+      solvers::gw_t gw(&ft, "ignore_g0", output);
+      solvers::scr_coulomb_t scr_eri(&ft, "rpa", "ignore_g0");
       /**
        * References are obtained from the same GDF-THC-GW with alpha=12
        * The accuracy is roughly 1e-4 at Np=280 (alpha~11.67) for this system.
@@ -337,4 +360,52 @@ namespace bdft_tests {
     auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi_context, "pyscf_h2o_mol"));
     solve_gdf_thc_gw(mf, gdf_dir);
   }
+
+#ifdef ENABLE_DLR
+  TEST_CASE("thc_gw_dlr_vs_ir", "[methods][thc][gw][qe][iaft][dlr][ir]") {
+    auto& mpi_context = utils::make_unit_test_mpi_context();
+
+    auto solve_thc_gw = [&](std::shared_ptr<mf::MF> &mf, double wmax) {
+
+      imag_axes_ft::IAFT ft(1000, wmax, imag_axes_ft::dlr_basis, "high");
+      std::string output = "coqui";
+
+      solvers::hf_t hf;
+      solvers::gw_t gw(&ft, "ignore_g0", output);
+      solvers::scr_coulomb_t scr_eri(&ft, "rpa", "ignore_g0");
+      simple_dyson dyson(mf.get(), &ft);
+      MBState mb_state(mpi_context, ft, output);
+
+      /**
+       * Reference value is obtained from Chol-GW with ERIs converge to 1e-10 with IR basis.
+       * The accuracy is roughly 1e-5 at alpha=20 for this system.
+       **/
+      double e_hf;
+      double e_corr;
+      thc_reader_t thc(mf, make_thc_reader_ptree(mf->nbnd() * 20, "", "incore", "", "bdft",
+                                                 1e-10, mf->ecutrho(), 1, 1024));
+      auto eri = mb_eri_t(thc, thc);
+      iter_scf::iter_scf_t iter_sol("damping");
+      std::tie(e_hf, e_corr) = scf_loop(mb_state, dyson, eri, ft,
+                                        solvers::mb_solver_t(&hf,&gw,&scr_eri), &iter_sol,
+                                        1, false, 1e-9, true);
+
+      VALUE_EQUAL(e_hf, -4.224737908935479, 1e-5);
+      VALUE_EQUAL(e_corr, -0.11256940748889475, 1e-5);
+      mpi_context->comm.barrier();
+
+      if (mpi_context->comm.root()) {
+        remove((output+".mbpt.h5").c_str());
+      }
+      mpi_context->comm.barrier();
+    };
+
+    SECTION("sym") {
+      auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi_context, "qe_lih222_sym"));
+      solve_thc_gw(mf, 10.0);
+      solve_thc_gw(mf, 100.0);
+    }
+  }
+#endif
+
 } // bdft_tests

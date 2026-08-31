@@ -1,0 +1,44 @@
+&CONTROL
+   verbosity        = 'high'
+   outdir           = './out'
+   prefix           = 'si'
+   pseudo_dir       = '../../pseudo'
+/
+&SYSTEM
+   ibrav            = 0
+   nat              = 2
+   ntyp             = 1
+   ecutwfc          = 50.0
+   occupations      = 'smearing'
+   degauss          = 0.0015
+   smearing         = 'm-p'
+   input_dft        = 'pbe'
+/
+&ELECTRONS
+   conv_thr         = 1e-10
+   mixing_beta      = 0.7
+   diagonalization  = 'david'
+/
+&IONS
+/
+&CELL
+/
+&FCP
+/
+&RISM
+/
+ATOMIC_SPECIES
+Si 28.085 Si_ONCV_PBE-1.2.upf
+
+K_POINTS automatic
+8 8 8  0 0 0
+
+CELL_PARAMETERS angstrom
+3.83958982184295 0.00000000000000 0.00000000000000
+1.91979491092148 3.32518232582816 0.00000000000000
+1.91979491092148 1.10839410860939 3.13501196169967
+
+ATOMIC_POSITIONS angstrom
+Si 0.0000000000 0.0000000000 0.0000000000  
+Si 1.9197949109 1.1083941086 0.7837529904  
+

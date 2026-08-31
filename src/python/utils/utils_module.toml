@@ -17,7 +17,7 @@ namespaces = ""
 #    if reject_names and reject_names matches Qname : skip X
 #    else keep X.
 #
-match_names = "coqui_py::set_verbosity|coqui_py::utest_filename"
+match_names = "coqui_py::set_verbosity|coqui_py::utest_filename|coqui_py::app_log|coqui_py::app_debug|coqui_py::app_warning|coqui_py::app_error"
 reject_names = "utils::.*"
 
 # If true, transform methods with no arguments into a read only property

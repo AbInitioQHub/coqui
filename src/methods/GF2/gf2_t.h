@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef COQUI_GF2_T_H
 #define COQUI_GF2_T_H
 
@@ -15,7 +36,6 @@
 #include "numerics/imag_axes_ft/IAFT.hpp"
 #include "methods/scr_coulomb/scr_coulomb_t.h"
 #include "methods/ERI/detail/concepts.hpp"
-#include "methods/ERI/div_treatment_e.hpp"
 
 #define W_GATHER_OLD 0 // a switch to the old version for debugging
 
@@ -62,7 +82,7 @@ namespace methods {
 
     public:
       gf2_t(mf::MF *MF, imag_axes_ft::IAFT *ft,
-           div_treatment_e div = gygi, 
+           std::string div = "gygi", 
            std::string direct_type="gf2",
            std::string exchange_alg="orb",
            std::string exchange_type="gf2",
@@ -95,7 +115,7 @@ namespace methods {
       // accessor functions
       long& iter(); 
       std::string output() const;
-      div_treatment_e gw_div_treatment() const;
+      std::string gw_div_treatment() const;
       double& t_thresh(); 
 
       std::string direct_type() const; 
@@ -701,7 +721,7 @@ namespace methods {
       mf::MF *_MF = nullptr;
       imag_axes_ft::IAFT* _ft = nullptr;
 
-      div_treatment_e _div_treatment = div_treatment_e::ignore_g0;
+      std::string _div_treatment = "ignore_g0";
       double _t_thresh = 0.0; // it prescreening threshold
       std::string _direct_type = "gf2";
       std::string _exchange_type = "gf2";

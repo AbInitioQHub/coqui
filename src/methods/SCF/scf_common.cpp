@@ -1,5 +1,25 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #include "scf_common.hpp"
-#include "dca_dyson.h"
 #include "hamiltonian/one_body_hamiltonian.hpp"
 #include "mean_field/MF.hpp"
 #include "utilities/mpi_context.h"
@@ -7,6 +27,7 @@
 #include "simple_dyson.h"
 
 namespace methods {
+
 double compute_Nelec(double mu, const nda::array<ComplexType, 4> &spectra,
                      const mf::MF &mf, const imag_axes_ft::IAFT &FT) {
   auto [_nw, _ns, nkpts, _nbnd] = spectra.shape();
@@ -14,7 +35,7 @@ double compute_Nelec(double mu, const nda::array<ComplexType, 4> &spectra,
   nda::array<ComplexType, 2> Xt(FT.nt_f(), _ns);
   nda::array<ComplexType, 1> nelecs(_ns);
   auto k_weight = mf.k_weight();
-  double scl = (_ns == 1 and mf.npol() == 1 ? 2.0 : 1.0); 
+  double scl = (_ns == 1 and mf.npol() == 1 ? -2.0 : -1.0); 
 
   for (size_t n = 0; n < _nw; ++n) {
     long wn = FT.wn_mesh()(n);
@@ -28,14 +49,12 @@ double compute_Nelec(double mu, const nda::array<ComplexType, 4> &spectra,
     }
   }
 
-  FT.w_to_tau(Xw, Xt, imag_axes_ft::fermi);
+  FT.w_to_tau(Xw, Xt, imag_axes_ft::fermion);
   FT.tau_to_beta(Xt, nelecs);
 
   ComplexType nelec = scl*std::accumulate(nelecs.begin(),nelecs.end(),ComplexType(0.0));
-  nelec *= -1.0;
-  if (nelec.imag() / mf.nelec() >= 1e-10) {
-    app_log(1, "[WARNING] nelec.imag()/nelec_target = {}",
-            nelec.imag() / mf.nelec());
+  if (nelec.imag() / mf.nelec() >= 1e3*FT.eps()) {
+    app_log(1, "[WARNING] nelec.imag()/nelec_target = {}", nelec.imag() / mf.nelec());
   }
 
   return nelec.real();
@@ -73,11 +92,11 @@ auto eval_hf_energy(const X_t &sDm_skij, const X_t &sF_skij, const X_t &sH0_skij
   e_1e *= spin_factor;
   e_hf *= spin_factor;
   // TODO CNY: _MF->e_nuc() is missing
-  if (e_1e.imag() / e_1e.real() >= 1e-10) {
+  if (e_1e.imag() / e_1e.real() >= 1e-8) {
     app_log(1, "[WARNING] e_1e.imag()/e_1e.real() = {}, e_1e.imag() = {}, e_1e.real() = {}",
             e_1e.imag()/e_1e.real(), e_1e.imag(), e_1e.real());
   }
-  if (e_hf.imag() / e_hf.real() >= 1e-10) {
+  if (e_hf.imag() / e_hf.real() >= 1e-8) {
     app_log(1, "[WARNING] e_hf.imag()/e_hf.real() = {}, e_hf.imag() = {}, e_hf.real() = {}",
             e_hf.imag()/e_hf.real(), e_hf.imag(), e_hf.real());
   }
@@ -109,8 +128,8 @@ double eval_corr_energy(comm_t& comm, const imag_axes_ft::IAFT &FT,
   for (size_t i = rank; i < nbnd; i += size) {
     Sigma_tski = Sigma_shm.local()(all, all, all, i, all);
     G_tski = G_shm.local()(all, all, all, all, i);
-    FT.tau_to_w(Sigma_tski, Sigma_wski, imag_axes_ft::fermi);
-    FT.tau_to_w(G_tski, G_wski, imag_axes_ft::fermi);
+    FT.tau_to_w(Sigma_tski, Sigma_wski, imag_axes_ft::fermion);
+    FT.tau_to_w(G_tski, G_wski, imag_axes_ft::fermion);
     for (size_t ws = 0; ws < nw * ns; ++ws) {
       for (size_t ik = 0; ik < nkpts; ++ik ) {
         SigmaG_ws_1D(ws) += k_weight(ik) * nda::blas::dot(Sigma_w_3D(ws, ik, all), G_w_3D(ws, ik, all));
@@ -122,13 +141,13 @@ double eval_corr_energy(comm_t& comm, const imag_axes_ft::IAFT &FT,
 
   nda::array<ComplexType, 2> SigmaG_ts(nts, ns);
   nda::array<ComplexType, 1> SigmaG_beta_s(ns);
-  FT.w_to_tau(SigmaG_ws, SigmaG_ts, imag_axes_ft::fermi);
+  FT.w_to_tau(SigmaG_ws, SigmaG_ts, imag_axes_ft::fermion);
   FT.tau_to_beta(SigmaG_ts, SigmaG_beta_s);
 
   // MAM: need to know npol here, scale only when npol==1 and ns==1
   RealType spin_factor = (ns == 2) ? 1.0 : 2.0;
   ComplexType e_corr = (-0.5 * spin_factor) * nda::sum(SigmaG_beta_s);
-  if (e_corr.imag() / e_corr.real() >= 1e-8) {
+  if (e_corr.imag() / e_corr.real() >= 1e2*FT.eps()) {
     app_log(1, "[WARNING] e_corr.imag()/e_corr.real() = {}, e_corr.imag() = {}, e_corr.real() = {}",
             e_corr.imag()/e_corr.real(), e_corr.imag(), e_corr.real());
   }
@@ -140,101 +159,108 @@ void update_G(dyson_type &dyson, const mf::MF &mf, const imag_axes_ft::IAFT &FT,
               const X_t & F, const Xt_t &Sigma, double &mu, bool const_mu) {
   app_log(2, "* Solving Green's function:");
   if(!const_mu)
-    mu = update_mu(mu, dyson, mf, FT, F, G, Sigma);
+    mu = update_mu(mu, dyson, mf, FT, F, Sigma);
   dyson.solve_dyson(Dm, G, F, Sigma, mu);
 }
 
 template<typename dyson_type, typename X_t, typename Xt_t>
-double update_mu(double old_mu, dyson_type& dyson, const mf::MF &mf, const imag_axes_ft::IAFT &FT,
-                 const X_t&F, const Xt_t&G, const Xt_t&Sigma) {
-  double nel, mu1, mu2, mu_mid;
-  double mu = old_mu;
+double update_mu_bisection(double old_mu, dyson_type& dyson, const mf::MF &mf,
+                           const imag_axes_ft::IAFT &FT,
+                           const X_t&F, const Xt_t&Sigma) {
   double nel_target = mf.nelec();
   double delta = 0.2;
   nda::array<ComplexType, 4> FpSigma_spectra(FT.nw_f(), mf.nspin(), mf.nkpts_ibz(), mf.nbnd());
-  dyson.compute_eigenspectra(mu, F, G, Sigma, FpSigma_spectra);
-  nel = compute_Nelec(old_mu, FpSigma_spectra, mf, FT);
-  app_log(2, "Initial chemical potential (mu) = {}, nelec = {}", old_mu, nel);
+  dyson.compute_eigenspectra(F, Sigma, FpSigma_spectra);
+  auto eval_f = [&](double mu) {
+    return compute_Nelec(mu, FpSigma_spectra, mf, FT) - nel_target;
+  };
 
-  if (std::abs(nel - nel_target) < dyson.mu_tol()) {
-    app_log(1, "Chemical potential found (mu) = {} a.u.", mu);
-    app_log(1, "Number of electrons per unit cell = {}", nel);
-    return mu;
-  }
+  double nel_old = compute_Nelec(old_mu, FpSigma_spectra, mf, FT);
+  app_log(2, "Initial chemical potential (mu) = {}, nelec = {}", old_mu, nel_old);
 
-  if (nel >= nel_target) {
-    mu2 = old_mu;
-    mu1 = old_mu - delta;
-    double nel1 = compute_Nelec(mu1, FpSigma_spectra, mf, FT);
-    while (nel1 > nel_target) {
-      mu1 -= delta;
-      nel1 = compute_Nelec(mu1, FpSigma_spectra, mf, FT);
-    }
-    app_log(4, "mu = {}, nelec = {}", mu1, nel1);
-  } else {
-    mu1 = old_mu;
-    mu2 = old_mu + delta;
-    double nel2 = compute_Nelec(mu2, FpSigma_spectra, mf, FT);
-    while (nel2 < nel_target) {
-      mu2 += delta;
-      nel2 = compute_Nelec(mu2, FpSigma_spectra, mf, FT);
-    }
-    app_log(4, "mu = {}, nelec = {}", mu2, nel2);
-  }
-  mu_mid = (mu1 + mu2) * 0.5;
-  nel = compute_Nelec(mu_mid, FpSigma_spectra, mf, FT);
-  app_log(4, "mu = {}, nelec = {}", mu_mid, nel);
-
-  while (std::abs(nel - nel_target) >= dyson.mu_tol()) {
-    if (nel >= nel_target) {
-      mu2 = mu_mid;
-    } else {
-      mu1 = mu_mid;
-    }
-    mu_mid = (mu1 + mu2) * 0.5;
-    nel = compute_Nelec(mu_mid, FpSigma_spectra, mf, FT);
-    app_log(4, "mu = {}, nelec = {}", mu_mid, nel);
-  }
-  mu = mu_mid;
+  auto [mu, f_mu] = detail::update_mu_bisection_impl(old_mu, dyson.mu_tol(), delta, eval_f);
+  double nel = f_mu + nel_target;
   app_log(1, "Chemical potential found (mu) = {} a.u.", mu);
   app_log(1, "Number of electrons per unit cell = {}", nel);
   return mu;
 }
 
-template<typename comm_t, typename X_t, typename Xt_t>
-auto init_solver(comm_t &context, iter_scf::iter_scf_t& iter_solver,
-                 long it, std::string output,
-                 X_t &sF_skij, Xt_t &sSigma_tskij, const imag_axes_ft::IAFT *FT){
-  if(iter_solver.iter_alg() == iter_scf::DIIS and context.comm.root()) { // Initialize the iterative solver
-    std::string filename = output + ".mbpt.h5";
-    h5::file file(filename, 'r');
-    h5::group grp(file);
-    utils::check(grp.has_subgroup("scf"), "Simulation HDF5 file does not have an scf group");
-    auto scf_grp = grp.open_group("scf");
-    auto sys_grp = grp.open_group("system");
-    nda::array<ComplexType, 4> H0 = sF_skij.local();
-    nda::array<ComplexType, 4> S = sF_skij.local();
-    nda::h5_read(sys_grp, "H0_skij", H0);
-    nda::h5_read(sys_grp, "S_skij", S);
-    double mu = 0;
-    if (scf_grp.has_subgroup("iter" + std::to_string(it-1))) {
-      auto mf_grp = scf_grp.open_group("iter" + std::to_string(it-1));
-      h5::h5_read(mf_grp, "mu", mu);
-    }
-    iter_solver.initialize(sF_skij.local(), sSigma_tskij.local(), mu, S, H0, FT, output);
+template<typename dyson_type, typename X_t, typename Xt_t>
+double update_mu_midpoint(double old_mu, dyson_type& dyson, const mf::MF &mf,
+                          const imag_axes_ft::IAFT &FT, const X_t&F,
+                          const Xt_t&Sigma) {
+  double nel_target = mf.nelec();
+  double tol = dyson.mu_tol();
+  double delta = 0.2;
+
+  nda::array<ComplexType, 4> FpSigma_spectra(
+      FT.nw_f(), mf.nspin(), mf.nkpts_ibz(), mf.nbnd());
+  dyson.compute_eigenspectra(F, Sigma, FpSigma_spectra);
+
+  auto eval_f = [&](double mu) {
+    return compute_Nelec(mu, FpSigma_spectra, mf, FT) - nel_target;
+  };
+
+  double f_old = eval_f(old_mu);
+  app_log(2, "Initial chemical potential (mu) = {}, nelec - target = {}",
+          old_mu, f_old);
+
+  auto [mu, f_mu, mu_left, mu_right] =
+      detail::update_mu_midpoint_impl(old_mu, tol, delta, eval_f);
+  double nel = f_mu + nel_target;
+  app_log(1, "Chemical potential bounds found (mu_left, mu_right) = ({}, {}) a.u.",
+          mu_left, mu_right);
+  app_log(1, "Chemical potential found (mu) = {} a.u.", mu);
+  app_log(1, "Number of electrons per unit cell = {}", nel);
+  return mu;
+}
+
+template<typename dyson_type, typename X_t, typename Xt_t>
+double update_mu(double old_mu, dyson_type& dyson, const mf::MF &mf,
+                 const imag_axes_ft::IAFT &FT,
+                 const X_t&F, const Xt_t&Sigma) {
+  if (dyson.mu_update_alg() == "bisection") {
+    return update_mu_bisection(old_mu, dyson, mf, FT, F, Sigma);
+  } else if (dyson.mu_update_alg() == "midpoint") {
+    return update_mu_midpoint(old_mu, dyson, mf, FT, F, Sigma);
+  } else {
+    utils::check(
+      false, "scf_common.cpp::update_mu: unknown mu update algorithm {}.", dyson.mu_update_alg());
   }
-  context.comm.barrier();
+  return old_mu;
+}
+
+template<typename X_t, typename Xt_t>
+auto diis_init(iter_scf::iter_scf_t& iter_solver,
+               long iteration, std::string output,
+               X_t &sF_skij, Xt_t &sSigma_tskij, const imag_axes_ft::IAFT *FT) {
+  utils::check(iter_solver.iter_alg() == iter_scf::DIIS, "diis_init: iter_solver is not DIIS type.");
+  h5::file file(output+".mbpt.h5", 'r');
+  h5::group grp(file);
+  utils::check(grp.has_subgroup("scf"), "Simulation HDF5 file does not have an scf group");
+  auto scf_grp = grp.open_group("scf");
+  auto sys_grp = grp.open_group("system");
+  nda::array<ComplexType, 4> H0 = sF_skij.local();
+  nda::array<ComplexType, 4> S = sF_skij.local();
+  nda::h5_read(sys_grp, "H0_skij", H0);
+  nda::h5_read(sys_grp, "S_skij", S);
+  double mu = 0;
+  if (scf_grp.has_subgroup("iter" + std::to_string(iteration-1))) {
+    auto mf_grp = scf_grp.open_group("iter" + std::to_string(iteration-1));
+    h5::h5_read(mf_grp, "mu", mu);
+  }
+  iter_solver.initialize(sF_skij.local(), sSigma_tskij.local(), mu, S, H0, FT, output);
 }
 
 template<typename MPI_Context_t, typename X_t, typename Xt_t>
 auto damping_impl(MPI_Context_t &context, iter_scf::iter_scf_t& iter_solver,
-                  long it, std::string h5_prefix,
+                  long iteration, std::string h5_prefix,
                   X_t &sF_skij, Xt_t &sSigma_tskij,
                   std::array<std::string,3> datasets)
   -> std::tuple<double, double> {
   double conv_F = 0;
   double conv_Sigma = 0;
-  if (it == 1) {
+  if (iteration == 1) {
     utils::check(false, "damping_impl: it = 1 is not allowed.");
   } else {
     iter_solver.metadata_log();
@@ -243,12 +269,12 @@ auto damping_impl(MPI_Context_t &context, iter_scf::iter_scf_t& iter_solver,
       h5::file file(filename, 'r');
       h5::group grp(file);
 
-      std::string grp_name = datasets[0]+"/iter"+std::to_string(it-1);
-      utils::check(grp.has_subgroup(grp_name), "damping_impl: {} does not exist in {}.",
-                   grp_name, filename);
+      std::string grp_name = datasets[0]+"/iter"+std::to_string(iteration-1);
+      utils::check(grp.has_subgroup(grp_name),
+                   "damping_impl: {} does not exist in {}.", grp_name, filename);
       auto scf_grp = grp.open_group(datasets[0]);
-      conv_F = iter_solver.solve(sF_skij.local(), datasets[1], scf_grp, it);
-      conv_Sigma = iter_solver.solve(sSigma_tskij.local(), datasets[2], scf_grp, it);
+      conv_F = iter_solver.solve(sF_skij.local(), datasets[1], scf_grp, iteration);
+      conv_Sigma = iter_solver.solve(sSigma_tskij.local(), datasets[2], scf_grp, iteration);
     }
     context.node_comm.broadcast_n(&conv_F, 1, 0);
     context.node_comm.broadcast_n(&conv_Sigma, 1, 0);
@@ -259,40 +285,40 @@ auto damping_impl(MPI_Context_t &context, iter_scf::iter_scf_t& iter_solver,
 
 template<typename MPI_Context_t, typename X_t, typename Xt_t>
 auto diis_impl(MPI_Context_t &context, iter_scf::iter_scf_t& iter_solver,
-               long it, std::string h5_prefix, X_t &sF_skij, Xt_t &sSigma_tskij,
-               const imag_axes_ft::IAFT *FT, bool restart,
-               std::array<std::string,3> datasets)
+               long iteration, std::string h5_prefix, X_t &sF_skij, Xt_t &sSigma_tskij,
+               const imag_axes_ft::IAFT *FT, std::array<std::string,3> datasets)
   -> std::tuple<double, double> {
   double conv_F = 0;
   double conv_Sigma = 0;
-  if (it == 1) {
-    utils::check(false, "diis_impl: it = 1 is not allowed.");
+  if (iteration == 1) {
+    utils::check(false, "diis_impl: iteration = 1 is not allowed.");
   } else {
-    if (restart) { // restart DIIS
-      init_solver(context, iter_solver, it, h5_prefix, sF_skij, sSigma_tskij, FT);
-    }
     iter_solver.metadata_log();
     int internode_proc_holding_extrap = 0;
+    // DIIS does not support mpi yet
     if (context.comm.root()) { // A global communicator here is needed for DIIS
+
+      if (not iter_solver.is_initialized()) {
+        diis_init(iter_solver, iteration, h5_prefix, sF_skij, sSigma_tskij, FT);
+      }
+
       std::string filename = h5_prefix + ".mbpt.h5";
       h5::file file(filename, 'r');
       h5::group grp(file);
-
-      std::string grp_name = datasets[0]+"/iter"+std::to_string(it-1);
-      utils::check(grp.has_subgroup(grp_name), "diis_impl: {} does not exist in {}.",
-                   grp_name, filename);
-
+      std::string grp_name = datasets[0]+"/iter"+std::to_string(iteration-1);
+      utils::check(grp.has_subgroup(grp_name),
+                   "diis_impl: {} does not exist in {}.", grp_name, filename);
       auto scf_grp = grp.open_group(datasets[0]);
-      auto [conv_F_,conv_Sigma_] = iter_solver.solve(sF_skij.local(), datasets[1],
-                                                     sSigma_tskij.local(), datasets[2], scf_grp, it);
-      conv_F = conv_F_;
-      conv_Sigma = conv_Sigma_;
+      auto residuals = iter_solver.solve(
+        sF_skij.local(), datasets[1], sSigma_tskij.local(), datasets[2], scf_grp, iteration);
+      conv_F = residuals[0];
+      conv_Sigma = residuals[1];
       internode_proc_holding_extrap = context.internode_comm.rank();
     }
     context.comm.broadcast_n(&conv_F, 1, 0);
     context.comm.broadcast_n(&conv_Sigma, 1, 0);
     // internode_proc_holding_extrap should be 0 everywhere, but if not,
-    // the broadcast below ensures that all procs get it
+    // the broadcast below ensures that all procs get iteration
     context.comm.broadcast_n(&internode_proc_holding_extrap, 1, 0);
     // Send extrapolated F and Sigma to all nodes
     sF_skij.broadcast_to_nodes(internode_proc_holding_extrap);
@@ -304,18 +330,17 @@ auto diis_impl(MPI_Context_t &context, iter_scf::iter_scf_t& iter_solver,
 
 template<typename comm_t, typename X_t, typename Xt_t>
 auto solve_iterative(utils::mpi_context_t<comm_t> &context, iter_scf::iter_scf_t& iter_solver,
-                     long it, std::string h5_prefix,
-                     X_t &sF_skij, Xt_t &sSigma_tskij, const imag_axes_ft::IAFT *FT, bool restart,
+                     long iteration, std::string h5_prefix,
+                     X_t &sF_skij, Xt_t &sSigma_tskij, const imag_axes_ft::IAFT *FT,
                      std::array<std::string,3> datasets)
   -> std::tuple<double, double> {
   double conv_F = 0;
   double conv_Sigma = 0;
-  if (it == 1) {
+  if (iteration == 1) {
     // Just check changes w.r.t. mf
     if (context.node_comm.root()) {
       auto F_mf = nda::make_regular(sF_skij.local());
-      std::string filename = h5_prefix + ".mbpt.h5";
-      h5::file file(filename, 'r');
+      h5::file file(h5_prefix+".mbpt.h5", 'r');
       h5::group grp(file);
       if (grp.has_subgroup("scf/iter0")) {
         auto mf_grp = grp.open_group("scf/iter0");
@@ -339,14 +364,19 @@ auto solve_iterative(utils::mpi_context_t<comm_t> &context, iter_scf::iter_scf_t
     auto Sigma_max_iter = max_element(sSigma_tskij.local().data(), sSigma_tskij.local().data()+sSigma_tskij.local().size(),
                                       [](auto a, auto b) { return std::abs(a) < std::abs(b); });
     conv_Sigma =  std::abs((*Sigma_max_iter));
-    init_solver(context, iter_solver, it, h5_prefix, sF_skij, sSigma_tskij, FT);
+    if (iter_solver.iter_alg() == iter_scf::DIIS and context.comm.root()) {
+      // Initialize DIIS solver at the root process since the solver currently doesn't support mpi
+      diis_init(iter_solver, iteration, h5_prefix, sF_skij, sSigma_tskij, FT);
+    }
+    context.comm.barrier();
   } else {
+
     if (iter_solver.iter_alg() == iter_scf::damping) {
-      std::tie(conv_F, conv_Sigma) = damping_impl(context, iter_solver, it, h5_prefix,
+      std::tie(conv_F, conv_Sigma) = damping_impl(context, iter_solver, iteration, h5_prefix,
                                                   sF_skij, sSigma_tskij, datasets);
     } else if (iter_solver.iter_alg() == iter_scf::DIIS) {
-      std::tie(conv_F, conv_Sigma) = diis_impl(context, iter_solver, it, h5_prefix,
-                                               sF_skij, sSigma_tskij, FT, restart, datasets);
+      std::tie(conv_F, conv_Sigma) = diis_impl(context, iter_solver, iteration, h5_prefix,
+                                               sF_skij, sSigma_tskij, FT, datasets);
     } else {
       utils::check(false, "scf_common::solve_iterative: unknown type of iterative algorithm.");
     }
@@ -445,20 +475,12 @@ template void update_G(simple_dyson &, const mf::MF &, const imag_axes_ft::IAFT 
                        sArray_t<Array_view_4D_t> & Dm, sArray_t<Array_view_5D_t> &G,
                        const sArray_t<Array_view_4D_t> & F, const sArray_t<Array_view_5D_t> &Sigma, double&,
                        bool);
-template void update_G(dca_dyson &, const mf::MF &, const imag_axes_ft::IAFT &,
-                       sArray_t<Array_view_4D_t> & Dm, sArray_t<Array_view_5D_t> &G,
-                       const sArray_t<Array_view_4D_t> & F, const sArray_t<Array_view_5D_t> &Sigma, double&,
-                       bool);
 
 template double update_mu(double, simple_dyson&, const mf::MF &, const imag_axes_ft::IAFT &,
-                          const sArray_t<Array_view_4D_t>&, const sArray_t<Array_view_5D_t>&,
-                          const sArray_t<Array_view_5D_t>&);
-template double update_mu(double, dca_dyson &, const mf::MF &, const imag_axes_ft::IAFT &,
-                          const sArray_t<Array_view_4D_t>&, const sArray_t<Array_view_5D_t>&,
-                          const sArray_t<Array_view_5D_t>&);
+                          const sArray_t<Array_view_4D_t>&, const sArray_t<Array_view_5D_t>&);
 
 template auto solve_iterative(utils::mpi_context_t<mpi3::communicator>&, iter_scf::iter_scf_t&, long, std::string,
-                              sArray_t<Array_view_4D_t>&, sArray_t<Array_view_5D_t>&, const imag_axes_ft::IAFT*, bool,
+                              sArray_t<Array_view_4D_t>&, sArray_t<Array_view_5D_t>&, const imag_axes_ft::IAFT*,
                               std::array<std::string,3>)
          -> std::tuple<double, double>;
 

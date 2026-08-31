@@ -4,21 +4,21 @@
  * Transformation from imaginary times to Matsubara frequencies
  * @param X_ti  - [INPUT] imaginary-time tensor
  * @param X_wi  - [OUTPUT] Matsubara frequency tensor
- * @param stats - [INPUT] statistics: fermi or boson
+ * @param stats - [INPUT] statistics: fermion or boson
  */
 template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::tau_to_w(ndaArray_A &&X_ti, ndaArray_B &&X_wi, stats_e stats) const {
   static_assert(nda::get_rank<ndaArray_A> == nda::get_rank<ndaArray_B>,
                 "iaft::tau_to_w: incorrect rank of array X_wi and X_ti. ");
-  size_t nt = (stats == fermi)? nt_f() : nt_b();
-  size_t nw = (stats == fermi)? nw_f() : nw_b();
+  size_t nt = (stats == fermion)? nt_f() : nt_b();
+  size_t nw = (stats == fermion)? nw_f() : nw_b();
   utils::check(X_ti.shape(0) == nt, "iaft::tau_to_w: incorrect dimension of nt = {} for X_ti; stats = {}", X_ti.shape(0), int(stats));
   utils::check(X_wi.shape(0) == nw, "iaft::tau_to_w: incorrect dimension of nw = {} for X_wi; stats = {}", X_wi.shape(0), int(stats));
 
   long dim1 = std::accumulate(X_ti.shape().begin()+1, X_ti.shape().end(), 1, std::multiplies<>{});
   auto X_ti_2D = nda::reshape(X_ti, shape_t<2>{nt, dim1});
   auto X_wi_2D = nda::reshape(X_wi, shape_t<2>{nw, dim1});
-  if (stats == fermi) {
+  if (stats == fermion) {
     nda::blas::gemm(Twt_ff(), X_ti_2D, X_wi_2D);
   } else {
     nda::blas::gemm(Twt_bb(), X_ti_2D, X_wi_2D);
@@ -29,14 +29,14 @@ template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::tau_to_w(ndaArray_A &&X_ti, ndaArray_B &&Xw_i, stats_e stats, size_t iw) const {
   static_assert(nda::get_rank<ndaArray_A>-1 == nda::get_rank<ndaArray_B>,
                 "iaft::tau_to_w: incorrect rank of array Xw_i and X_ti. ");
-  size_t nt = (stats == fermi)? nt_f() : nt_b();
+  size_t nt = (stats == fermion)? nt_f() : nt_b();
   long dim1 = std::accumulate(X_ti.shape().begin()+1, X_ti.shape().end(), 1, std::multiplies<>{});
   utils::check(X_ti.shape(0) == nt, "iaft::tau_to_w: incorrect dimension of nt for X_ti; stats = {}", int(stats));
   utils::check(Xw_i.size() == dim1, "iaft::tau_to_w: incorrect dimension for X_wi");
 
   auto X_ti_2D = nda::reshape(X_ti, shape_t<2>{nt, dim1});
   auto Xw_1i_2D = nda::reshape(Xw_i, shape_t<2>{1, dim1});
-  auto Tw_t = (stats == fermi)? Twt_ff()(iw, nda::range::all) : Twt_bb()(iw, nda::range::all);
+  auto Tw_t = (stats == fermion)? Twt_ff()(iw, nda::range::all) : Twt_bb()(iw, nda::range::all);
   auto Tw_1t_2D = nda::reshape(Tw_t, shape_t<2>{1, nt});
   // Xw_1i = Tw_1t * X_ti
   nda::blas::gemm(Tw_1t_2D, X_ti_2D, Xw_1i_2D);
@@ -50,20 +50,20 @@ void IAFT::tau_to_w_PHsym(Array_tau_t &&X_ti_pos, Array_w_t &&X_wi_pos) const {
   static_assert(nda::get_rank<Array_tau_t> == nda::get_rank<Array_w_t>,
                 "iaft::tau_to_w_PHsym: incorrect rank of array X_wi and X_ti. ");
 
-  size_t nt = (nt_b()%2==0)? nt_b()/2 : nt_b()/2 + 1;
-  size_t nw = (nw_b()%2==0)? nw_b()/2 : nw_b()/2 + 1;
-  utils::check(X_ti_pos.shape(0) == nt, "iaft::tau_to_w_PHsym: incorrect dimension of nt for X_ti.");
-  utils::check(X_wi_pos.shape(0) == nw, "iaft::tau_to_w_PHsym: incorrect dimension of nw for X_wi.");
+  size_t nt_half = (nt_b()%2==0)? nt_b()/2 : nt_b()/2 + 1;
+  size_t nw_half = (nw_b()%2==0)? nw_b()/2 : nw_b()/2 + 1;
+  utils::check(X_ti_pos.shape(0) == nt_half, "iaft::tau_to_w_PHsym: incorrect dimension of nt for X_ti.");
+  utils::check(X_wi_pos.shape(0) == nw_half, "iaft::tau_to_w_PHsym: incorrect dimension of nw for X_wi.");
 
   long dim1 = std::accumulate(X_ti_pos.shape().begin()+1, X_ti_pos.shape().end(), 1, std::multiplies<>{});
-  auto X_ti_2D  = nda::reshape(X_ti_pos, shape_t<2>{nt, dim1});
-  auto X_wi_2D  = nda::reshape(X_wi_pos, shape_t<2>{nw, dim1});
+  auto X_ti_2D  = nda::reshape(X_ti_pos, shape_t<2>{nt_half, dim1});
+  auto X_wi_2D  = nda::reshape(X_wi_pos, shape_t<2>{nw_half, dim1});
 
   auto Twt = Twt_bb();
-  nda::matrix<ComplexType> Twt_pos(nw, nt);
-  for (long n = 0; n < nw; ++n) {
+  nda::matrix<ComplexType> Twt_pos(nw_half, nt_half);
+  for (long n = 0; n < nw_half; ++n) {
     long iw = nw_b()/2 + n;
-    for (long it = 0; it < nt; ++it) {
+    for (long it = 0; it < nt_half; ++it) {
       long imt = nt_b() - it - 1;
       Twt_pos(n, it) = (it == imt)? Twt(iw, it) : Twt(iw, it) + Twt(iw, imt);
     }
@@ -76,21 +76,21 @@ void IAFT::tau_to_w_PHsym(Array_tau_t &&X_ti_pos, Array_w_t &&X_wi_pos) const {
  * Transformation from Matsubara frequencies to imaginary times
  * @param X_wi  - [INPUT] Matsubara frequency tensor
  * @param X_ti  - [OUTPUT] imaginary-time tensor
- * @param stats - [INPUT] statistics: fermi or boson
+ * @param stats - [INPUT] statistics: fermion or boson
  */
 template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::w_to_tau(ndaArray_A &&X_wi, ndaArray_B &&X_ti, stats_e stats) const {
   static_assert(nda::get_rank<ndaArray_A> == nda::get_rank<ndaArray_B>,
                 "iaft::w_to_tau: incorrect rank of array X_wi and X_ti. ");
-  size_t nt = (stats == fermi)? nt_f() : nt_b();
-  size_t nw = (stats == fermi)? nw_f() : nw_b();
+  size_t nt = (stats == fermion)? nt_f() : nt_b();
+  size_t nw = (stats == fermion)? nw_f() : nw_b();
   utils::check(X_ti.shape(0) == nt, "iaft::w_to_tau: incorrect dimension of nt for X_t; stats = {}", int(stats));
   utils::check(X_wi.shape(0) == nw, "iaft::w_to_tau: incorrect dimension of nw for X_w; stats = {}", int(stats));
 
   long dim1 = std::accumulate(X_wi.shape().begin()+1, X_wi.shape().end(), 1, std::multiplies<>{});
   auto X_ti_2D = nda::reshape(X_ti, shape_t<2>{nt, dim1});
   auto X_wi_2D = nda::reshape(X_wi, shape_t<2>{nw, dim1});
-  if (stats == fermi) {
+  if (stats == fermion) {
     nda::blas::gemm(Ttw_ff(), X_wi_2D, X_ti_2D);
   } else {
     nda::blas::gemm(Ttw_bb(), X_wi_2D, X_ti_2D);
@@ -135,8 +135,8 @@ void IAFT::w_to_tau(ndaArray_A_t &&X_wi, stats_e stats_A, ndaArray_B_t &&X_ti, s
     static_assert(nda::get_rank<ndaArray_A_t> == nda::get_rank<ndaArray_B_t>,
                   "iaft::w_to_tau: incorrect rank of array X_wi and X_ti. ");
 
-    size_t nw = (stats_A == fermi)? nw_f() : nw_b();
-    size_t nt = (stats_B == fermi)? nt_f() : nt_b();
+    size_t nw = (stats_A == fermion)? nw_f() : nw_b();
+    size_t nt = (stats_B == fermion)? nt_f() : nt_b();
     utils::check(X_wi.shape(0) == nw, "iaft::w_to_tau: incorrect dimension of nt for X_w; stats = {}", int(stats_A));
     utils::check(X_ti.shape(0) == nt, "iaft::w_to_tau: incorrect dimension of nw for X_t; stats = {}", int(stats_B));
 
@@ -146,7 +146,7 @@ void IAFT::w_to_tau(ndaArray_A_t &&X_wi, stats_e stats_A, ndaArray_B_t &&X_ti, s
 
     // w -> t -> t other
     nda::matrix<ComplexType> TT(nt, nw);
-    TT = (stats_A == fermi)? Ttt_bf() * Ttw_ff() : Ttt_fb() * Ttw_bb();
+    TT = (stats_A == fermion)? Ttt_bf() * Ttw_ff() : Ttt_fb() * Ttw_bb();
     nda::blas::gemm(TT, X_wi_2D, X_ti_2D);
   }
 }
@@ -164,7 +164,7 @@ template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::w_to_tau_partial(ndaArray_A&& Xw_i, ndaArray_B&& X_ti, stats_e stats, size_t iwn) const {
   static_assert(nda::get_rank<ndaArray_A> == nda::get_rank<ndaArray_B>-1,
       "iaft::w_to_tau_partial: incorrect rank of array Xw_i and X_ti. ");
-  size_t nt = (stats == fermi)? nt_f() : nt_b();
+  size_t nt = (stats == fermion)? nt_f() : nt_b();
   const long dim1 = std::accumulate(X_ti.shape().begin()+1, X_ti.shape().end(), 1, std::multiplies<>{});
   utils::check(X_ti.shape(0) == nt, "iaft::w_to_tau_partial: incorrect dimension of nt for X_t; stats = {}", int(stats));
   utils::check(Xw_i.size() == dim1, "iaft::w_to_tau_partial: incorrect dimension for X_w");
@@ -172,7 +172,7 @@ void IAFT::w_to_tau_partial(ndaArray_A&& Xw_i, ndaArray_B&& X_ti, stats_e stats,
   // (nt, dim1) += (nt) x (dim1)
   auto X_ti_2D = nda::reshape(X_ti, shape_t<2>{nt, dim1});
   auto Xw_i_1D = nda::reshape(Xw_i, shape_t<1>{dim1});
-  auto T_t = (stats == fermi)?
+  auto T_t = (stats == fermion)?
       nda::make_regular(Ttw_ff()(nda::range::all, iwn)) : nda::make_regular(Ttw_bb()(nda::range::all, iwn));
   X_ti_2D += nda::blas::outer_product(T_t, Xw_i_1D);
 }
@@ -187,9 +187,9 @@ template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::tau_to_tau(ndaArray_A &&A_ti, stats_e A_stats, ndaArray_B &&B_ti) const {
   static_assert(nda::get_rank<ndaArray_A> == nda::get_rank<ndaArray_B>,
                 "iaft::tau_to_tau: incorrect rank of array A_ti and B_ti. ");
-  stats_e B_stats = (A_stats == fermi)? boson : fermi;
-  size_t nt_A = (A_stats == fermi)? nt_f() : nt_b();
-  size_t nt_B = (B_stats == fermi)? nt_f() : nt_b();
+  stats_e B_stats = (A_stats == fermion)? boson : fermion;
+  size_t nt_A = (A_stats == fermion)? nt_f() : nt_b();
+  size_t nt_B = (B_stats == fermion)? nt_f() : nt_b();
   utils::check(B_ti.shape(0) == nt_B, "iaft::tau_to_tau: incorrect dimension of nt for B_ti; stats = {}", int(B_stats));
   utils::check(A_ti.shape(0) == nt_A, "iaft::tau_to_tau: incorrect dimension of nt for A_ti; stats = {}", int(A_stats));
 
@@ -197,14 +197,14 @@ void IAFT::tau_to_tau(ndaArray_A &&A_ti, stats_e A_stats, ndaArray_B &&B_ti) con
   nda::matrix_const_view<ComplexType> A_ti_2D({nt_A, dim1}, A_ti.data());
   nda::matrix_view<ComplexType> B_ti_2D({nt_B, dim1}, B_ti.data());
 
-  B_ti_2D = (A_stats == fermi)? Ttt_bf() * A_ti_2D : Ttt_fb() * A_ti_2D;
+  B_ti_2D = (A_stats == fermion)? Ttt_bf() * A_ti_2D : Ttt_fb() * A_ti_2D;
 }
 
 template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::tau_to_tau(ndaArray_A &&A_ti, stats_e A_stats, ndaArray_B &&Bt_i, size_t it_B) const {
   static_assert(nda::get_rank<ndaArray_A>-1 == nda::get_rank<ndaArray_B>,
                 "iaft::tau_to_tau: incorrect rank of array A_ti and Bt_i. ");
-  size_t nt_A = (A_stats == fermi)? nt_f() : nt_b();
+  size_t nt_A = (A_stats == fermion)? nt_f() : nt_b();
   long dim1 = std::accumulate(A_ti.shape().begin()+1, A_ti.shape().end(), 1, std::multiplies<>{});
   utils::check(A_ti.shape(0) == nt_A, "iaft::tau_to_tau: incorrect dimension of nt for A_ti; stats = {}", int(A_stats));
   utils::check(Bt_i.size() == dim1, "iaft::tau_to_tau: incorrect dimension for Bt_i");
@@ -212,7 +212,7 @@ void IAFT::tau_to_tau(ndaArray_A &&A_ti, stats_e A_stats, ndaArray_B &&Bt_i, siz
   nda::matrix_const_view<ComplexType> A_ti_2D({nt_A, dim1}, A_ti.data());
   // Bt_i = A_ti * T_t
   auto Bt_i_1D = nda::reshape(Bt_i, shape_t<1>{dim1});
-  auto T_t_1D = (A_stats == fermi)? Ttt_bf()(it_B, nda::range::all) : Ttt_fb()(it_B, nda::range::all);
+  auto T_t_1D = (A_stats == fermion)? Ttt_bf()(it_B, nda::range::all) : Ttt_fb()(it_B, nda::range::all);
   nda::blas::gemv(nda::transpose(A_ti_2D), T_t_1D, Bt_i_1D);
 }
 
@@ -260,16 +260,21 @@ void IAFT::tau_to_zero(ndaArray_A &&A_ti, ndaArray_B &&A_zero_i)  const {
 
 template<nda::MemoryArray Array_A, typename comm_t>
 void IAFT::check_leakage(Array_A &&A_ti, stats_e stats, comm_t *comm, std::string A_name) const {
+  if (grid_var.index() == 1) {
+    // leakage checking is not available in DLR basis
+    return;
+  }
+
   auto Abs = nda::map([](ComplexType x) { return std::abs(x); });
 
-  long nts  = (stats == fermi)? nt_f() : nt_b();
+  long nts  = (stats == fermion)? nt_f() : nt_b();
   long dim1 = std::accumulate(A_ti.shape().begin()+1, A_ti.shape().end(), 1, std::multiplies<>{});
   auto A_ti_2D = nda::reshape(A_ti, shape_t<2>{nts, dim1});
   utils::check(A_ti.shape()[0] == nts, "check_FT_leakage: nts mismatches");
 
   double coeff_first = -1.0;
   double coeff_last  = -1.0;
-  auto T_ct = (stats == fermi)? Tct_ff() : Tct_bb();
+  auto T_ct = (stats == fermion)? Tct_ff() : Tct_bb();
   {
     nda::array<RealType, 1> Ac0_i_abs(dim1);
     nda::array<ComplexType, 1> Ac0_i(dim1);
@@ -304,9 +309,14 @@ void IAFT::check_leakage(Array_A &&A_ti, stats_e stats, comm_t *comm, std::strin
 
 template<nda::MemoryArray Array_A, typename comm_t>
 void IAFT::check_leakage_PHsym(Array_A &&A_ti, stats_e stats, comm_t *comm, std::string A_name) const {
+  if (grid_var.index() == 1) {
+    // leakage checking is not available in DLR basis
+    return;
+  }
+
   auto Abs = nda::map([](ComplexType x) { return std::abs(x); });
 
-  long nts  = (stats == fermi)? nt_f() : nt_b();
+  long nts  = (stats == fermion)? nt_f() : nt_b();
   long nt_half = (nts%2==0)? nts/2 : nts/2 + 1;
   long dim1 = std::accumulate(A_ti.shape().begin()+1, A_ti.shape().end(), 1, std::multiplies<>{});
   auto A_ti_2D = nda::reshape(A_ti, shape_t<2>{nt_half, dim1});
@@ -314,7 +324,7 @@ void IAFT::check_leakage_PHsym(Array_A &&A_ti, stats_e stats, comm_t *comm, std:
 
   double coeff_first = -1.0;
   double coeff_last  = -1.0;
-  auto T_ct = (stats == fermi)? Tct_ff() : Tct_bb();
+  auto T_ct = (stats == fermion)? Tct_ff() : Tct_bb();
   {
     nda::array<RealType, 1> Ac0_i_abs(dim1);
     nda::array<ComplexType, 1> Ac0_i(dim1);

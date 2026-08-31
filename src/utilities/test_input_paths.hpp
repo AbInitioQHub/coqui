@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef UTILITIES_TEST_INPUT_PATHS_HPP
 #define UTILITIES_TEST_INPUT_PATHS_HPP
 
@@ -102,6 +123,10 @@ inline std::tuple<std::string,std::string> utest_filename(std::string src)
     return std::make_tuple(std::string(PROJECT_SOURCE_DIR)+
                                "/tests/unit_test_files/qe/GaAs_kp222_so/",
                            std::string("pwscf"));
+  } else if (src == "qe_svo222_sym") {
+    return std::make_tuple(std::string(PROJECT_SOURCE_DIR)+
+                           "/tests/unit_test_files/qe/svo_kp222_nbnd40/out/",
+                           std::string("svo"));
   } else if (src == "bdft_lih222") {
     return std::make_tuple(std::string(PROJECT_SOURCE_DIR)+
                                "/tests/unit_test_files/bdft/lih_kp222_nbnd16/",

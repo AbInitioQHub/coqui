@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef COQUI_THC_READER_T_HPP
 #define COQUI_THC_READER_T_HPP
 
@@ -78,14 +99,19 @@ namespace methods {
                    "X orbitals out of range: ({},{}), nbnd:{}",x_range.first(),x_range.last(),_nbnd);
       utils::check(y_range.first() >= 0 and y_range.last() <= _nbnd,
                    "Y orbitals out of range: ({},{}), nbnd:{}",y_range.first(),y_range.last(),_nbnd);
-      auto thresh = io::get_value_with_default<double>(pt,"thresh",1e-10);
+      auto thresh = io::get_value_with_default<double>(pt,"thresh",-1.0);
+      // Auto-resolve thresh sentinel: when nIpts is set, use 1e-13 (numerical floor); otherwise use 1e-5
+      if (thresh < 0.0) {
+        thresh = (_Np > 0) ? 1e-13 : 1e-5;
+      }
       utils::check( _Np>0 or thresh>0.0, "Error in thc_reader_t: Must set nIpts and/or thresh");
       if(_storage == eri_storage_e::outcore and _eri_file == "") 
         _eri_file = "./thc.eri.h5";
 
       if (intialize) {
         if (isdf_only) {
-          build_isdf_only(io::get_value_with_default<bool>(pt, "check_accuracy", false));
+          build_isdf_only(io::get_value_with_default<bool>(pt, "check_accuracy", false),
+                          io::get_value_with_default<bool>(pt, "write_zeta_on_fft_mesh", false));
         } else {
           init(true);
         }
@@ -434,7 +460,7 @@ namespace methods {
       print_thc_summary();
     }
 
-    void build_isdf_only(bool check_accuracy=true) {
+    void build_isdf_only(bool check_accuracy=true, bool write_zeta_on_fft_mesh=false) {
       _Timer.start("BUILD_TOTAL");
 
       _Timer.start("BUILD_ISDF");
@@ -473,14 +499,14 @@ namespace methods {
             h5::h5_write(grp, "nkpts_ibz", _nkpts_ibz);
             h5::h5_write(grp, "nqpts_ibz", _nqpts_ibz);
             nda::h5_write(grp, "collocation_matrix", _X_shm.local(), false);
-            _thc_builder_opt.value().save(grp, _format, _rp, dzeta_qur);
+            _thc_builder_opt.value().save(grp, _format, _rp, dzeta_qur, write_zeta_on_fft_mesh);
           } else {
             APP_ABORT("thc: Unknown file format: {}", _format);
           }
         } else {
           h5::group grp;
           if(_format == "bdft" ) {
-            _thc_builder_opt.value().save(grp, _format, _rp, dzeta_qur);
+            _thc_builder_opt.value().save(grp, _format, _rp, dzeta_qur, write_zeta_on_fft_mesh);
           } else {
             APP_ABORT("thc: Unknown file format: {}", _format);
           }

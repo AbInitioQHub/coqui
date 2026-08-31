@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 
 #include "configuration.hpp"
 #include "nda/nda.hpp"
@@ -16,14 +37,13 @@
 #include "methods/ERI/chol_reader_t.hpp"
 #include "methods/ERI/thc_reader_t.hpp"
 #include "methods/ERI/detail/concepts.hpp"
-#include "methods/ERI/div_treatment_e.hpp"
 
 #include "methods/GF2/gf2_t.h"
 
 namespace methods::solvers {
 
   gf2_t::gf2_t(mf::MF *MF, imag_axes_ft::IAFT *ft,
-       div_treatment_e div, 
+      std::string div, 
        std::string direct_type,
        std::string exchange_alg,
        std::string exchange_type,
@@ -56,7 +76,7 @@ namespace methods::solvers {
                "    exchange_type = {}\n"
                "    exchange_alg = {}\n"
                "    t_thresh = {}\n",
-            _MF->nbnd(), thc.Np(), _MF->nkpts(), _MF->nkpts_ibz(), div_enum_to_string(_div_treatment),
+            _MF->nbnd(), thc.Np(), _MF->nkpts(), _MF->nkpts_ibz(), _div_treatment,
             _direct_type, _exchange_type, _exchange_alg, _t_thresh);
     _ft->metadata_log();
 
@@ -265,7 +285,7 @@ namespace methods::solvers {
 
   long& gf2_t::iter() { return _iter; }
   std::string gf2_t::output() const { return _output; }
-  div_treatment_e gf2_t::gw_div_treatment() const { return _div_treatment; }
+  std::string gf2_t::gw_div_treatment() const { return _div_treatment; }
   double& gf2_t::t_thresh() { return _t_thresh; }
 
   std::string gf2_t::direct_type() const {return _direct_type; }

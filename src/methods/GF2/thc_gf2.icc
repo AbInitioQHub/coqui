@@ -17,7 +17,6 @@
 #include "mean_field/MF.hpp"
 #include "methods/ERI/detail/concepts.hpp"
 #include "methods/HF/thc_solver_comm.hpp"
-#include "methods/ERI/div_treatment_e.hpp"
 
 
 namespace methods {
@@ -150,7 +149,7 @@ namespace methods {
         dUPiU_tqPQ.reset();
 
         _Timer.start("EVALUATE_SIGMA_DIR");
-        gw_t gw(_ft, ignore_g0, _output);
+        gw_t gw(_ft, "ignore_g0", _output);
         gw.eval_Sigma_all(G_tskij, dUPiU_qtPQ, sSigma_tskij, thc, "R");
         _Timer.stop("EVALUATE_SIGMA_DIR");
 

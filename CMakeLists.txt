@@ -4,6 +4,11 @@
 cmake_minimum_required(VERSION 3.18.0)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Necessary for cmake try_compile of Fortran/C Interface
+# when mixing gfortran and clang
+# CNY: Any workaround?
+set(CMAKE_Fortran_FLAGS_INIT "-fPIC")
+
 #######################
 # Check CoQui git info
 #######################
@@ -35,7 +40,7 @@ message(STATUS "CoQuí @ git branch ${GIT_BRANCH_NAME}, commit ${GIT_COMMIT_HASH
 ######################################################################
 
 set(COQUI_VERSION_MAJOR 0)
-set(COQUI_VERSION_MINOR 1)
+set(COQUI_VERSION_MINOR 3)
 set(COQUI_VERSION_PATCH 0)
 set(COQUI_VERSION "${COQUI_VERSION_MAJOR}.${COQUI_VERSION_MINOR}.${COQUI_VERSION_PATCH}")
 
@@ -106,6 +111,7 @@ option(ENABLE_TBLIS "Build using tblis library. Must set TBLIS_ROOT" OFF)
 option(ENABLE_SPDLOG "Build with spdlog" ON)
 option(ENABLE_SPHERICART "Build with shericart" OFF)
 option(ENABLE_WANNIER90 "Build with wannier90 support." ON)
+option(ENABLE_DLR "Build with cppdlr backend for IAFT." ON)
 option(REQUIRE_NCCL "Require NCCL library with CUDA backend." OFF)
 option(BUILD_UNIT_TESTS "Build unit tests" ON)
 option(BUILD_STATIC "Link to static libraries" OFF)
@@ -118,8 +124,13 @@ option(FORCE_COLORED_OUTPUT "Always produce ANSI-colored output (GNU/Clang only)
 option(COQUI_PYTHON_SUPPORT "Build with Python interface" OFF)
 option(COQUI_UPDATE_PYTHON_BINDINGS "Generate coqui python bindings from scratch" OFF)
 
+if(COQUI_PYTHON_SUPPORT)
+  # Set PIC for all libraries
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 #option(USE_DEVICE_COMPILER "Use gpu compiler, e.g. nvcc, for all files." OFF)
-set(USE_DEVICE_COMPILER OFF) 
+set(USE_DEVICE_COMPILER OFF)
 
 if( ENABLE_CUDA OR ENABLE_HIP OR ENABLE_OPENMP)
   set(ENABLE_DEVICE ON)
@@ -356,23 +367,20 @@ set(TblisSupport ${ENABLE_TBLIS} CACHE INTERNAL "")
 set(Build_Tests ${COMPILE_NDA_TESTS} CACHE INTERNAL "")
 if(COQUI_PYTHON_SUPPORT)
   # nda_py library is needed in CoQui python version
-  # CNY: is this necessary?
   set(PythonSupport ON CACHE INTERNAL "")
 else()
   set(PythonSupport ${NDA_PYTHON_SUPPORT} CACHE INTERNAL "")
 endif()
+# h5/unstable defaults Update_Python_Bindings=ON, which invokes clair-c2py to
+# regenerate its checked-in .wrap.cxx files. CoQui only needs to *compile* h5's
+# Python bindings, not regenerate them, so suppress the clair dependency here.
+set(Update_Python_Bindings OFF CACHE INTERNAL "")
 FetchContent_Declare(
         nda
         GIT_REPOSITORY "https://github.com/triqs/nda.git"
         GIT_TAG        tensor
 )
-#FetchContent_MakeAvailable(nda)
-FetchContent_Populate(nda)
-if(COMPILE_NDA_TESTS)
-  add_subdirectory(${nda_SOURCE_DIR} ${nda_BINARY_DIR})
-else()
-  add_subdirectory(${nda_SOURCE_DIR} ${nda_BINARY_DIR} EXCLUDE_FROM_ALL)
-endif()
+FetchContent_MakeAvailable(nda)
 
 set_property(GLOBAL PROPERTY nda_FOUND TRUE)
 
@@ -424,19 +432,21 @@ endif()
 ######################################################################
 # catch2
 ######################################################################
-if(DEFINED CATCH2)
-  set(FETCHCONTENT_SOURCE_DIR_CATCH2 ${CATCH2})
-endif()
+if(BUILD_UNIT_TESTS)
+  if(DEFINED CATCH2)
+    set(FETCHCONTENT_SOURCE_DIR_CATCH2 ${CATCH2})
+  endif()
 
-FetchContent_Declare(
-  Catch2
-  GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-  GIT_TAG        v2.13.10
-)
-  #GIT_TAG        v3.4.0
-FetchContent_MakeAvailable(Catch2)
-list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/contrib)
-include( Catch )
+  FetchContent_Declare(
+    Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG        v2.13.10
+  )
+    #GIT_TAG        v3.4.0
+  FetchContent_MakeAvailable(Catch2)
+  list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/contrib)
+  include( Catch )
+endif(BUILD_UNIT_TESTS)
 
 ######################################################################
 # cpptrace 
@@ -503,46 +513,45 @@ if(ENABLE_WANNIER90)
   FetchContent_Declare(
       Wannier90 
       GIT_REPOSITORY https://github.com/wannier-developers/wannier90.git 
-      GIT_TAG        develop
+      GIT_TAG        3ff086adf9c223c140c54af7070c6e6f5871dbe9 #develop
    )
    FetchContent_MakeAvailable(Wannier90)
-   add_compile_definitions(ENABLE_WANNIER90)
+    # Add the include directory of the fortran compiler explicitly to ensure ISO_Fortran_binding.h 
+    # can be found when building Wannier90_lib. This is a workaround for the issue of missing 
+    # ISO_Fortran_binding.h when using clang as the C++ compiler and gfortran as the Fortran compiler, 
+    execute_process(
+      COMMAND ${CMAKE_Fortran_COMPILER} -print-file-name=include
+      OUTPUT_VARIABLE GFORTRAN_INCLUDE_DIR
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    target_include_directories(Wannier90_lib PRIVATE "${GFORTRAN_INCLUDE_DIR}")
+    add_compile_definitions(ENABLE_WANNIER90)
 endif(ENABLE_WANNIER90)
 
 ######################################################################
-# lab-cosmo sphericart 
+# cppdlr: Discrete Lehmann Representation backend (optional)
 ######################################################################
-if(ENABLE_SPHERICART)
-  if(DEFINED SPHERICART)
-    set(FETCHCONTENT_SOURCE_DIR_SPHERICART ${SPHERICART})
-  endif()
-
-  #set(SPHERICART_OPENMP OFF CACHE INTERNAL "")
-  FetchContent_Declare(
-      sphericart
-      GIT_REPOSITORY https://github.com/lab-cosmo/sphericart.git 
-      GIT_TAG        main # <HASH or TAG>
-   )
-   FetchContent_MakeAvailable(sphericart)
-   add_compile_definitions(ENABLE_SPHERICART)
-endif(ENABLE_SPHERICART)
-
-######################################################################
-# Wannier90 
-######################################################################
-if(ENABLE_WANNIER90)
-  if(DEFINED WANNIER90)
-    set(FETCHCONTENT_SOURCE_DIR_WANNIER90 ${WANNIER90})
+if(ENABLE_DLR)
+  # cppdlr main branch currently checks CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT
+  # at configure time even as a subproject. Clear it to allow FetchContent use.
+  if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    set(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT FALSE)
   endif()
 
   FetchContent_Declare(
-      Wannier90 
-      GIT_REPOSITORY https://github.com/wannier-developers/wannier90.git 
-      GIT_TAG        develop
-   )
-   FetchContent_MakeAvailable(Wannier90)
-   add_compile_definitions(ENABLE_WANNIER90)
-endif(ENABLE_WANNIER90)
+      cppdlr
+      GIT_REPOSITORY https://github.com/flatironinstitute/cppdlr.git
+      GIT_TAG        f6bd6ab1823403015486c2c6b3399fd4db4468c1 #main
+  )
+  FetchContent_MakeAvailable(cppdlr)
+  # temporary workaround before cppdlr's nda dependency is updated. 
+  if(TARGET cppdlr_c)
+    target_compile_options(cppdlr_c PRIVATE
+      -include ${CMAKE_SOURCE_DIR}/src/numerics/imag_axes_ft/dlr/nda_linalg_compat.hpp
+    )
+  endif()
+  add_compile_definitions(ENABLE_DLR)
+endif(ENABLE_DLR)
 
 ######################################################################
 # Boost

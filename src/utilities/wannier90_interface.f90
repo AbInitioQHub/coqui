@@ -1,3 +1,22 @@
+!=============================================================================
+! CoQuí: Correlated Quantum ínterface
+!
+! Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+!
+! Licensed under the Apache License, Version 2.0 (the "License");
+! you may not use this file except in compliance with the License.
+! You may obtain a copy of the License at
+!
+!     http://www.apache.org/licenses/LICENSE-2.0
+!
+! Unless required by applicable law or agreed to in writing, software
+! distributed under the License is distributed on an "AS IS" BASIS,
+! WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+! See the License for the specific language governing permissions and
+! limitations under the License.
+!=============================================================================
+
+
 ! CoQui already checked that atoms and lattice vectors are consistent 
 subroutine wann90_setup(prefix, clen, nb, nw, nat, at_cart, max_sym_str_len, at_syms, sym_str_len, &
                         eval, uccart, nk, nkabc, kpt,  &
@@ -36,7 +55,6 @@ subroutine wann90_setup(prefix, clen, nb, nw, nat, at_cart, max_sym_str_len, at_
   real(8), allocatable :: sqa(:, :), z(:, :), x(:, :), zona(:)
   integer :: stdout, stderr
   CHARACTER(len=maxlen) :: sym_f_string(nat)
-  CHARACTER(len=maxlen) :: proj_f_string
   
 !  integer, allocatable :: distk(:)
   integer :: i, j, ik, nkl, np
@@ -73,29 +91,26 @@ subroutine wann90_setup(prefix, clen, nb, nw, nat, at_cart, max_sym_str_len, at_
   call w90_set_option(w90main, 'num_bands', nb)
   call w90_set_option(w90main, 'num_kpts', nk)
   call w90_set_option(w90main, 'num_wann', nw)
-  call w90_set_option(w90main, 'num_proj', nw)
   call w90_set_option(w90main, 'unit_cell_cart', uccart)
   if(write_nnkp .and. exclude_str_len.gt.0) then
     call w90_set_option(w90main, 'exclude_bands', TRIM(exclude_string(1:exclude_str_len)))
   endif
 
-  ! projections
-  if( nproj .gt. 0 ) then
+  do i=1,nat
+    sym_f_string(i)(:) = ' '
+    sym_f_string(i)(1:sym_str_len(i)) = TRIM(at_syms(i)(1:sym_str_len(i)))
+  enddo
+  call w90_set_option(w90main, 'symbols', sym_f_string)
+  call w90_set_option(w90main, 'atoms_cart', at_cart)
+
+  if(nproj .gt. 0) then
 ! library has a bug in src/readwrite.F90, line: 3912, should also cycle if txtdata is 'bohr' 
 !    call w90_set_option(w90main, 'projections', 'bohr')
-    do i=1,nat
-      sym_f_string(i)(:) = ' '
-      sym_f_string(i)(1:sym_str_len(i)) = TRIM(at_syms(i)(1:sym_str_len(i))) 
-    enddo
-    call w90_set_option(w90main, 'symbols', sym_f_string)
-    call w90_set_option(w90main, 'atoms_cart', at_cart)
     do i=1,nproj
-      proj_f_string(:) = ' ' 
-      proj_f_string(1:proj_str_len(i)) = proj_str(i)(1:proj_str_len(i))
-      call w90_set_option(w90main, 'projections', TRIM(proj_f_string))
+      call w90_set_option(w90main, 'projections', TRIM(proj_str(i)(1:proj_str_len(i))))
     enddo
   elseif(auto_proj .gt. 0) then
-    call w90_set_option(w90main, 'auto_projections', .true.) 
+    call w90_set_option(w90main, 'auto_projections', .true.)
   endif
 
   ! enable mpi later on
@@ -203,7 +218,7 @@ end subroutine wann90_setup
 ! CoQui already checked that atoms and lattice vectors are consistent 
 subroutine wann90_run(prefix, clen, nb, nw, nat, at_cart, max_sym_str_len, at_syms, sym_str_len, &
                       eval, uccart, nk, nkabc, kpt, nn,  &
-!                      auto_proj, nproj, max_proj_str_len, proj_str, proj_str_len, &
+                      auto_proj, nproj, max_proj_str_len, proj_str, proj_str_len, &
                       m_matrix, u_matrix_opt, centers, spreads, ierr) 
   use mpi
   use w90_constants, only: dp, maxlen
@@ -215,13 +230,13 @@ subroutine wann90_run(prefix, clen, nb, nw, nat, at_cart, max_sym_str_len, at_sy
 
   character(kind=C_CHAR,len=256), intent(in) :: prefix
   integer(C_INT), intent(IN)  :: clen, nb, nw, nn, nat, max_sym_str_len
-!  integer(C_INT), intent(IN)  :: auto_proj, nproj, proj_str_len(nproj), max_proj_str_len
+  integer(C_INT), intent(IN)  :: auto_proj, nproj, proj_str_len(nproj), max_proj_str_len
   integer(C_INT), intent(in)  :: nk, nkabc(3) 
   real(C_DOUBLE), intent(in)  :: kpt(3,nk), uccart(3,3), eval(nb,nk)
   real(C_DOUBLE), intent(in) :: at_cart(3,nat)
   character(kind=C_CHAR,len=max_sym_str_len), intent(in) :: at_syms(nat)
   integer(C_INT), intent(in)  :: sym_str_len(nat)
-!  character(kind=C_CHAR,len=max_proj_str_len), intent(in) :: proj_str(nproj)
+  character(kind=C_CHAR,len=max_proj_str_len), intent(in) :: proj_str(nproj)
   integer(C_INT), intent(out) :: ierr
   ! m_matrix(nb, nb, nn, nk)
   complex(C_DOUBLE_COMPLEX), intent(inout) :: m_matrix(nb, nb, nn, nk)
@@ -283,22 +298,22 @@ subroutine wann90_run(prefix, clen, nb, nw, nat, at_cart, max_sym_str_len, at_sy
   call w90_set_option(w90main, 'distk', distk)
   call w90_set_option(w90main, 'unit_cell_cart', uccart)
 
-  ! projections
-!  if( nproj .gt. 0 ) then
-!    do i=1,nat
-!      sym_f_string(i)(:) = ' '
-!      sym_f_string(i)(1:sym_str_len(i)) = TRIM(at_syms(i)(1:sym_str_len(i)))
-!    enddo
-!    call w90_set_option(w90main, 'symbols', sym_f_string)
-!    call w90_set_option(w90main, 'atoms_cart', at_cart)
-!    do i=1,nproj
-!      proj_f_string(:) = ' ' 
-!      proj_f_string(1:proj_str_len(i)) = proj_str(i)(1:proj_str_len(i))
-!      call w90_set_option(w90main, 'projections', TRIM(proj_f_string))
-!    enddo
-!  elseif(auto_proj .gt. 0) then
-!    call w90_set_option(w90main, 'auto_projections', .true.) 
-!  endif
+  do i=1,nat
+    sym_f_string(i)(:) = ' '
+    sym_f_string(i)(1:sym_str_len(i)) = TRIM(at_syms(i)(1:sym_str_len(i)))
+  enddo
+  call w90_set_option(w90main, 'symbols', sym_f_string)
+  call w90_set_option(w90main, 'atoms_cart', at_cart)
+
+  if(nproj .gt. 0) then
+    do i=1,nproj
+      call w90_set_option(w90main, 'projections', TRIM(proj_str(i)(1:proj_str_len(i))))
+    enddo
+  endif
+
+  if(auto_proj .gt. 0) then
+    call w90_set_option(w90main, 'auto_projections', .true.)
+  endif
 
   ! enable mpi later on
   call w90_set_comm(w90main, mpi_comm_self)

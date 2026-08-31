@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef COQUI_PROJECTOR_T_H
 #define COQUI_PROJECTOR_T_H
 
@@ -117,22 +138,44 @@ namespace methods {
       // 3. Since bdft shuffles the order of the k-points in the presence of symmetry,
       //    the k ordering of C_ksIai is likely different from _MF->kpts()
       auto [nkpts, ns, nImps, nImpOrbs, nOrbs_W] = C_ksIai.shape();
-      C_skIai = nda::array<ComplexType, 5>(ns, nkpts, nImps, nImpOrbs, nOrbs_W);
-      utils::check(nImps == 1, "read_wannier_basis: Implementations for multiple impurities are not ready yet!");
+      nda::array<long, 1> imp_dims(nImps);
+      long nImpOrbs_total = 0;
+      if (nImps != 1) {
+        app_log(1, "╔═══════════════════════════════════════════════════════╗");
+        app_log(1, "║ [ WARNING ]                                           ║");
+        app_log(1, "║ Multiple impurities were found in the Wannier90 HDF5. ║");
+        app_log(1, "║ CoQuí will merge them in sequence and treat them as   ║");
+        app_log(1, "║ a single impurity.                                    ║");
+        app_log(1, "╚═══════════════════════════════════════════════════════╝\n");
+        for (long I=0; I<nImps; ++I) {
+          h5::h5_read(grp, "dft_input/shells/"+std::to_string(I)+"/dim", imp_dims(I));
+          nImpOrbs_total += imp_dims(I);
+        }
+      } else {
+        imp_dims(0) = nImpOrbs;
+        nImpOrbs_total = nImpOrbs;
+      }
+      C_skIai = nda::array<ComplexType, 5>(ns, nkpts, 1, nImpOrbs_total, nOrbs_W);
 
       // reorder k axis for C: _MF->kpts_crystal()(ik) = kpts_crys( kp_map(ik) )
+      // and combine multiple impurities since CoQui currently only support single impurity
       nda::array<int, 1> kp_map(nkpts);
       utils::calculate_kp_map(kp_map, mf->kpts_crystal(), kpts_crys);
       for (long is = 0; is < ns; ++is) {
         for (long ik = 0; ik < nkpts; ++ik) {
-          C_skIai(is, ik, nda::ellipsis{}) = C_ksIai(kp_map(ik), is, nda::ellipsis{});
+          long offset = 0;
+          for (long I = 0; I < nImps; ++I) {
+            utils::check(offset+imp_dims(I) <= nImpOrbs_total,
+                         "read_wannier_basis: something wrong when combining multiple impurities!");
+            C_skIai(is, ik, 0, nda::range(offset, offset+imp_dims(I)), nda::range::all) =
+                C_ksIai(kp_map(ik), is, I, nda::range::all, nda::range::all);
+            offset += imp_dims(I);
+          }
         }
       }
 
-      W_rng = std::vector<nda::range>(nImps,nda::range(0));
-      for (long I = 0; I < nImps; ++I) {
-        W_rng[I] = nda::range(band_window(I,0,0), band_window(I,0,1)+1);
-      }
+      W_rng = std::vector<nda::range>(1,nda::range(0));
+      W_rng[0] = nda::range(band_window(0,0,0), band_window(0,0,1)+1);
     }
 
     static void apply_trans_phase(mf::MF *mf,

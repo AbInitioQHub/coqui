@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef MEAN_FIELD_DEFAULT_MF_HPP 
 #define MEAN_FIELD_DEFAULT_MF_HPP 
 
@@ -101,6 +122,11 @@ inline decltype(auto) default_MF(std::shared_ptr<utils::mpi_context_t<comm_t>>& 
   } else if (src == "qe_GaAs222_so") {
 
     auto [outdir,prefix] = utils::utest_filename("qe_GaAs222_so");
+    return default_MF(comm, mf::qe_source, outdir, prefix, h5_input_type);
+
+  } else if (src == "qe_svo222_sym") {
+
+    auto [outdir,prefix] = utils::utest_filename("qe_svo222_sym");
     return default_MF(comm, mf::qe_source, outdir, prefix, h5_input_type);
 
   } else if (src == "bdft_lih222") {

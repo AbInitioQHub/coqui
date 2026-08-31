@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef METHODS_ERI_THC_THC_H
 #define METHODS_ERI_THC_THC_H
 
@@ -48,8 +69,9 @@ class thc
   /*
    * Creates a thc object with arguments in property tree.
    *  Important options:
-   *  - ecut: "same as MF", Plane wave cutoff used for the evaluation of coulomb matrix elements. 
-   *  - thresh: "0.0", Threshold in cholesky decomposition. 
+   *  - ecut: "1.4 * ecutwfc" (falls back to "0.4 * ecutrho" when no wfc grid is available),
+   *          Plane wave cutoff used for the evaluation of coulomb matrix elements.
+   *  - thresh: "1e-5", Threshold in cholesky decomposition.
    *  Performance related options:
    *  - matrix_block_size: 1024, Block size used in distributed arrays.
    *  - chol_block_size: "8", Block size in cholesky decomposition.
@@ -273,7 +295,8 @@ class thc
    */
   template<MEMORY_SPACE MEM = HOST_MEMORY>
   void save(h5::group& gh5, std::string format, memory::array<MEM,long,1> const& ri,
-            memory::darray_t<memory::array<MEM,ComplexType,3>,mpi3::communicator> const& zeta_qur);
+            memory::darray_t<memory::array<MEM,ComplexType,3>,mpi3::communicator> const& zeta_qur,
+            bool write_zeta_on_fft_mesh=false);
 
   // writes metadata to h5 file, includes all information in addition to actual
   // thc vectors. File should be self-contained upon read
@@ -305,7 +328,7 @@ class thc
 
   long default_block_size;
   long default_cholesky_block_size;
-  double thresh=1e-10;
+  double thresh=1e-5;
   int nnr_blk = 1;
   double distr_tol = 0.2;
   double memory_frac = 0.75;

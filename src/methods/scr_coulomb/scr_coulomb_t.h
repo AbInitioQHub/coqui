@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef COQUI_SCR_COULOMB_T_H
 #define COQUI_SCR_COULOMB_T_H
 
@@ -17,13 +38,11 @@
 #include "numerics/imag_axes_ft/iaft_utils.hpp"
 #include "methods/mb_state/mb_state.hpp"
 #include "methods/ERI/detail/concepts.hpp"
-#include "methods/ERI/div_treatment_e.hpp"
 
 namespace methods {
 namespace solvers {
   // TODO
   //    1. timer
-  //    2. banner and log
   /**
    * @brief scr_coulomb_t class
    *
@@ -65,7 +84,7 @@ namespace solvers {
     scr_coulomb_t(
         const imag_axes_ft::IAFT *ft,
         std::string screen_type,
-        div_treatment_e div = gygi);
+      std::string div = "gygi");
 
     scr_coulomb_t(scr_coulomb_t const&) = default;
     scr_coulomb_t(scr_coulomb_t &&) = default;
@@ -239,7 +258,7 @@ namespace solvers {
 
     std::string _screen_type = "";
 
-    div_treatment_e _div_treatment;
+    std::string _div_treatment;
     utils::TimerManager _Timer;
 
     // optional container for screened interaction
@@ -248,7 +267,7 @@ namespace solvers {
     std::optional<nda::array<ComplexType, 1> > _eps_inv_head;
 
   public:
-    div_treatment_e div_treatment() const { return _div_treatment; }
+    std::string div_treatment() const { return _div_treatment; }
     std::string& screen_type() { return _screen_type; };
     std::string screen_type() const { return _screen_type; };
 

@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #include "mpi3/communicator.hpp"
 #include "nda/nda.hpp"
 #include "nda/linalg.hpp"
@@ -162,7 +183,7 @@ namespace methods {
     using local_Array_3D_t = nda::array<ComplexType, 3>;
     using local_Array_4D_t = nda::array<ComplexType, 4>;
     using local_Array_5D_t = nda::array<ComplexType, 5>;
-    utils::check(ac_params.stats == imag_axes_ft::fermi,
+    utils::check(ac_params.stats == imag_axes_ft::fermion,
                  "pproc_t::analyt_cont: continuation for bosonic function is not supported yet!");
 
     long ns = mf.nspin();
@@ -176,7 +197,7 @@ namespace methods {
     utils::check(_context.comm.size() % nkpools == 0, "pproc_t::analyt_cont: comm.size ({}) % nkpools ({}) != 0", _context.comm.size(), nkpools);
 
     auto FT = imag_axes_ft::read_iaft(_scf_output+".mbpt.h5");
-    size_t niw   = (ac_params.stats == imag_axes_ft::fermi)? FT.nw_f() : FT.nw_b();
+    size_t niw   = (ac_params.stats == imag_axes_ft::fermion)? FT.nw_f() : FT.nw_b();
 
     app_log(1, "  Analytical continuation from iw to w");
     app_log(1, "  ------------------------------------");
@@ -200,16 +221,15 @@ namespace methods {
     // Prepare input and output buffer
     auto dA_iw_ski = make_distributed_array<local_Array_4D_t>(_context.comm, pgrid, {niw, ns, nkpts_ibz, nbnds}, {1, 1, 1, 1});
     if(dataset != "DOS" and dataset != "A") { // backward compatibility with "A" name for spectral function
-      size_t ntau  = (ac_params.stats == imag_axes_ft::fermi)? FT.nt_f() : FT.nt_b();
+      size_t ntau  = (ac_params.stats == imag_axes_ft::fermion)? FT.nt_f() : FT.nt_b();
       auto dA_tau_ski = make_distributed_array<local_Array_4D_t>(_context.comm, pgrid, {ntau, ns, nkpts_ibz, nbnds}, {1, 1, 1, 1});
       read_scf_dataset(dataset, dA_tau_ski);
       FT.tau_to_w(dA_tau_ski.local(), dA_iw_ski.local(), ac_params.stats);
       FT.check_leakage(dA_tau_ski, ac_params.stats, dataset);
-    }
-    else {
+    } else {
       std::string dataset_G = "G_tskij";
       std::string dataset_S = "S_skij";
-      size_t ntau  = (ac_params.stats == imag_axes_ft::fermi)? FT.nt_f() : FT.nt_b();
+      size_t ntau  = (ac_params.stats == imag_axes_ft::fermion)? FT.nt_f() : FT.nt_b();
       auto dG_tau_skij = make_distributed_array<local_Array_5D_t>(_context.comm, {1, 1, nkpools, np/nkpools, 1},
                                                                   {ntau, ns, nkpts_ibz, nbnds, nbnds}, {1, 1, 1, 1, 1});
       auto dS_skij = make_distributed_array<local_Array_4D_t>(_context.comm, {1, nkpools, np/nkpools, 1},
@@ -277,15 +297,24 @@ namespace methods {
   {
     std::string filename = _scf_output + ".mbpt.h5";
     double mu;
-    {
+    std::string Heff_path;  // resolved path to Heff_skij for the "quasiparticle" target
+    if (_context.comm.root()) {
       h5::file file(filename, 'r');
       utils::check(h5::group(file).has_subgroup(grp_name),
                    "wannier_interpolation: {} does not exist in {}", grp_name, filename);
       auto grp = h5::group(file).open_group(grp_name);
-      if (iter==-1)
-        h5::h5_read(grp, "final_iter", iter);
+
+      if (iter==-1) h5::h5_read(grp, "final_iter", iter);
+
       h5::h5_read(grp, "iter"+std::to_string(iter)+"/mu", mu);
+
+      // Determine Heff_skij location: Dyson-SCF writes under qp_approx/; QP-SCF writes directly.
+      auto iter_grp = grp.open_group("iter"+std::to_string(iter));
+      Heff_path = grp_name + "/iter" + std::to_string(iter) + (iter_grp.has_subgroup("qp_approx")? "/qp_approx/Heff_skij" : "/Heff_skij");
     }
+    _context.comm.broadcast_n(&mu, 1, 0);
+    _context.comm.broadcast_n(Heff_path.data(), Heff_path.size(), 0);
+    _context.comm.broadcast_n(&iter, 1, 0);
 
     // read the target k-path
     nda::array<double ,2> kpts_interpolate;
@@ -392,11 +421,8 @@ namespace methods {
     utils::check(nImp==1, "wannier_interpolation: nImp != 1");
 
     if (target == "quasiparticle") {
-      // unfold qp energies to full BZ
-      auto sE_ski_full = unfold_qp_energy(_context, mf, filename, iter);
-
-      // transform to a localized basis
-      auto H_skIab_full = proj.downfold_k(sE_ski_full);
+      auto sHeff_skij_full = unfold_1e_hamiltonian(_context, mf, filename, Heff_path, false);
+      auto H_skIab_full = proj.downfold_k(sHeff_skij_full);
 
       if (_context.comm.root()) {
         h5::file file(filename, 'a');
@@ -617,8 +643,8 @@ namespace methods {
       auto eye = nda::eye<ComplexType>(nImpOrbs);
 
       // solve the dyson equation
-      FT.check_leakage(Sigma_tskab_inter, imag_axes_ft::fermi, std::addressof(_context.comm), "Self-energy in Wannier basis");
-      FT.tau_to_w(Sigma_tskab_inter, G_wskab_inter, imag_axes_ft::fermi);
+      FT.check_leakage(Sigma_tskab_inter, imag_axes_ft::fermion, std::addressof(_context.comm), "Self-energy in Wannier basis");
+      FT.tau_to_w(Sigma_tskab_inter, G_wskab_inter, imag_axes_ft::fermion);
       for (size_t nsk=0; nsk<FT.nw_f()*ns*nkpts_interpolate; ++nsk) {
         long n = nsk / (ns * nkpts_interpolate); // nsk = n*ns*nkpts_interpolate + s*nkpts_interpolate + k
         long s = (nsk / nkpts_interpolate) % ns;
@@ -640,8 +666,8 @@ namespace methods {
       }
 
       {
-        FT.w_to_tau(G_wskab_inter, Sigma_tskab_inter, imag_axes_ft::fermi);
-        FT.check_leakage(Sigma_tskab_inter, imag_axes_ft::fermi, std::addressof(_context.comm), "Green's function in Wannier basis");
+        FT.w_to_tau(G_wskab_inter, Sigma_tskab_inter, imag_axes_ft::fermion);
+        FT.check_leakage(Sigma_tskab_inter, imag_axes_ft::fermion, std::addressof(_context.comm), "Green's function in Wannier basis");
       }
 
       if (_context.comm.root()) {
@@ -659,21 +685,183 @@ namespace methods {
     app_log(1, "####### wannier interpolation routines end #######\n");
   }
 
-  void pproc_t::spectral_interpolation(mf::MF &mf, ptree const& pt, 
+  void pproc_t::compute_qp_on_ibz_kmesh(mf::MF &mf, const qp_params_t &qp_params, 
+                                        std::string grp_name, long iter) {
+
+    using math::shm::make_shared_array;
+    using Array_view_4D_t = nda::array_view<ComplexType, 4>;
+    using Array_view_5D_t = nda::array_view<ComplexType, 5>;
+
+    std::string filename = _scf_output + ".mbpt.h5";
+    auto FT = imag_axes_ft::read_iaft(filename, false);
+
+    long ns  = mf.nspin();
+    long nk  = mf.nkpts_ibz();
+    long nb  = mf.nbnd();
+    long nts = FT.nt_f();
+    long nw  = FT.nw_f();
+
+    app_log(1, "Computing quasiparticle energies from dynamic self-energy");
+    app_log(1, "---------------------------------------------------------");
+    app_log(1, "  QP solver              = {}", qp_params.qp_type);
+    app_log(1, "  AC algorithm           = {}", qp_params.ac_alg);
+    app_log(1, "  Nfit                   = {}", qp_params.Nfit);
+    app_log(1, "  eta                    = {}", qp_params.eta);
+    app_log(1, "  Number of spins        = {}", ns);
+    app_log(1, "  Number of IBZ k-points = {}", nk);
+    app_log(1, "  Number of bands        = {}\n", nb);
+
+    // --- Read mu, F_skij + H0, and Sigma_tskij in a single file open ---
+    double mu = 0.0;
+    auto sFhf_skij    = make_shared_array<Array_view_4D_t>(_context, {ns, nk, nb, nb});
+    auto sSigma_tskij = make_shared_array<Array_view_5D_t>(_context, {nts, ns, nk, nb, nb});
+
+    if (_context.node_comm.root()) {
+      h5::file file(filename, 'r');
+      auto root_grp = h5::group(file);
+      // Read ``iter`` only for root process. 
+      // Be careful that this value is not broadcast to other processes. 
+      if (iter == -1) h5::h5_read(root_grp.open_group(grp_name), "final_iter", iter);
+      auto iter_grp = root_grp.open_group(grp_name + "/iter" + std::to_string(iter));
+
+      h5::h5_read(iter_grp, "mu", mu);
+
+      auto Fhf_loc = sFhf_skij.local();
+      nda::h5_read(iter_grp, "F_skij", Fhf_loc);
+      nda::array<ComplexType, 4> H0_skij;
+      nda::h5_read(root_grp.open_group("system"), "H0_skij", H0_skij);
+      Fhf_loc += H0_skij;
+
+      auto Sigma_loc = sSigma_tskij.local();
+      nda::h5_read(iter_grp, "Sigma_tskij", Sigma_loc);
+    }
+    _context.node_comm.broadcast_n(&mu, 1, 0);
+
+    // --- Combined round-robin: diagonalize F, rotate Sigma to MO diagonal, FT, AC+QP, reconstruct H_QP ---
+    // Each (s,k) is handled end-to-end so Sigma_tska never needs a global all-reduce.
+    auto n_to_iw = nda::map([&](int n) { return FT.omega(n); });
+    nda::array<ComplexType, 1> iw_mesh(n_to_iw(FT.wn_mesh()));
+
+    nda::array<RealType, 3> E_ska(ns, nk, nb);
+    nda::array<RealType, 3> E_qp_ska(ns, nk, nb);
+    // sHeff_skij = U @ diag(E_qp) @ U†: QP Hamiltonian rotated back to primary (DFT band) basis.
+    // Stored in shared memory (one copy per node). Read by wannier_interpolation("quasiparticle")
+    // via unfold_1e_hamiltonian as qp_approx/Heff_skij.
+    auto sHeff_skij = make_shared_array<Array_view_4D_t>(_context, {ns, nk, nb, nb});
+    E_ska()    = 0.0;
+    E_qp_ska() = 0.0;
+
+    nda::array<ComplexType, 2> tmp(nb, nb), Srot(nb, nb), F_ik(nb, nb);
+    nda::array<ComplexType, 2> Sigma_ta(nts, nb);  // per (s,k): tau, MO diagonal
+    nda::array<ComplexType, 2> Sigma_wa(nw,  nb);  // per (s,k): iw,  MO diagonal
+
+    sHeff_skij.win().fence();
+    for (long sk = _context.comm.rank(); sk < ns*nk; sk += _context.comm.size()) {
+      long is = sk / nk;
+      long ik = sk % nk;
+
+      // A: Diagonalize F_total → eigenstates U_ab and MF eigenvalues eps_a
+      F_ik = sFhf_skij.local()(is, ik, nda::ellipsis{});
+      auto [eps_a, U_ab] = nda::linalg::eigenelements(F_ik);
+      for (long a = 0; a < nb; ++a)
+        E_ska(is, ik, a) = eps_a(a);
+
+      // B: Rotate Sigma_tskij to MO diagonal: Sigma_ta(t,a) = [U† Sigma(t) U]_aa
+      for (long it = 0; it < nts; ++it) {
+        nda::blas::gemm(ComplexType(1.0),
+                        sSigma_tskij.local()(it, is, ik, nda::ellipsis{}), U_ab,
+                        ComplexType(0.0), tmp);
+        nda::blas::gemm(ComplexType(1.0),
+                        nda::dagger(U_ab), tmp,
+                        ComplexType(0.0), Srot);
+        Sigma_ta(it, nda::range::all) = nda::diagonal(Srot);
+      }
+
+      // C: FT tau → iw for this (s,k)
+      FT.tau_to_w(Sigma_ta, Sigma_wa, imag_axes_ft::fermion);
+
+      // D: AC + QP equation for each band
+      analyt_cont::AC_t AC(qp_params.ac_alg);
+      AC.init(iw_mesh, Sigma_wa, qp_params.Nfit);
+
+      for (long ia = 0; ia < nb; ++ia) {
+        double eps = E_ska(is, ik, ia);
+        double E_qp;
+        if (qp_params.qp_type == "linearized") {
+          E_qp = qp_eqn_linearized(eps, AC, ia, mu, eps, qp_params.eta);
+        } else if (qp_params.qp_type == "sc_newton") {
+          auto [E_qp_v, res, conv] = qp_eqn_secant(eps, AC, ia, mu, eps, 400, qp_params.tol, qp_params.eta);
+          if (!conv)
+            app_warning("pproc_t::compute_qp_on_ibz_kmesh: secant fails at (s={},k={},a={}); res={}", is, ik, ia, res);
+          E_qp = E_qp_v;
+        } else {
+          auto [E_qp_v, res] = qp_eqn_bisection(eps, AC, ia, mu, eps, qp_params.tol, qp_params.eta);
+          E_qp = E_qp_v;
+        }
+        E_qp_ska(is, ik, ia) = E_qp;
+      }
+
+      // E: Reconstruct Heff_skij = U @ diag(E_qp) @ U† in the primary (DFT band) basis.
+      // Scale columns of U by the QP eigenvalues, then multiply by U†.
+      for (long a = 0; a < nb; ++a)
+        tmp(nda::range::all, a) = U_ab(nda::range::all, a) * E_qp_ska(is, ik, a);
+      nda::blas::gemm(ComplexType(1.0), tmp, nda::dagger(U_ab), ComplexType(0.0),
+                      sHeff_skij.local()(is, ik, nda::ellipsis{}));
+    }
+    sHeff_skij.win().fence();
+    sHeff_skij.all_reduce();
+    _context.comm.all_reduce_in_place_n(E_ska.data(),    E_ska.size(),    std::plus<>{});
+    _context.comm.all_reduce_in_place_n(E_qp_ska.data(), E_qp_ska.size(), std::plus<>{});
+
+    // --- Write QP energies and QP Hamiltonian to checkpoint ---
+    // H_skij is read by wannier_interpolation("quasiparticle") via unfold_1e_hamiltonian for
+    // correct Wannier downfolding in the primary basis. E_ska is kept for diagnostics.
+    if (_context.comm.root()) {
+      h5::file file(filename, 'a');
+      auto iter_grp = h5::group(file).open_group(grp_name+"/iter"+std::to_string(iter));
+      auto qp_grp = iter_grp.has_subgroup("qp_approx") ?
+                    iter_grp.open_group("qp_approx") : iter_grp.create_group("qp_approx");
+      nda::h5_write(qp_grp, "E_ska",    E_qp_ska,           false);
+      nda::h5_write(qp_grp, "Heff_skij", sHeff_skij.local(), false);
+      h5::h5_write(qp_grp, "mu", mu);
+    }
+    _context.comm.barrier();
+    app_log(1, "####### QP energies on IBZ k-mesh done #######\n");
+  }
+
+  void pproc_t::spectral_interpolation(mf::MF &mf, ptree const& pt,
                                        std::string project_file, analyt_cont::ac_context_t &ac_params,
                                        std::string grp_name, long iter, bool translate_home_cell) {
-    // interpolate self-energy and fock along the k-path
-    wannier_interpolation(mf, pt, project_file, "dyson", grp_name, iter, translate_home_cell);
-    nda::array<ComplexType, 5> G_wskab_inter;
+    using math::shm::make_shared_array;
+    using Array_view_5D_t = nda::array_view<ComplexType, 5>;
+
     std::string filename = _scf_output + ".mbpt.h5";
-    auto FT = imag_axes_ft::read_iaft(filename);
-    {
+    auto FT = imag_axes_ft::read_iaft(filename, false);
+
+    // Wannier-interpolate self-energy and solve Dyson for spectral function.
+    wannier_interpolation(mf, pt, project_file, "dyson", grp_name, iter, translate_home_cell);
+
+    std::array<long, 5> G_wskab_shape;
+    if (_context.comm.root()) {
       h5::file file(filename, 'r');
       auto grp = h5::group(file).open_group(grp_name);
-      if (iter==-1)
-        h5::h5_read(grp, "final_iter", iter);
+      if (iter == -1) h5::h5_read(grp, "final_iter", iter); 
+      auto gw_info = h5::array_interface::get_dataset_info(grp, "iter"+std::to_string(iter)+"/wannier_inter/G_wskab");
+      G_wskab_shape = {gw_info.lengths[0], gw_info.lengths[1], gw_info.lengths[2], 
+                       gw_info.lengths[3], gw_info.lengths[4]};
+    }
+    _context.comm.broadcast_n(G_wskab_shape.data(), G_wskab_shape.size(), 0);
+
+    auto sG_wskab_inter = make_shared_array<Array_view_5D_t>(_context, G_wskab_shape);
+    auto G_wskab_inter = sG_wskab_inter.local();
+    if (_context.comm.root()) {
+      h5::file file(filename, 'r');
+      auto grp = h5::group(file).open_group(grp_name);
       nda::h5_read(grp, "iter"+std::to_string(iter)+"/wannier_inter/G_wskab", G_wskab_inter);
     }
+    sG_wskab_inter.broadcast_to_nodes(0);
+    _context.comm.barrier();
+
     auto [niw, ns, nkpts, nbnd, nbnd2] = G_wskab_inter.shape();
 
     int np = _context.comm.size();
@@ -763,7 +951,7 @@ namespace methods {
     auto niw = FT.nw_f();
     auto G_tskab = nda::reshape(G_tskIab, std::array<long, 5>{nts, ns, nkpts, nbnd, nbnd});
     nda::array<ComplexType, 5> G_wskab(niw, ns, nkpts, nbnd, nbnd);
-    FT.tau_to_w(G_tskab, G_wskab, imag_axes_ft::fermi);
+    FT.tau_to_w(G_tskab, G_wskab, imag_axes_ft::fermion);
 
     // analytical continuation
     int np = _context.comm.size();

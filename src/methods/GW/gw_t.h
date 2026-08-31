@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef COQUI_GW_T_H
 #define COQUI_GW_T_H
 
@@ -14,7 +35,6 @@
 #include "numerics/imag_axes_ft/IAFT.hpp"
 #include "methods/scr_coulomb/scr_coulomb_t.h"
 #include "methods/ERI/detail/concepts.hpp"
-#include "methods/ERI/div_treatment_e.hpp"
 
 namespace methods {
   namespace solvers {
@@ -40,7 +60,7 @@ namespace methods {
       using shape_t = std::array<long,N>;
 
     public:
-      gw_t(const imag_axes_ft::IAFT *ft, div_treatment_e div = gygi,
+      gw_t(const imag_axes_ft::IAFT *ft, std::string div = "gygi",
            std::string output = "coqui");
 
       ~gw_t() {}
@@ -225,7 +245,7 @@ namespace methods {
     private:
       const imag_axes_ft::IAFT* _ft = nullptr;
 
-      div_treatment_e _div_treatment = div_treatment_e::ignore_g0;
+      std::string _div_treatment = "ignore_g0";
 
       // current iteration in SCF. Modified externally.
       long _iter = 0;
@@ -235,7 +255,7 @@ namespace methods {
     public:
       long& iter() { return _iter; }
       std::string& output() { return _output; }
-      div_treatment_e& div_treatmemnt() { return _div_treatment; }
+      std::string& div_treatment() { return _div_treatment; }
 
     };
   } // solvers

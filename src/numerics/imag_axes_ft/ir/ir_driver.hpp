@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef COQUI_IR_GENERATOR_HPP
 #define COQUI_IR_GENERATOR_HPP
 
@@ -12,6 +33,7 @@
 #include "configuration.hpp"
 #include "utilities/check.hpp"
 #include "IO/app_loggers.h"
+#include "../iaft_enum_e.hpp"
 
 namespace imag_axes_ft {
   namespace ir {
@@ -28,16 +50,8 @@ namespace imag_axes_ft {
         utils::check(lambda > 0.0, "Invalid value of lambda, {}, in imag_axes_ft::ir::ir.", lambda);
         utils::check(wmax > 0.0, "Invalid value of wmax, {}, in imag_axes_ft::ir::ir.", wmax);
 
-        std::string prec_prefix;
-        if (prec == "high") {
-          prec_prefix = "1e-15";
-        } else if (prec == "medium") {
-          prec_prefix = "1e-10";
-        } else if (prec == "low") {
-          prec_prefix = "1e-06";
-        } else {
-          utils::check(false, "imag_axes_ft::ir: prec = {} is not acceptable. Acceptable list = \"high\", \"medium\", \"low\"", prec);
-        }
+        eps = prec_to_eps(prec);
+        std::string prec_prefix = prec_to_prefix(prec);
         std::string filename = ir_file(lambda, prec_prefix);
         h5::file file(filename, 'r');
         h5::group grp(file);
@@ -84,16 +98,7 @@ namespace imag_axes_ft {
       ~IR() {}
 
       void metadata_log() const {
-        std::string prec_prefix;
-        if (prec == "high") {
-          prec_prefix = "1e-15";
-        } else if (prec == "medium") {
-          prec_prefix = "1e-10";
-        } else if (prec == "low") {
-          prec_prefix = "1e-06";
-        } else {
-          utils::check(false, "imag_axes_ft::ir: prec = {} is not acceptable. Acceptable list = \"high\", \"medium\", \"low\"", prec);
-        }
+        std::string prec_prefix = prec_to_prefix(prec);
 
         app_log(1, "  Mesh details on the imaginary axis");
         app_log(1, "  ----------------------------------");
@@ -116,10 +121,30 @@ namespace imag_axes_ft {
         return filename;
       }
 
+      auto construct_tau_interpolate_matrix([[maybe_unused]] const nda::MemoryArrayOfRank<1> auto &tau_mesh_out,
+                    [[maybe_unused]] bool ph_sym=false) const
+      -> nda::array<ComplexType, 2> {
+        
+        utils::check(false, "imag_axes_ft::ir::construct_tau_interpolate_matrix is not implemented yet.");
+
+        return nda::array<ComplexType, 2>(1, 1);
+      }
+
+      auto construct_w_interpolate_matrix([[maybe_unused]] const nda::MemoryArrayOfRank<1> auto &wn_mesh_out,
+                    [[maybe_unused]] imag_axes_ft::stats_e stats,
+                    [[maybe_unused]] bool ph_sym=false) const
+      -> nda::array<ComplexType, 2> {
+
+        utils::check(false, "imag_axes_ft::ir::construct_w_interpolate_matrix is not implemented yet.");
+
+        return nda::array<ComplexType, 2>(1, 1);
+      }
+
     public:
       double beta;
       double wmax;
       std::string prec;
+      double eps;
       double lambda;
 
       int nt_f;
@@ -168,6 +193,36 @@ namespace imag_axes_ft {
         } else {
           return -1;
         }
+      }
+
+      inline std::string prec_to_prefix(std::string const& prec_) const {
+        if (prec_ == "high") {
+          return "1e-15";
+        } else if (prec_ == "medium") {
+          return "1e-10";
+        } else if (prec_ == "low") {
+          return "1e-06";
+        }
+
+        utils::check(false,
+          "imag_axes_ft::ir: prec = {} is not acceptable. Acceptable list = \"high\", \"medium\", \"low\"",
+          prec_);
+        return "";
+      }
+
+      inline double prec_to_eps(std::string const& prec_) const {
+        if (prec_ == "high") {
+          return 1e-15;
+        } else if (prec_ == "medium") {
+          return 1e-10;
+        } else if (prec_ == "low") {
+          return 1e-06;
+        }
+
+        utils::check(false,
+          "imag_axes_ft::ir: prec = {} is not acceptable. Acceptable list = \"high\", \"medium\", \"low\"",
+          prec_);
+        return 0.0;
       }
 
     private:

@@ -24,11 +24,11 @@ set_target_properties(utils_module PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${PYTHON
 install(TARGETS utils_module
         LIBRARY DESTINATION ${PYTHON_PACKAGE_INSTALL_PATH}/_lib)
 
-#Python_add_library(iaft_module MODULE iaft_module.$<IF:$<BOOL:${COQUI_GENERATE_PYTHON_BINDINGS}>,cpp,wrap.cxx>)
-#target_link_libraries(iaft_module PRIVATE c2py::c2py $<$<BOOL:${COQUI_GENERATE_PYTHON_BINDINGS}>:clair::c2py_plugin> nda::nda_py numerics)
-#set_target_properties(iaft_module PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${PYTHON_PACKAGE_PATH}/_lib")
-#install(TARGETS iaft_module
-#        LIBRARY DESTINATION ${PYTHON_PACKAGE_INSTALL_PATH}/_lib)
+Python_add_library(iaft_module MODULE imag_axes_ft/iaft_module.cpp)
+target_link_libraries(iaft_module PRIVATE c2py::c2py nda::nda_py numerics)
+set_target_properties(iaft_module PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${PYTHON_PACKAGE_PATH}/_lib")
+install(TARGETS iaft_module
+        LIBRARY DESTINATION ${PYTHON_PACKAGE_INSTALL_PATH}/_lib)
 
 if (COQUI_UPDATE_PYTHON_BINDINGS)
     add_custom_command(
@@ -48,4 +48,13 @@ if (COQUI_UPDATE_PYTHON_BINDINGS)
     )
     add_custom_target(utils_bindings_generation DEPENDS utils_module.wrap.cxx)
     add_dependencies(utils_module utils_bindings_generation mpi_handler)
+
+    add_custom_command(
+        COMMAND ${clair-c2py} -p ${PROJECT_BINARY_DIR} imag_axes_ft/iaft_module.cpp
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT imag_axes_ft/iaft_module.wrap.cxx
+        DEPENDS imag_axes_ft/iaft_module.cpp
+    )
+    add_custom_target(iaft_bindings_generation DEPENDS imag_axes_ft/iaft_module.wrap.cxx)
+    add_dependencies(iaft_module iaft_bindings_generation)
 endif()

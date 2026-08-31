@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #undef NDEBUG
 
 #include "catch2/catch.hpp"
@@ -25,21 +46,21 @@ namespace bdft_tests {
   TEST_CASE("chol_g0w0_qe", "[methods][chol][gw][qe]") {
     auto& mpi_context = utils::make_unit_test_mpi_context();
 
-    imag_axes_ft::IAFT ft(1000, 1.2, imag_axes_ft::ir_source);
+    imag_axes_ft::IAFT ft(1000, 1.2, imag_axes_ft::ir_basis, "high");
     std::string output = "coqui";
 
     auto solve_thc_g0w0 = [&](std::shared_ptr<mf::MF> &mf) {
       solvers::hf_t hf;
-      solvers::gw_t gw(&ft, string_to_div_enum("ignore_g0"), output);
-      solvers::scr_coulomb_t scr_eri(&ft, "rpa", string_to_div_enum("ignore_g0"));
+      solvers::gw_t gw(&ft, "ignore_g0", output);
+      solvers::scr_coulomb_t scr_eri(&ft, "rpa", "ignore_g0");
 
       chol_reader_t chol(mf, methods::make_chol_reader_ptree(1e-10, mf->ecutrho(), 32, "./"));
       auto eri = mb_eri_t(chol, chol);
-      qp_context_t qp_context("sc", "pade", 18, 0.0001, 1e-8);
+      qp_params_t qp_params("sc", "pade", 18, 0.0001, 1e-8, "evscf");
       iter_scf::iter_scf_t iter_sol("damping");
       MBState mb_state(mpi_context, ft, output);
-      [[maybe_unused]] double e_hf = qp_scf_loop<true>(
-          mb_state, eri, ft, qp_context,
+      [[maybe_unused]] double e_hf = qp_scf_loop(
+          mb_state, eri, ft, qp_params,
           solvers::mb_solver_t(&hf,&gw,&scr_eri), &iter_sol, 1, false, 1e-8);
       mpi_context->comm.barrier();
 
@@ -96,10 +117,10 @@ namespace bdft_tests {
     auto& mpi_context = utils::make_unit_test_mpi_context();
 
     auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi_context, "qe_lih222"));
-    imag_axes_ft::IAFT ft(1000, 1.2, imag_axes_ft::ir_source);
+    imag_axes_ft::IAFT ft(1000, 1.2, imag_axes_ft::ir_basis, "high");
     chol_reader_t chol(mf, methods::make_chol_reader_ptree(1e-10, mf->ecutrho(), 32, "./"));
     auto eri = mb_eri_t(chol, chol);
-    solvers::gw_t gw(std::addressof(ft));
+    solvers::gw_t gw(std::addressof(ft), "gygi_smallest_q");
     solvers::hf_t hf;
     simple_dyson dyson(mf.get(), std::addressof(ft));
     MBState mb_state(mpi_context, ft, "bdft");
@@ -128,10 +149,10 @@ namespace bdft_tests {
 
     auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi_context, "qe_lih222"));
 
-    imag_axes_ft::IAFT ft(1000, 1.2, imag_axes_ft::ir_source);
+    imag_axes_ft::IAFT ft(1000, 1.2, imag_axes_ft::ir_basis, "high");
     chol_reader_t chol(mf, methods::make_chol_reader_ptree(1e-10, mf->ecutrho(), 32, "./"));
     auto eri = mb_eri_t(chol, chol);
-    solvers::gw_t gw(std::addressof(ft));
+    solvers::gw_t gw(std::addressof(ft), "gygi_smallest_q");
     solvers::hf_t hf;
     solvers::mb_solver_t mb_solver(&hf, &gw);
     simple_dyson dyson(mf.get(), std::addressof(ft));
@@ -160,10 +181,10 @@ namespace bdft_tests {
 
     auto mf = std::make_shared<mf::MF>(mf::MF(mf::pyscf::pyscf_readonly(mpi_context, filepath, "pyscf")));
 
-    imag_axes_ft::IAFT ft(1000, 12.0, imag_axes_ft::ir_source);
+    imag_axes_ft::IAFT ft(1000, 12.0, imag_axes_ft::ir_basis, "high");
     chol_reader_t chol(mf, methods::make_chol_reader_ptree(1e-10, mf->ecutrho(), 32, "./"));
     auto eri = mb_eri_t(chol, chol);
-    solvers::gw_t gw(std::addressof(ft));
+    solvers::gw_t gw(std::addressof(ft), "gygi_smallest_q");
     solvers::hf_t hf;
     simple_dyson dyson(mf.get(), std::addressof(ft));
     MBState mb_state(mpi_context, ft, "bdft");
@@ -195,10 +216,10 @@ namespace bdft_tests {
 
     auto mf = std::make_shared<mf::MF>(mf::MF(mf::pyscf::pyscf_readonly(mpi_context, filepath, "pyscf")));
 
-    imag_axes_ft::IAFT ft(1000, 12.0, imag_axes_ft::ir_source);
+    imag_axes_ft::IAFT ft(1000, 12.0, imag_axes_ft::ir_basis, "high");
     chol_reader_t chol(mf, methods::make_chol_reader_ptree(1e-10, mf->ecutrho(), 32, "./"));
     auto eri = mb_eri_t(chol, chol);
-    solvers::gw_t gw(std::addressof(ft));
+    solvers::gw_t gw(std::addressof(ft), "gygi_smallest_q");
     solvers::hf_t hf;
     solvers::mb_solver_t mb_solver(&hf, &gw);
     simple_dyson dyson(mf.get(), std::addressof(ft));
@@ -224,11 +245,11 @@ namespace bdft_tests {
     std::string gdf_dir = std::string(PROJECT_SOURCE_DIR)+"/tests/unit_test_files/pyscf/h2o_mol/gdf_eri/";
     auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi_context, "pyscf_h2o_mol"));
 
-    imag_axes_ft::IAFT ft(2000, 6.0, imag_axes_ft::ir_source);
+    imag_axes_ft::IAFT ft(2000, 6.0, imag_axes_ft::ir_basis, "high");
 
     chol_reader_t chol(mf, gdf_dir);
     auto eri = mb_eri_t(chol, chol);
-    solvers::gw_t gw(&ft);
+    solvers::gw_t gw(&ft, "gygi_smallest_q");
     solvers::hf_t hf;
     simple_dyson dyson(mf.get(), &ft);
     MBState mb_state(mpi_context, ft, "bdft");

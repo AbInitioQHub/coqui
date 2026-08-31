@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 
 #include "nda/nda.hpp"
 #include "numerics/distributed_array/nda.hpp"
@@ -43,7 +64,7 @@ auto scf_loop(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri, const imag_ax
     app_log(1, "    - Iteration            = {}", input_iter);
   }
   app_log(1, "  Number of processors     = {} cores per node, {} nodes\n",
-          mpi->comm.size(), mpi->internode_comm.size());
+          mpi->node_comm.size(), mpi->internode_comm.size());
   FT.metadata_log();
 
   Timer.start("SCF_TOTAL");
@@ -61,12 +82,11 @@ auto scf_loop(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri, const imag_ax
   auto& sG_tskij = mb_state.sG_tskij.value();
   auto& sSigma_tskij = mb_state.sSigma_tskij.value();
   double mu = 0.0;
-  long init_it = 0;
   if (!restart) {
     hamilt::set_fock(*mf, dyson.PSP(), sF_skij, true);
   } else {
-    init_it = chkpt::read_scf(mpi->node_comm, sF_skij, sSigma_tskij, mu,
-                              mb_state.coqui_prefix, input_grp, input_iter);
+    input_iter = chkpt::read_scf(mpi->node_comm, sF_skij, sSigma_tskij, mu,
+                                 mb_state.coqui_prefix, input_grp, input_iter);
   }
 
   Timer.start("DYSON");
@@ -83,12 +103,27 @@ auto scf_loop(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri, const imag_ax
   Timer.stop("WRITE");
 
   double F_conv, Sigma_conv;
-  double e_1e, e_hf, e_corr;
-  double e_tot = 0.0;
-  double e_tot_diff = 0.0;
-  long it = 1 + init_it;
+  std::vector<double> energies(4, 0.0);
+  std::vector<double> energies_diff(3, 0.0);
+  auto converged = [&]() {
+    bool energy_converged = std::all_of(energies_diff.begin(), energies_diff.end(),
+                                        [conv_tol](double x) { return std::abs(x) < conv_tol; });
+    if (iter_solver!=nullptr) {
+      return (energy_converged and std::abs(F_conv) <= std::abs(conv_tol) and std::abs(Sigma_conv) <= std::abs(conv_tol));
+    } else {
+      return energy_converged;
+    }
+  };
+  // Determine output iteration
+  // 1) The output h5 group is always "scf"
+  // 2) The output iteration is scf/final_iter + 1
+  std::tie(mb_state.mbpt_iter, mb_state.df_1e_iter, mb_state.df_2e_iter, mb_state.embed_iter) =
+      chkpt::read_input_iterations(mb_state.coqui_prefix+".mbpt.h5");
+  long output_iter_init = mb_state.mbpt_iter+1;
+  long output_iter = output_iter_init;
+  // start SCF iteration
   do {
-    app_log(1, "\n** Iteration # {} **", it);
+    app_log(1, "\n** Iteration # {} **", output_iter);
     Timer.start("MBPT_SOLVERS");
     // HF
     if (mb_solver.hf != nullptr) {
@@ -116,42 +151,47 @@ auto scf_loop(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri, const imag_ax
     if (mb_solver.corr != nullptr) {
 
       if (mb_solver.scr_eri != nullptr)
-        mb_solver.scr_eri->update_w(mb_state, mb_eri.corr_eri->get(), it);
+        mb_solver.scr_eri->update_w(mb_state, mb_eri.corr_eri->get(), output_iter);
 
-      mb_solver.corr->iter() = it;
+      mb_solver.corr->iter() = output_iter;
       mb_solver.corr->evaluate(mb_state, mb_eri.corr_eri->get());
+      // deallocate mb_state.dW_qtPQ after this since it's only used in the corr solver and can be very large for GW.
+      mb_state.dW_qtPQ.reset();
       mpi->comm.barrier();
     }
 
     if (mpi->node_comm.root()) {
-      hermitize(sF_skij.local(), "Fock matrix");
-      hermitize(sSigma_tskij.local(), "dynamic self-energy");
+      hermitize_in_tau(sF_skij.local(), "Fock matrix");
+      hermitize_in_tau(sSigma_tskij.local(), "dynamic self-energy");
     }
     mpi->comm.barrier();
     Timer.stop("MBPT_SOLVERS");
 
 
     Timer.start("ITERATIVE");
-    std::tie(F_conv, Sigma_conv) = solve_iterative(*mpi, *iter_solver, it, mb_state.coqui_prefix,
-                                                   sF_skij, sSigma_tskij, &FT, restart);
+    if (iter_solver != nullptr) {
+      std::tie(F_conv, Sigma_conv) = solve_iterative(*mpi, *iter_solver, output_iter,
+                                                     mb_state.coqui_prefix,
+                                                     sF_skij, sSigma_tskij, &FT);
+    }
     Timer.stop("ITERATIVE");
 
     Timer.start("DYSON");
     // whether to update mu depends on const_mu
     update_G(dyson, *mf, FT, sDm_skij, sG_tskij, sF_skij, sSigma_tskij, mu, const_mu);
     if (mpi->node_comm.root()) {
-      hermitize(sDm_skij.local(), "density matrix");
-      hermitize(sG_tskij.local(), "Green's function");
+      hermitize_in_tau(sDm_skij.local(), "density matrix");
+      hermitize_in_tau(sG_tskij.local(), "Green's function");
     }
     mpi->comm.barrier();
     Timer.stop("DYSON");
 
 
     auto k_weight = mf->k_weight();
-    std::tie(e_1e, e_hf) = eval_hf_energy(sDm_skij, sF_skij, dyson.sH0_skij(), k_weight, false);
-    e_corr = (mb_solver.corr != nullptr)? eval_corr_energy(mpi->comm, FT, sG_tskij, sSigma_tskij, k_weight) : 0.0;
-    double e_tot_new = e_1e + e_hf + e_corr;
-    e_tot_diff = e_tot_new - e_tot;
+    auto [e_1e, e_hf] = eval_hf_energy(sDm_skij, sF_skij, dyson.sH0_skij(), k_weight, false);
+    double e_corr = (mb_solver.corr != nullptr)? eval_corr_energy(mpi->comm, FT, sG_tskij, sSigma_tskij, k_weight) : 0.0;
+    energies_diff = {e_1e - energies[0], e_hf - energies[1], e_corr - energies[2]};
+    energies = {e_1e, e_hf, e_corr, e_1e+e_hf+e_corr};
 
     // print energies and scf convergence
     app_log(1, "\nEnergy contributions");
@@ -159,18 +199,24 @@ auto scf_loop(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri, const imag_ax
     app_log(1, "  non-interacting (H0):           {} a.u.", e_1e);
     app_log(1, "  Hartree-Fock:                   {} a.u.", e_hf);
     app_log(1, "  correlation:                    {} a.u.", e_corr);
-    app_log(1, "  total energy:                   {} a.u.", e_tot_new);
+    app_log(1, "  total energy:                   {} a.u.", e_1e+e_hf+e_corr);
     app_log(1, " ");
-    app_log(1, "energy difference:                {} a.u.", e_tot_diff);
-    app_log(1, "abs max diff of Fock matrix:   {}", F_conv);
-    if (mb_solver.corr!=nullptr)
-      app_log(1, "abs max diff of self-energy:   {}\n", Sigma_conv);
-    e_tot  = e_tot_new;
+    app_log(1, "energy difference");
+    app_log(1, "  - non-interacting (H0):         {} a.u.", energies_diff[0]);
+    app_log(1, "  - Hartree-Fock:                 {} a.u.", energies_diff[1]);
+    app_log(1, "  - correlation:                  {} a.u.", energies_diff[2]);
+    if (iter_solver != nullptr) {
+      app_log(1, "abs max diff of Fock matrix:   {}", F_conv);
+      if (mb_solver.corr != nullptr)
+        app_log(1, "abs max diff of self-energy:   {}\n", Sigma_conv);
+    }
     Timer.start("WRITE");
-    chkpt::dump_scf(mpi->comm, it, sDm_skij, sG_tskij, sF_skij, sSigma_tskij, mu, mb_state.coqui_prefix);
+    chkpt::dump_scf(mpi->comm, output_iter, sDm_skij, sG_tskij, sF_skij,
+                    sSigma_tskij, mu, mb_state.coqui_prefix,
+                    input_grp, input_iter);
     Timer.stop("WRITE");
-    it++;
-  } while(it<init_it+niter+1 and (std::abs(F_conv) > std::abs(conv_tol) or std::abs(Sigma_conv) > std::abs(conv_tol)));
+    output_iter++;
+  } while (output_iter<output_iter_init+niter and not converged());
   Timer.stop("SCF_TOTAL");
 
   app_log(2, "\n  Dyson-SCF timers");
@@ -182,15 +228,22 @@ auto scf_loop(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri, const imag_ax
   app_log(2, "    Write:                {0:.3f} sec\n", Timer.elapsed("WRITE"));
 
   app_log(1, "####### SCF routines end #######\n");
-  return std::make_tuple(e_1e+e_hf, e_corr);
+  return std::make_tuple(energies[0]+energies[1], energies[2]);
 }
 
 
-template<bool evscf_only, typename eri_t, typename corr_solver_t>
-double qp_scf_loop(MBState &mb_state, eri_t &mb_eri, const imag_axes_ft::IAFT& FT,
-                   qp_context_t& qp_context, solvers::mb_solver_t<corr_solver_t> mb_solver,
-                   iter_scf::iter_scf_t *iter_solver,
-                   int niter, bool restart, double conv_tol) {
+template<typename eri_t, typename corr_solver_t>
+double qp_scf_loop(
+  MBState &mb_state, 
+  eri_t &mb_eri, 
+  const imag_axes_ft::IAFT& FT,
+  qp_params_t& qp_params, 
+  solvers::mb_solver_t<corr_solver_t> mb_solver,
+  iter_scf::iter_scf_t *iter_solver,
+  int niter, 
+  bool restart, 
+  double conv_tol) {
+
   using math::shm::make_shared_array;
   utils::TimerManager Timer;
   auto mpi = mb_eri.corr_eri->get().mpi();
@@ -198,48 +251,53 @@ double qp_scf_loop(MBState &mb_state, eri_t &mb_eri, const imag_axes_ft::IAFT& F
   for( auto& v: {"SCF_TOTAL", "CANONICALIZATION", "MBPT_SOLVERS", "ITERATIVE", "WRITE"} ) {
     Timer.add(v);
   }
-  utils::check(qp_context.qp_type=="sc" or qp_context.qp_type=="sc_newton" or
-               qp_context.qp_type=="sc_bisection" or qp_context.qp_type=="linearized" or qp_context.qp_type=="spectral",
-               "qp_scf_loop: unknown qp_type {}: sc or linearized.", qp_context.qp_type);
+  utils::check(qp_params.qp_type=="sc" or qp_params.qp_type=="sc_newton" or
+               qp_params.qp_type=="sc_bisection" or qp_params.qp_type=="linearized" or qp_params.qp_type=="spectral",
+               "qp_scf_loop: unknown qp_type {}: sc or linearized.", qp_params.qp_type);
   // http://patorjk.com/software/taag/#p=display&f=Calvin%20S&t=COQUI%20qp-scf
   app_log(1, "\n"
              "╔═╗╔═╗╔═╗ ╦ ╦╦  ┌─┐ ┌─┐   ┌─┐┌─┐┌─┐\n"
              "║  ║ ║║═╬╗║ ║║  │─┼┐├─┘───└─┐│  ├┤ \n"
              "╚═╝╚═╝╚═╝╚╚═╝╩  └─┘└┴     └─┘└─┘└  \n");
-  app_log(1, "  - maximum iteration number:        {}", niter);
-  app_log(1, "  - eigenvalue scf only:             {}", (evscf_only)? "true" : "false");
-  app_log(1, "  - convergence tolerance:           {}", conv_tol);
-  app_log(1, "  - output:                          {}", mb_state.coqui_prefix+".mbpt.h5");
-  app_log(1, "  - Restart mode:                    {}", (restart)? "yes" : "no");
-  app_log(1, "  - total number processors:         {}", mpi->comm.size());
-  app_log(1, "  - number of nodes:                 {}\n", mpi->internode_comm.size());
-  Timer.start("SCF_TOTAL");
+  app_log(1, "  Maximum iteration number    = {}", niter);
+  app_log(1, "  Eigenvalue scf only         = {}", qp_params.qp_scf_mode == "evscf");
+  app_log(1, "  Keep screened Coulomb fixed = {}", qp_params.keep_scr_coulomb_fixed);
+  app_log(1, "  Convergence tolerance       = {}", conv_tol);
+  app_log(1, "  Checkpoint HDF5             = {}", mb_state.coqui_prefix+".mbpt.h5");
+  app_log(1, "  Restart                     = {}", (restart)? "yes" : "no");
+  app_log(1, "  Number of processors        = {} cores per node, {} nodes\n",
+          mpi->node_comm.size(), mpi->internode_comm.size());
+  FT.metadata_log();
 
-  mb_state.sF_skij.emplace(make_shared_array<Array_view_4D_t>(*mpi, {mf->nspin(), mf->nkpts_ibz(), mf->nbnd(), mf->nbnd()}));
+  Timer.start("SCF_TOTAL");
+  mb_state.sHeff_skij.emplace(make_shared_array<Array_view_4D_t>(*mpi, {mf->nspin(), mf->nkpts_ibz(), mf->nbnd(), mf->nbnd()}));
   mb_state.sDm_skij.emplace(make_shared_array<Array_view_4D_t>(*mpi, {mf->nspin(), mf->nkpts_ibz(), mf->nbnd(), mf->nbnd()}));
-  auto& sHeff_skij = mb_state.sF_skij.value();
+  mb_state.sMO_skia.emplace(make_shared_array<Array_view_4D_t>(*mpi, {mf->nspin(), mf->nkpts_ibz(), mf->nbnd(), mf->nbnd()}));
+  mb_state.sE_ska.emplace(make_shared_array<Array_view_3D_t>(*mpi, {mf->nspin(), mf->nkpts_ibz(), mf->nbnd()}));
+  auto& sHeff_skij = mb_state.sHeff_skij.value();
   auto& sDm_skij = mb_state.sDm_skij.value();
-  auto sH0_skij = make_shared_array<Array_view_4D_t>(*mpi, {mf->nspin(), mf->nkpts_ibz(), mf->nbnd(), mf->nbnd()});
-  auto sS_skij = make_shared_array<Array_view_4D_t>(*mpi, {mf->nspin(), mf->nkpts_ibz(), mf->nbnd(), mf->nbnd()});
+  auto& sMO_skia = mb_state.sMO_skia.value();
+  auto& sE_ska = mb_state.sE_ska.value();
   double mu = 0.0;
-  // generates a new pseudopot object if not found in mf. Stores shared_ptr in mf and returns it.
+
+  // pseudopotential handler 
   auto psp = hamilt::make_pseudopot(*mf);
-  hamilt::set_H0(*mf, psp.get(), sH0_skij);
-  hamilt::set_ovlp(*mf, sS_skij);
   long init_it = 0;
   if (!restart) {
     hamilt::set_fock(*mf, psp.get(), sHeff_skij, false);
   } else {
     init_it = chkpt::read_qpscf(mpi->node_comm, sHeff_skij, mu, mb_state.coqui_prefix);
   }
-
-  auto sMO_skia = make_shared_array<Array_view_4D_t>(*mpi, {mf->nspin(), mf->nkpts_ibz(), mf->nbnd(), mf->nbnd()});
-  auto sE_ska = make_shared_array<Array_view_3D_t>(*mpi, {mf->nspin(), mf->nkpts_ibz(), mf->nbnd()});
+  
+  auto sH0_skij = make_shared_array<Array_view_4D_t>(*mpi, {mf->nspin(), mf->nkpts_ibz(), mf->nbnd(), mf->nbnd()});
+  auto sS_skij = make_shared_array<Array_view_4D_t>(*mpi, {mf->nspin(), mf->nkpts_ibz(), mf->nbnd(), mf->nbnd()});
+  hamilt::set_H0(*mf, psp.get(), sH0_skij);
+  hamilt::set_ovlp(*mf, sS_skij);
 
   // Obtains MO coefficients and energies from the given mean-field object
   Timer.start("CANONICALIZATION");
   update_MOs(sMO_skia, sE_ska, sHeff_skij, sS_skij);
-  mu = update_mu(mu, *mf, sE_ska, FT.beta());
+  mu = update_mu(mu, *mf, sE_ska, FT.beta(), qp_params.mu_tolerance, qp_params.mu_update_alg);
   update_Dm(sDm_skij, sMO_skia, sE_ska, mu, FT.beta());
   Timer.stop("CANONICALIZATION");
 
@@ -288,32 +346,28 @@ double qp_scf_loop(MBState &mb_state, eri_t &mb_eri, const imag_axes_ft::IAFT& F
     }
     if (mb_solver.corr != nullptr) { // GW
       mb_solver.corr->iter() = it;
-      if constexpr (evscf_only) {
-        // add_evscf_vcorr() does the following two things:
-        // 1. return GW quasiparticle energies
-        // 2. update sHeff_skij as a diagonal matrix whose diagonals correspond to GW qp energies.
-        if (niter>1)
-          add_evscf_vcorr<false>(mb_state, sE_ska, sMO_skia, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_context);
-        else
-          add_evscf_vcorr<true>(mb_state, sE_ska, sMO_skia, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_context);
-        mpi->comm.barrier();
+      if (qp_params.qp_scf_mode == "evscf") {
+        // add_evscf_vcorr update two things in mb_state: 
+        // 1. QP energies
+        // 2. sHeff_skij with the updated QP energies while keeping sMO_skia the same.
+        add_evscf_vcorr(mb_state, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_params, qp_params.keep_scr_coulomb_fixed);
       } else {
-        // add_qpscf_vcorr only updates sHeff_skij. sE_ska and sMO_skia are fixed.
-        add_qpscf_vcorr(mb_state, sE_ska, sMO_skia, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_context);
+        // add_qpscf_vcorr only updates sHeff_skij. MO_skia and E_ska are updated later. 
+        add_qpscf_vcorr(mb_state, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_params);
       }
     }
     Timer.stop("MBPT_SOLVERS");
 
     Timer.start("ITERATIVE");
-    Heff_conv = solve_iterative(*mpi, *iter_solver, it, mb_state.coqui_prefix, sHeff_skij);
+    Heff_conv = solve_iterative(*mpi, *iter_solver, it, mb_state.coqui_prefix, sHeff_skij, sS_skij);
     Timer.stop("ITERATIVE");
 
     Timer.start("CANONICALIZATION");
-    if constexpr (!evscf_only) {
+    if (qp_params.qp_scf_mode != "evscf") {
       // update MO_skia and E_ska
       update_MOs(sMO_skia, sE_ska, sHeff_skij, sS_skij);
     }
-    mu = update_mu(mu, *mf, sE_ska, FT.beta());
+    mu = update_mu(mu, *mf, sE_ska, FT.beta(), qp_params.mu_tolerance, qp_params.mu_update_alg);
     update_Dm(sDm_skij, sMO_skia, sE_ska, mu, FT.beta());
     Timer.stop("CANONICALIZATION");
 
@@ -414,97 +468,16 @@ GF2_SCF_LOOP_INST(chol_reader_t, chol_reader_t, chol_reader_t, chol_reader_t)
 
 #undef GF2_SCF_LOOP_INST
 
-// dca-gw/dca-hf
-/*template std::tuple<double, double>
-scf_loop(utils::mpi_context_t<mpi3::communicator> &comm, dca_dyson & scf, mf::MF &mf,
-         mb_eri_t<thc_reader_t, thc_reader_t> &eri, const imag_axes_ft::IAFT& FT,
-         solvers::mb_solver_t<solvers::gw_t> mb_solver, iter_scf::iter_scf_t *iter_solver,
-         std::string output, int niter, bool restart, double conv_tol, bool const_mu,
-         std::string input_grp, int input_iter);
-template std::tuple<double, double>
-scf_loop(utils::mpi_context_t<mpi3::communicator> &comm, dca_dyson & scf, mf::MF &mf,
-         mb_eri_t<thc_reader_t, chol_reader_t> &eri, const imag_axes_ft::IAFT& FT,
-         solvers::mb_solver_t<solvers::gw_t> mb_solver, iter_scf::iter_scf_t *iter_solver,
-         std::string output, int niter, bool restart, double conv_tol, bool const_mu,
-         std::string input_grp, int input_iter);
-template std::tuple<double, double>
-scf_loop(utils::mpi_context_t<mpi3::communicator> &comm, dca_dyson & scf, mf::MF &mf,
-         mb_eri_t<chol_reader_t, thc_reader_t> &eri, const imag_axes_ft::IAFT& FT,
-         solvers::mb_solver_t<solvers::gw_t> mb_solver, iter_scf::iter_scf_t *iter_solver,
-         std::string output, int niter, bool restart, double conv_tol, bool const_mu,
-         std::string input_grp, int input_iter);
-template std::tuple<double, double>
-scf_loop(utils::mpi_context_t<mpi3::communicator> &comm, dca_dyson & scf, mf::MF &mf,
-         mb_eri_t<chol_reader_t, chol_reader_t> &eri, const imag_axes_ft::IAFT& FT,
-         solvers::mb_solver_t<solvers::gw_t> mb_solver, iter_scf::iter_scf_t *iter_solver,
-         std::string output, int niter, bool restart, double conv_tol, bool const_mu,
-         std::string input_grp, int input_iter);
-// dca-gf2
-template std::tuple<double, double>
-scf_loop(utils::mpi_context_t<mpi3::communicator> &comm, dca_dyson & scf, mf::MF &mf,
-         mb_eri_t<thc_reader_t, thc_reader_t> &eri, const imag_axes_ft::IAFT& FT,
-         solvers::mb_solver_t<solvers::gf2_t> mb_solver, iter_scf::iter_scf_t *iter_solver,
-         std::string output, int niter, bool restart, double conv_tol, bool const_mu,
-         std::string input_grp, int input_iter);
-template std::tuple<double, double>
-scf_loop(utils::mpi_context_t<mpi3::communicator> &comm, dca_dyson & scf, mf::MF &mf,
-         mb_eri_t<thc_reader_t, chol_reader_t> &eri, const imag_axes_ft::IAFT& FT,
-         solvers::mb_solver_t<solvers::gf2_t> mb_solver, iter_scf::iter_scf_t *iter_solver,
-         std::string output, int niter, bool restart, double conv_tol, bool const_mu,
-         std::string input_grp, int input_iter);
-template std::tuple<double, double>
-scf_loop(utils::mpi_context_t<mpi3::communicator> &comm, dca_dyson & scf, mf::MF &mf,
-         mb_eri_t<chol_reader_t, thc_reader_t> &eri, const imag_axes_ft::IAFT& FT,
-         solvers::mb_solver_t<solvers::gf2_t> mb_solver, iter_scf::iter_scf_t *iter_solver,
-         std::string output, int niter, bool restart, double conv_tol, bool const_mu,
-         std::string input_grp, int input_iter);
-template std::tuple<double, double>
-scf_loop(utils::mpi_context_t<mpi3::communicator> &comm, dca_dyson & scf, mf::MF &mf,
-         mb_eri_t<chol_reader_t, chol_reader_t> &eri, const imag_axes_ft::IAFT& FT,
-         solvers::mb_solver_t<solvers::gf2_t> mb_solver, iter_scf::iter_scf_t *iter_solver,
-         std::string output, int niter, bool restart, double conv_tol, bool const_mu,
-         std::string input_grp, int input_iter);*/
-
-#define EVSCF_LOOP_INST(HF, HARTREE, EXCHANGE, CORR) \
-template double                                      \
-qp_scf_loop<true>(MBState&,                          \
-                  mb_eri_t<HF, HARTREE, EXCHANGE, CORR>&,    \
-                  const imag_axes_ft::IAFT&,         \
-                  qp_context_t&, \
-                  solvers::mb_solver_t<solvers::gw_t>,       \
-                  iter_scf::iter_scf_t*, \
-                  int, bool, double);
-
-// All combinations of thc/chol for 4 eri slots
-EVSCF_LOOP_INST(thc_reader_t, thc_reader_t, thc_reader_t, thc_reader_t)
-EVSCF_LOOP_INST(thc_reader_t, thc_reader_t, thc_reader_t, chol_reader_t)
-EVSCF_LOOP_INST(thc_reader_t, thc_reader_t, chol_reader_t, thc_reader_t)
-EVSCF_LOOP_INST(thc_reader_t, thc_reader_t, chol_reader_t, chol_reader_t)
-EVSCF_LOOP_INST(thc_reader_t, chol_reader_t, thc_reader_t, thc_reader_t)
-EVSCF_LOOP_INST(thc_reader_t, chol_reader_t, thc_reader_t, chol_reader_t)
-EVSCF_LOOP_INST(thc_reader_t, chol_reader_t, chol_reader_t, thc_reader_t)
-EVSCF_LOOP_INST(thc_reader_t, chol_reader_t, chol_reader_t, chol_reader_t)
-EVSCF_LOOP_INST(chol_reader_t, thc_reader_t, thc_reader_t, thc_reader_t)
-EVSCF_LOOP_INST(chol_reader_t, thc_reader_t, thc_reader_t, chol_reader_t)
-EVSCF_LOOP_INST(chol_reader_t, thc_reader_t, chol_reader_t, thc_reader_t)
-EVSCF_LOOP_INST(chol_reader_t, thc_reader_t, chol_reader_t, chol_reader_t)
-EVSCF_LOOP_INST(chol_reader_t, chol_reader_t, thc_reader_t, thc_reader_t)
-EVSCF_LOOP_INST(chol_reader_t, chol_reader_t, thc_reader_t, chol_reader_t)
-EVSCF_LOOP_INST(chol_reader_t, chol_reader_t, chol_reader_t, thc_reader_t)
-EVSCF_LOOP_INST(chol_reader_t, chol_reader_t, chol_reader_t, chol_reader_t)
-
-#undef EVSCF_LOOP_INST
-
 
 #define QPSCF_LOOP_INST(HF, HARTREE, EXCHANGE, CORR) \
 template double                                      \
-qp_scf_loop<false>(MBState&,                         \
-                   mb_eri_t<HF, HARTREE, EXCHANGE, CORR>&,    \
-                   const imag_axes_ft::IAFT&,         \
-                   qp_context_t&, \
-                   solvers::mb_solver_t<solvers::gw_t>,       \
-                   iter_scf::iter_scf_t*, \
-                   int, bool, double);
+qp_scf_loop(MBState&,                         \
+            mb_eri_t<HF, HARTREE, EXCHANGE, CORR>&,    \
+            const imag_axes_ft::IAFT&,         \
+            qp_params_t&, \
+            solvers::mb_solver_t<solvers::gw_t>,       \
+            iter_scf::iter_scf_t*, \
+            int, bool, double);
 
 // All combinations of thc/chol for 4 eri slots
 QPSCF_LOOP_INST(thc_reader_t, thc_reader_t, thc_reader_t, thc_reader_t)

@@ -17,7 +17,6 @@
 #include "mean_field/MF.hpp"
 #include "methods/ERI/detail/concepts.hpp"
 #include "methods/HF/thc_solver_comm.hpp"
-#include "methods/ERI/div_treatment_e.hpp"
 
 #define W_CACHED 1
 

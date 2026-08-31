@@ -1,0 +1,59 @@
+#
+# Tensor hypercontraction for electron repulsion integrals (ERIs)
+#
+# There are two different ways to initialize a THC-ERI calculation:
+#   1. Specifying number of THC auxiliary basis
+#   2. Specifying the accuracy of the pivoted Cholesky.
+#
+
+# Input mean_field instance which contains the basis functions for the Many-body Hamiltonian.
+[mean_field.qe]
+name     = "mf_qe"
+prefix   = "pwscf"
+outdir   = "qe_output_dir/OUT/"
+filetype = "h5"
+
+# Constructing THC-ERI by specifying the number of THC basis
+[interaction.thc]
+name            = "eri"            # name tag for this [interaction] instance
+mean_field      = "mf_qe"          # tag for the input [mean_field] instance
+nIpts           = 12               # number of interpolating points (i.e. THC basis) = nIpts * nbnd.
+                                   # Depending on the desired accuracy, a reasonable value of nIpts
+                                   # lies between 6 ~ 20 (larger means more accurate).
+                                   # Typically, nIpts = 10 is enough for 1mHartree accuracy per atom.
+ecut            = 60               # [optional] Energy cutoff in the evaluation of ERIs. This number
+                                   #            can usually be much smaller than the cutoff for the
+                                   #            charge density, sometimes even for wfc. Fine-tuning
+                                   #            this value can significantly reduce the computational
+                                   #            cost and memory requiremtnt.
+                                   #            Default = 1.4 x wfc cutoff (falls back to
+                                   #            0.4 x charge-density cutoff when no wfc grid).
+save            = "thc_eri.h5"     # [optional] h5 archive to store the THC outputs;
+                                   #            default = "", i.e. not to store on the disk
+storage         = "incore"         # [optional] this determines how THC will be accessed in the
+                                   #            subsequent MB calculations.
+                                   #            "incore": store in memroy, and access on-the-fly (default).
+                                   #            "outcore": read from the disk. It requires "save" != "".
+distr_tol       = 0.4              # [advanced] mpi distributed tolerance; increase this number will
+                                   #            help coqui better partition the processors. However,
+                                   #            it also implies the efficiency might be slightly worse.
+                                   #            Defualt = 0.2.
+memory_frac     = 0.75             # [advanced] fraction of available memory used for estimation dimensions
+                                   #            of intermediate objects. Default = 0.75
+
+# Constructing THC-ERI by specifying the accuracy of the pivoted Cholesky
+[interaction.thc]
+name            = "eri"
+mean_field      = "mf_qe"
+thresh          = 1e-6             # accuracy for the pivoted Cholesky.
+                                   # [IMPORTANT] The accuracy of the pivoted Cholesky is "not" the
+                                   #             accuracy of the final THC-ERI.
+                                   #             Roughly speaking, the accuracy of the THC-ERI ~ sqrt(thresh).
+ecut            = 60
+save            = "thc_eri.h5"
+storage         = "incore"
+chol_block_size = 8                # [advanced] block size in the pivoted Cholesky; a larger number means
+                                   #            faster but more memory demanding. Typical number is 1 ~ 12.
+                                   #            Default: 1.
+distr_tol       = 0.4
+memory_frac     = 0.75

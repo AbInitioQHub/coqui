@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef COQUI_WAN90_UTILS_HPP
 #define COQUI_WAN90_UTILS_HPP
 
@@ -58,6 +79,251 @@ auto wann90_lm_to_Ylm()
   lm(14) = 15;  //  z(x2-y2)  x(x2-3y2)
   lm(15) = 9;  //  x(x2-3y2) y(3x2-y2) 
   return lm;
+}
+/**
+ * Read eigenvalues from Wannier90 .eig file
+ * Format: band kpoint eigenvalue(eV)
+ */
+auto read_eig_file(std::string fname, int nkpts, nda::array<int,1> const& band_list)
+{
+  app_log(4, "Reading eigenvalues from {}", fname);
+  
+  std::ifstream file(fname);
+  utils::check(file.is_open(), "wan90_utils::read_eig_file: Failed to open file: {}", fname);
+  
+  long nband = band_list.size();
+  nda::array<double, 3> eigv(1, nkpts, nband);
+  eigv() = 0.0;
+  
+  int band_idx, kpt_idx;
+  double eig_val;
+  
+  while(file >> band_idx >> kpt_idx >> eig_val) {
+    // Convert to 0-based indexing
+    band_idx--;
+    kpt_idx--;
+    
+    // Find position in band_list
+    auto it = std::find(band_list.begin(), band_list.end(), band_idx);
+    if(it != band_list.end()) {
+      long b_idx = std::distance(band_list.begin(), it);
+      eigv(0, kpt_idx, b_idx) = eig_val;
+    }
+  }
+  
+  file.close();
+  app_log(4, "Successfully read {} eigenvalues", nband * nkpts);
+  
+  return eigv;
+}
+
+/**
+ * Read U matrix from Wannier90 .u_mat file
+ * Format: k-point index (1-based), band1, band2, real part, imaginary part
+ */
+auto read_u_matrix_file(std::string fname, int nkpts_expected, int nwann_expected)
+{
+  app_log(4, "Reading U matrix from {}", fname);
+  
+  std::ifstream file(fname);
+  utils::check(file.is_open(), "wan90_utils.hpp::read_u_matrix_file: Failed to open file: {}", fname);
+  
+  // Header lines: date/time, then counts: nkpts, nwann, nwann
+  std::string header;
+  std::getline(file, header); // date-time
+  int nkpts = 0, nwann1 = 0, nwann2 = 0;
+  {
+    std::string counts;
+    utils::check(static_cast<bool>(std::getline(file, counts)),
+                 "wan90_utils.hpp::read_u_matrix_file: Missing counts line in {}", fname);
+    std::istringstream iss(counts);
+    utils::check(static_cast<bool>(iss >> nkpts >> nwann1 >> nwann2),
+                 "wan90_utils.hpp::read_u_matrix_file: Failed to parse counts line: {}", counts);
+    utils::check(nwann1 == nwann2, "wan90_utils.hpp::read_u_matrix_file: Inconsistent nwann on counts line: {} {}", nwann1, nwann2);
+  }
+  // Empty line
+  {
+    std::string blank;
+    utils::check(static_cast<bool>(std::getline(file, blank)),
+                 "wan90_utils.hpp::read_u_matrix_file: Missing blank line after counts");
+  }
+
+  utils::check(nkpts == nkpts_expected, "wan90_utils.hpp::read_u_matrix_file: nkpts mismatch. File:{} Expected:{}", nkpts, nkpts_expected);
+  utils::check(nwann1 == nwann_expected, "wan90_utils.hpp::read_u_matrix_file: nwann mismatch. File:{} Expected:{}", nwann1, nwann_expected);
+
+  nda::array<ComplexType, 3> U_matrix(nkpts, nwann1, nwann1);
+  U_matrix() = ComplexType(0.0);
+
+  for(int ik = 0; ik < nkpts; ++ik) {
+    // k-point line: fractional coordinates
+    std::string kp_line;
+    // Skip any blank lines before k-point line
+    do {
+      utils::check(static_cast<bool>(std::getline(file, kp_line)),
+             "wan90_utils.hpp::read_u_matrix_file: Missing k-point line at block {}", ik);
+    } while(kp_line.empty());
+    // parse three doubles, but we don't use them
+    {
+      std::istringstream iss(kp_line);
+      double kx=0.0, ky=0.0, kz=0.0;
+      utils::check(static_cast<bool>(iss >> kx >> ky >> kz),
+           "wan90_utils.hpp::read_u_matrix_file: Failed to parse k-point coordinates at block {}", ik);
+    }
+    // Data: column-major, cycling rows first then columns
+    for(int j = 0; j < nwann1; ++j) {
+      for(int i = 0; i < nwann1; ++i) {
+        std::string val_line;
+        utils::check(static_cast<bool>(std::getline(file, val_line)),
+               "wan90_utils.hpp::read_u_matrix_file: Missing matrix element at (ik={}, i={}, j={})", ik, i, j);
+        // skip empty lines
+        if(val_line.size() == 0) {
+          // read next non-empty
+          while(val_line.size() == 0 && std::getline(file, val_line)) {}
+          utils::check(val_line.size() != 0, "wan90_utils.hpp::read_u_matrix_file: Unexpected EOF while reading U elements");
+        }
+        std::istringstream vss(val_line);
+        double re=0.0, im=0.0;
+        utils::check(static_cast<bool>(vss >> re >> im),
+               "wan90_utils.hpp::read_u_matrix_file: Failed to parse element at (ik={}, i={}, j={})", ik, i, j);
+        U_matrix(ik, i, j) = ComplexType(re, im);
+      }
+    }
+    // Consume possible blank line between blocks
+    file.peek();
+  }
+  
+  app_log(4, "Successfully read U matrix ({} kpts, {}x{} per k)", nkpts, nwann1, nwann1);
+  return U_matrix;
+}
+
+/**
+ * Read U_dis matrix from Wannier90 .u_dis_mat file (if disentanglement is used)
+ * Format: k-point index (1-based), band1, band2, real part, imaginary part
+ */
+auto read_u_dis_matrix_file(std::string fname, int nkpts_expected, int nband_expected, int nwann_expected)
+{
+  app_log(4, "Reading U_dis matrix from {}", fname);
+  
+  std::ifstream file(fname);
+  utils::check(file.is_open(), "wan90_utils.hpp::read_u_dis_matrix_file: Failed to open file: {}", fname);
+  
+  // Header: date/time, then counts: nkpts, nwann, nband (per README)
+  std::string header;
+  std::getline(file, header);
+  int nkpts = 0, nwann = 0, nband = 0;
+  {
+    std::string counts;
+    utils::check(static_cast<bool>(std::getline(file, counts)),
+                 "wan90_utils.hpp::read_u_dis_matrix_file: Missing counts line in {}", fname);
+    std::istringstream iss(counts);
+    utils::check(static_cast<bool>(iss >> nkpts >> nwann >> nband),
+                 "wan90_utils.hpp::read_u_dis_matrix_file: Failed to parse counts line: {}", counts);
+  }
+  // Empty line
+  {
+    std::string blank;
+    utils::check(static_cast<bool>(std::getline(file, blank)),
+                 "wan90_utils.hpp::read_u_dis_matrix_file: Missing blank line after counts");
+  }
+
+  utils::check(nkpts == nkpts_expected, "wan90_utils.hpp::read_u_dis_matrix_file: nkpts mismatch. File:{} Expected:{}", nkpts, nkpts_expected);
+  utils::check(nband == nband_expected, "wan90_utils.hpp::read_u_dis_matrix_file: nband mismatch. File:{} Expected:{}", nband, nband_expected);
+  utils::check(nwann == nwann_expected, "wan90_utils.hpp::read_u_dis_matrix_file: nwann mismatch. File:{} Expected:{}", nwann, nwann_expected);
+
+  nda::array<ComplexType, 3> U_dis_matrix(nkpts, nband, nwann);
+  U_dis_matrix() = ComplexType(0.0);
+
+  for(int ik = 0; ik < nkpts; ++ik) {
+    // Skip blank lines before k-point line
+    std::string kp_line;
+    do {
+      utils::check(static_cast<bool>(std::getline(file, kp_line)),
+             "wan90_utils.hpp::read_u_dis_matrix_file: Unexpected EOF before k-point line at block {}", ik);
+    } while(kp_line.empty());
+    
+    {
+      std::istringstream iss(kp_line);
+      double kx=0.0, ky=0.0, kz=0.0;
+      utils::check(static_cast<bool>(iss >> kx >> ky >> kz),
+           "wan90_utils.hpp::read_u_dis_matrix_file: Failed to parse k-point coordinates at block {}", ik);
+    }
+    // Data: column-major, cycling rows (nband) first then columns (nwann)
+    for(int a = 0; a < nwann; ++a) {
+      for(int m = 0; m < nband; ++m) {
+        std::string val_line;
+        utils::check(static_cast<bool>(std::getline(file, val_line)),
+               "wan90_utils.hpp::read_u_dis_matrix_file: Missing matrix element at (ik={}, m={}, a={})", ik, m, a);
+        if(val_line.size() == 0) {
+          while(val_line.size() == 0 && std::getline(file, val_line)) {}
+          utils::check(val_line.size() != 0, "wan90_utils.hpp::read_u_dis_matrix_file: Unexpected EOF while reading U_dis elements");
+        }
+        std::istringstream vss(val_line);
+        double re=0.0, im=0.0;
+        utils::check(static_cast<bool>(vss >> re >> im),
+               "wan90_utils.hpp::read_u_dis_matrix_file: Failed to parse element at (ik={}, m={}, a={})", ik, m, a);
+        U_dis_matrix(ik, m, a) = ComplexType(re, im);
+      }
+    }
+    // Consume possible blank line between blocks
+    file.peek();
+  }
+
+  app_log(4, "Successfully read U_dis matrix ({} kpts, {}x{} per k)", nkpts, nband, nwann);
+  return U_dis_matrix;
+}
+
+/**
+ * Read Wannier function centres from Wannier90 .centres.xyz or .centres file
+ * Format (centres.xyz): atom_count, line_count, then per line: element_symbol x y z
+ */
+auto read_wan_centres_file(std::string fname, int nwann)
+{
+  app_log(4, "Reading Wannier centres from {}", fname);
+  
+  std::ifstream file(fname);
+  utils::check(file.is_open(), "wan90_utils::read_wan_centres_file: Failed to open file: {}", fname);
+  
+  nda::array<double, 2> centres(nwann, 3);
+  centres() = 0.0;
+  
+  std::string line;
+  int line_count = 0;
+  bool skip_header = false;
+  
+  while(std::getline(file, line)) {
+    // Skip header lines (first two lines in .centres.xyz format)
+    if(!skip_header) {
+      if(line_count < 2) {
+        line_count++;
+        continue;
+      }
+      skip_header = true;
+    }
+    
+    if(line.empty()) continue;
+    
+    std::istringstream iss(line);
+    std::string element;
+    double x, y, z;
+    
+    if(iss >> element >> x >> y >> z) {
+      if(line_count - 2 < nwann) {
+        centres(line_count - 2, 0) = x;
+        centres(line_count - 2, 1) = y;
+        centres(line_count - 2, 2) = z;
+        line_count++;
+      }
+    }
+  }
+  
+  file.close();
+  utils::check(line_count - 2 >= nwann,
+               "wan90_utils::read_wan_centres_file: Not enough centre data read. Expected: {}, Got: {}",
+               nwann, line_count - 2);
+  
+  app_log(4, "Successfully read {} Wannier centres", nwann);
+  
+  return centres;
 }
 
 template<bool single>
@@ -317,13 +583,14 @@ void write_wan90_h5(mf::MF &mf, ptree pt, nda::array<int,1> const& band_list,
 
   auto all = nda::range::all;
   app_log(2, "\n");
-  app_log(2," Writing Wannier90 results into h5 file");
+  app_log(2," Writing Wannier90 results into h5 file...");
 
   auto [nspin,nkpts,nwann,nband] = Pkwa.shape();
 
+  auto outdir = io::get_value_with_default<std::string>(pt,"outdir","./");
   auto prefix = io::get_value<std::string>(pt,"prefix");
   auto dset_name = io::get_value_with_default<std::string>(pt,"dset_name","dft_input");
-  auto h5_fname = io::get_value_with_default<std::string>(pt,"h5_filename",prefix+".mlwf.h5");
+  auto h5_fname = io::get_value_with_default<std::string>(pt,"h5_filename",outdir+"/"+prefix+".mlwf.h5");
  
   // read shell information: 'atom', 'sort', 'l', 'dim', 'SO', 'irep'
   nda::array<long,2> shells = { {0,0,0,long(nwann),0,0} };
@@ -370,14 +637,14 @@ void write_wan90_h5(mf::MF &mf, ptree pt, nda::array<int,1> const& band_list,
       if(shell_SO.size() > 0) shells(i,4) = shell_SO[i];
       if(shell_irrep.size() > 0) shells(i,5) = shell_irrep[i];
     }
-    app_log(2,"  Shell information found.");
+    app_log(2,"  -> Shell information found.");
     app_log(2," Number of shells: {}",shells.extent(0));
     app_log(2," Number of orbitals (summed over all shells): {}",tot_norbs);
     for(int i=0; i<shells.extent(0); ++i)
       app_log(2,"  shell:{} - atom:{} sort:{} l:{} dim:{} SO:{} irrep:{}",
               i,shells(i,0),shells(i,1),shells(i,2),shells(i,3),shells(i,4),shells(i,5));
   } else {
-    app_log(2, "  Shell information not found on input. Using a single shell with all wannier orbitals");
+    app_log(2, "  -> Shell information not found on input. Using a single shell with all wannier orbitals");
     tot_norbs = nwann;
     nshell = 1;
     shells = nda::array<long,2>{nshell,6};
@@ -412,7 +679,7 @@ void write_wan90_h5(mf::MF &mf, ptree pt, nda::array<int,1> const& band_list,
 
   // n_orbitals, need to partition over impurities
   {
-    // in principle this can be customized, right now assume most general case
+    // in principle, this can be customized, right now assume most general case
     nda::array<long,2> norbs(nkpts,nspin);
     norbs() = nband;
     nda::h5_write(dgrp, "n_orbitals", norbs);
@@ -424,10 +691,16 @@ void write_wan90_h5(mf::MF &mf, ptree pt, nda::array<int,1> const& band_list,
   // corr_shell
   {
     h5::group cgrp1 = dgrp.create_group("corr_shells"); 
-    h5::group cgrp2 = dgrp.create_group("shells"); 
+    h5::group cgrp2 = dgrp.create_group("shells");
+    // Attributes on these groups mark their logical container type ("List"/"Dict").
+    // Marking them as "List"/"Dict" allows h5 package to correctly reconstruct 
+    // list-like vs dict-like structures in Python. 
+    h5::h5_write_attribute(cgrp1, "Format", "List");
+    h5::h5_write_attribute(cgrp2, "Format", "List");
     for(int i=0; i<nshell; ++i) {
       {
-        h5::group sgrp = cgrp1.create_group(std::to_string(i)); 
+        h5::group sgrp = cgrp1.create_group(std::to_string(i));
+        h5::h5_write_attribute(sgrp, "Format", "Dict");
         h5::h5_write(sgrp,"atom",shells(i,0));
         h5::h5_write(sgrp,"sort",shells(i,1));
         h5::h5_write(sgrp,"l",shells(i,2));
@@ -437,6 +710,7 @@ void write_wan90_h5(mf::MF &mf, ptree pt, nda::array<int,1> const& band_list,
       }
       {  // mimicking dfttools wannier90 converter, no real reason to do this in principle
         h5::group sgrp = cgrp2.create_group(std::to_string(i));
+        h5::h5_write_attribute(sgrp, "Format", "Dict");
         h5::h5_write(sgrp,"atom",shells(i,0));
         h5::h5_write(sgrp,"sort",shells(i,1));
         h5::h5_write(sgrp,"l",shells(i,2));
@@ -498,7 +772,8 @@ void write_wan90_h5(mf::MF &mf, ptree pt, nda::array<int,1> const& band_list,
   // rot_mat
   {
     h5::h5_write(dgrp,"use_rotations",0l);
-    h5::group cgrp = dgrp.create_group("rot_mat"); 
+    h5::group cgrp = dgrp.create_group("rot_mat");
+    h5::h5_write_attribute(cgrp, "Format", "List");
     for(int i=0; i<nshell; i++) {
       nda::array<ComplexType,2> rot_mat(shell_dim[i],shell_dim[i]);
       rot_mat() = ComplexType(0.0); 
@@ -508,6 +783,7 @@ void write_wan90_h5(mf::MF &mf, ptree pt, nda::array<int,1> const& band_list,
   }
   {
     h5::group cgrp = dgrp.create_group("rot_mat_time_inv");
+    h5::h5_write_attribute(cgrp, "Format", "List");
     for(int i=0; i<nshell; i++) {
       h5::h5_write(cgrp,std::to_string(i),0l);
     }

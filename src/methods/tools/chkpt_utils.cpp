@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #include "chkpt_utils.h"
 
 namespace methods {
@@ -38,9 +59,10 @@ void write_metadata(communicator_t &comm, const mf::MF &mf, const imag_axes_ft::
     nda::h5_write(mf_grp, "eigvals", mf.eigval(), false);
 
     auto iaft_grp = grp.create_group("imaginary_fourier_transform");
-    std::string iaft_source = imag_axes_ft::source_enum_to_string(ft.source());
-    h5::h5_write(iaft_grp, "source", iaft_source);
+    std::string iaft_basis = imag_axes_ft::basis_enum_to_string(ft.basis());
+    h5::h5_write(iaft_grp, "basis", iaft_basis);
     h5::h5_write(iaft_grp, "prec", ft.prec());
+    h5::h5_write(iaft_grp, "eps", ft.eps());
     h5::h5_write(iaft_grp, "beta", ft.beta());
     h5::h5_write(iaft_grp, "wmax", ft.wmax());
     h5::h5_write(iaft_grp, "lambda", ft.lambda());
@@ -58,7 +80,8 @@ template<typename communicator_t, typename X_t, typename Xt_t>
 void dump_scf(communicator_t &comm, long iter,
               const X_t &Dm, const Xt_t &G,
               const X_t &F, const Xt_t &Sigma,
-              double mu, std::string output) {
+              double mu, std::string output,
+              std::string input_grp, long input_iter) {
   if (comm.root()) {
     std::string filename = output + ".mbpt.h5";
     std::string iter_grp_name = "iter" + std::to_string(iter);
@@ -68,15 +91,15 @@ void dump_scf(communicator_t &comm, long iter,
     auto iter_grp = (scf_grp.has_subgroup(iter_grp_name) )?
         scf_grp.open_group(iter_grp_name) : scf_grp.create_group(iter_grp_name);
 
-    auto Gloc = G.local();
-    auto Sloc = Sigma.local();
-    auto Floc = F.local();
-    auto Dloc = Dm.local();
+    if (input_iter==-1) input_iter = iter-1;
+
     h5::h5_write(scf_grp, "final_iter", iter);
-    nda::h5_write(iter_grp, "G_tskij", Gloc, false);
-    nda::h5_write(iter_grp, "Sigma_tskij", Sloc, false);
-    nda::h5_write(iter_grp, "F_skij", Floc, false);
-    nda::h5_write(iter_grp, "Dm_skij", Dloc, false);
+    h5::h5_write(iter_grp, "greens_func_source", input_grp);
+    h5::h5_write(iter_grp, "greens_func_iteration", input_iter);
+    nda::h5_write(iter_grp, "G_tskij", G.local(), false);
+    nda::h5_write(iter_grp, "Sigma_tskij", Sigma.local(), false);
+    nda::h5_write(iter_grp, "F_skij", F.local(), false);
+    nda::h5_write(iter_grp, "Dm_skij", Dm.local(), false);
     h5::h5_write(iter_grp, "mu", mu);
   }
   comm.barrier();
@@ -461,7 +484,7 @@ template void dump_scf(
     mpi3::communicator&, long,
     const sArray_t<Array_view_4D_t>&, const sArray_t<Array_view_5D_t>&,
     const sArray_t<Array_view_4D_t>&, const sArray_t<Array_view_5D_t>&,
-    double, std::string);
+    double, std::string, std::string, long);
 
 template void dump_scf(
     mpi3::communicator&, long,

@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #include <iostream>
 #include <vector>
 #include <stdexcept>
@@ -217,7 +238,7 @@ void run(mpi3::communicator &comm, InputParser &parser)
       app_error("calculation type: {} not implemented yet \n",cname.c_str());
 
     } else if (cname == "hf" or cname == "qphf" or cname == "rpa" or cname == "gw" or cname == "qpgw" or cname == "gw_dca"
-               or cname == "evgw0" or cname == "gf2") {
+               or cname == "evgw" or cname == "gf2") {
 
       // all based on mbpt, lump together
       ptree pt = it.second;
@@ -337,7 +358,7 @@ void run(mpi3::communicator &comm, InputParser &parser)
 
       ptree pt = it.second;
       auto mf_name = mf::get_mf(mpi_context, pt, mf_list);
-      methods::dmft_embed(mf_list[mf_name], pt);
+      methods::dmft_embed_with_projector_from_h5(mf_list[mf_name], pt);
 
     } else if (cname == "ac" or cname == "unfold_bz"
                or cname == "band_interpolation" or cname == "spectral_interpolation" or cname == "local_dos"
@@ -441,6 +462,9 @@ void run(mpi3::communicator &comm, InputParser &parser)
 #else
           APP_ABORT("Error: wannier90.library_mode without wannier90 support. Recompile with ENABLE_WANNIER90=ON."); 
 #endif
+        } else if (wann_type == "mlwf_h5") {
+          auto mf_name = mf::get_mf(mpi_context, wann_pt, mf_list);
+          wannier::mlwf_h5_from_wannier90_output(*mf_list[mf_name], wann_pt);
         } else
           APP_ABORT("Error: Invalid wannier90 type: {}",wann_type);
       }

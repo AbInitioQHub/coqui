@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 
 #include <tuple>
 #include <iomanip>
@@ -68,8 +89,9 @@ auto make_wfc_to_rho(utils::mpi_context_t<mpi3::communicator>& mpi,
 /*
  * Creates a thc object with arguments in property tree.
  *  Important options:
- *  - ecut: "same as MF", Plane wave cutoff used for the evaluation of coulomb matrix elements. 
- *  - thresh: "0.0", Threshold in cholesky decomposition. 
+ *  - ecut: "1.4 * ecutwfc" (falls back to "0.4 * ecutrho" when no wfc grid is available),
+ *          Plane wave cutoff used for the evaluation of coulomb matrix elements.
+ *  - thresh: "1e-5", Threshold in cholesky decomposition.
  *  Performance related options:
  *  - matrix_block_size: 1024, Block size used in distributed arrays.
  *  - chol_block_size: "8", Block size in cholesky decomposition.
@@ -85,13 +107,14 @@ thc::thc(mf::MF *mf_,
   mpi(std::addressof(mpi_)),
   mf(mf_),
   Timer(),
-  ecut( io::get_value_with_default<double>(pt,"ecut",mf->ecutrho()) ),
+  ecut( io::get_value_with_default<double>(pt,"ecut",
+          mf->has_wfc_grid() ? 1.4*mf->wfc_truncated_grid()->ecut() : 0.4*mf->ecutrho()) ),
   rho_g( detail::make_grid(mpi->comm,ecut,*mf) ),
   swfc_to_rho(detail::make_wfc_to_rho(*mpi,(mf->has_wfc_grid()?*(mf->wfc_truncated_grid()):rho_g),rho_g)),
   vG( io::check_child_exists(pt,"potential") ? io::find_child(pt,"potential") : ptree{}),
   default_block_size( io::get_value_with_default<int>(pt,"matrix_block_size",1024) ), 
   default_cholesky_block_size( io::get_value_with_default<int>(pt,"chol_block_size",8) ),
-  thresh( io::get_value_with_default<double>(pt,"thresh",1e-10) ),
+  thresh( io::get_value_with_default<double>(pt,"thresh",1e-5) ),
   nnr_blk( io::get_value_with_default<int>(pt,"r_blk",1) ),
   distr_tol( io::get_value_with_default<double>(pt,"distr_tol",0.2) ),
   memory_frac( io::get_value_with_default<double>(pt,"memory_frac",0.75) ),
@@ -383,17 +406,48 @@ void thc::save(h5::group& gh5, std::string format, memory::array<MEM,long,1> con
 
 template<MEMORY_SPACE MEM>
 void thc::save(h5::group& gh5, std::string format, memory::array<MEM,long,1> const& ri,
-               memory::darray_t<memory::array<MEM,ComplexType,3>,mpi3::communicator> const& zeta_qur)
+               memory::darray_t<memory::array<MEM,ComplexType,3>,mpi3::communicator> const& zeta_qur,
+               bool write_zeta_on_fft_mesh)
 {
   Timer.start("TOTAL");
   utils::memory_report(3, "thc::save");
   Timer.start("IO_SAVE");
   if(format == "default" or format == "bdft") {
+
+    memory::array<MEM, ComplexType, 3> zeta_qur_local;
     if(mpi->comm.root()) {
       auto ri_h = nda::to_host(ri);
       nda::h5_write(gh5, "interpolating_points", ri_h, false);
+
+      zeta_qur_local = memory::array<MEM, ComplexType, 3>(zeta_qur.global_shape());
+      math::nda::gather(0, zeta_qur, &zeta_qur_local);
+
+      if (mf->has_wfc_grid()) {
+
+        nda::h5_write(gh5, "fft_mesh", rho_g.mesh(), false);
+
+        if (write_zeta_on_fft_mesh) {
+          memory::array<MEM, ComplexType, 3> zeta_qur_fft(
+              zeta_qur_local.shape(0), zeta_qur_local.shape(1), rho_g.nnr());
+          zeta_qur_fft() = 0.0;
+          for (auto [i, n]: itertools::enumerate(rho_g.gv_to_fft())) {
+            zeta_qur_fft(nda::range::all, nda::range::all, n) =
+                zeta_qur_local(nda::range::all, nda::range::all, i);
+          }
+          nda::h5_write(gh5, "interpolating_vectors", zeta_qur_fft, false);
+        } else {
+          nda::h5_write(gh5, "interpolating_vectors", zeta_qur_local, false);
+          nda::h5_write(gh5, "g_vectors", rho_g.g_vectors(), false);
+          nda::h5_write(gh5, "gv_to_fft", rho_g.gv_to_fft(), false);
+        }
+
+      } else {
+          nda::h5_write(gh5, "interpolating_vectors", zeta_qur_local, false);
+      }
+
+    } else {
+      gather(0, zeta_qur, &zeta_qur_local);
     }
-    math::nda::h5_write(gh5, "interpolating_vectors", zeta_qur);
   } else
     APP_ABORT("Error: Unknown format type: {}",format);
   Timer.stop("IO_SAVE");
@@ -599,7 +653,7 @@ template void thc::save<HOST_MEMORY>(h5::group&,std::string,memory::host_array<l
     memory::host_array<ComplexType, 2> const&, memory::host_array<ComplexType, 2> const&);
 
 template void thc::save<HOST_MEMORY>(h5::group&,std::string,memory::host_array<long,1> const&,
-    darray_t<memory::host_array<ComplexType,3>,communicator> const&);
+    darray_t<memory::host_array<ComplexType,3>,communicator> const&, bool);
 
 #if defined(ENABLE_DEVICE)
 

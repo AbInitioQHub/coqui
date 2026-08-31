@@ -1,0 +1,28 @@
+# Name of the package [optional].
+# Name of the module will be package_name.module_filename
+package_name = ""
+
+# The documentation string of the module. 
+documentation = "IAFT module for CoQui"
+
+# List of namespaces as a space separated string e.g. "A A::B"
+# If non-empty, only the elements declared in EXACTLY these namespaces are wrapped.
+# NB e.g. in previous example A::detail will be ignored, whatever match_names.
+namespaces = ""
+
+# Match/reject elements according to a regex (LLVM regex)
+# If match_names/match_names are both set, the algorithm is 
+#  for X of fully qualified name qname
+#    if match_names and match_names does not match Qname : skip X
+#    if reject_names and reject_names matches Qname : skip X
+#    else keep X.
+#
+match_names = "imag_axes_ft::(ir::IR|IAFT|read_iaft|stats_e|basis_e|string_to_stats_enum|stats_enum_to_string|string_to_basis_enum|basis_enum_to_string|tau_to_w_2d|tau_to_w_iw_2d|tau_to_w_phsym_2d|w_to_tau_2d|w_to_tau_phsym_2d|w_to_tau_cross_stats_2d|w_to_tau_partial_2d|tau_to_tau_2d|tau_to_tau_it_2d|tau_to_beta_2d|tau_to_zero_2d|construct_tau_interpolate_matrix|construct_w_interpolate_matrix|build_g_tau_ref|build_g_iw_ref)"
+reject_names = ""
+
+# If true, transform methods with no arguments into a read only property
+wrap_no_arg_methods_as_properties = false
+
+# [Advanced] If yes (default), all elements (class/enum/functions)
+# declared in headers included with -isystem are ignored for better performance.
+# exclude_system_headers = true

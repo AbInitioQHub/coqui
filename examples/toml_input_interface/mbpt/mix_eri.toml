@@ -1,0 +1,38 @@
+[mean_field.qe]
+name     = "mf_qe"
+prefix   = "pwscf"
+outdir   = "qe_output_dir/OUT/"
+filetype = "h5"
+
+[interaction.thc]
+name        = "eri"
+mean_field  = "mf_qe"
+storage     = "incore"
+thresh      = 1e-6
+chol_block_size = 8
+r_blk       = 20
+distr_tol   = 0.4
+
+[interaction.cholesky]
+name        = "eri_hf"
+mean_field  = "mf_qe"
+tol         = 1e-6
+storage     = "outcore"
+path        = "./"
+chol_block_size = 32
+
+[gw]
+interaction = "eri"
+interaction_hf = "eri_hf"
+beta      = 2000
+lambda    = 1200.0
+iaft_prec = "high"
+niter     = 12
+restart   = false
+conv_thr  = 1e-6
+outdir    = "./"
+prefix    = "scgw"
+div_treatment = "gygi"
+[gw.iter_alg]
+alg    = "damping"
+mixing = 0.7

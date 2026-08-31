@@ -1,0 +1,27 @@
+num_wann = 3
+num_bands = 3
+exclude_bands : 1-20,24-40
+
+begin projections
+V:dxz,dyz,dxy:x=1,0,0
+end projections
+
+write_hr = True
+write_u_matrices = True
+write_xyz = True
+translate_home_cell = False
+num_iter = 10000
+conv_window = 5
+conv_tol = 1e-12
+
+bands_plot = True
+bands_num_points = 100
+bands_plot_format = gnuplot
+
+begin kpoint_path
+R 0.50 0.50 0.50 G 0.00 0.00 0.00
+G 0.00 0.00 0.00 X 0.00 0.50 0.00
+X 0.00 0.50 0.00 M 0.50 0.50 0.00
+M 0.50 0.50 0.00 G 0.00 0.00 0.00
+end kpoint_path
+

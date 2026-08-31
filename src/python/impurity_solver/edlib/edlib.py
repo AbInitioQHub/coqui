@@ -1,3 +1,23 @@
+"""
+==========================================================================
+CoQuí: Correlated Quantum ínterface
+
+Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==========================================================================
+"""
+
 import sys
 import os
 import numpy as np
@@ -76,7 +96,7 @@ class EDLib(object):
             g_weiss_imp = g_weiss_wsIab
         else:
             print("Constructs a new IR basis with wmax = {}, beta={}".format(wmax, aimbes.iaft.beta))
-            iaft_imp = IAFT(aimbes.iaft.beta, wmax*aimbes.iaft.beta, aimbes.iaft.prec)
+            iaft_imp = IAFT(aimbes.iaft.beta, wmax*aimbes.iaft.beta, aimbes.iaft.prec, basis='ir')
             two_iaft = True
 
             g_weiss_imp = aimbes.iaft.w_interpolate(g_weiss_wsIab, iaft_imp.wn_mesh('f'), 'f')
@@ -93,7 +113,7 @@ class EDLib(object):
             bath_energy = bath_energy.round(decimals=truncate_decimal)
             bath_hyb = bath_hyb.round(decimals=truncate_decimal)
 
-        iwn_mesh = iaft_imp.wn_mesh('f', ir_notation=False)
+        iwn_mesh = iaft_imp.wn_mesh('f', phys_notation=True)
         niw_pos = max(abs(iwn_mesh[0]), iwn_mesh[-1]) + 1
         EDLib.write_ed_input(ed_prefix, bath_energy, bath_hyb,
                              t_sIab[:, 0], U_abcd,
@@ -147,7 +167,7 @@ class EDLib(object):
         from py2aimb.dmft import hybridization
 
         ns, nImps, nImpOrbs = t_sIab.shape[:3]
-        iw_mesh = aimbes.iaft.wn_mesh('f', ir_notation=False)
+        iw_mesh = aimbes.iaft.wn_mesh('f', phys_notation=True)
 
         # read impurity Green's function
         with h5py.File(ed_prefix + ".edlib.sim.h5", "r") as edout:
@@ -159,7 +179,7 @@ class EDLib(object):
             Gimp_wsab_uniform = Gimp_wsab_uniform.reshape(Gimp_wsab_uniform.shape[:2] + (nImpOrbs, nImpOrbs))
 
         if iaft_imp is not None:
-            iw_mesh_tmp = iaft_imp.wn_mesh('f', ir_notation=False)
+            iw_mesh_tmp = iaft_imp.wn_mesh('f', phys_notation=True)
             Gimp_wsIab_tmp = np.zeros((iaft_imp.nw_f, ns, 1, nImpOrbs, nImpOrbs), dtype=complex)
             for i, n in enumerate(iw_mesh_tmp):
                 for s in range(ns):
@@ -168,7 +188,7 @@ class EDLib(object):
             iaft_imp.check_leakage(Gimp_tsIab_tmp, stats='f', name="Impurity Green's function")
 
             # interpolate to aimbes.iaft IR grid
-            Gimp_wsIab = iaft_imp.w_interpolate(Gimp_wsIab_tmp, iw_mesh, stats='f', ir_notation=False)
+            Gimp_wsIab = iaft_imp.w_interpolate(Gimp_wsIab_tmp, iw_mesh, stats='f', phys_notation=True)
             Dm_sIab = -1 * iaft_imp.tau_interpolate(Gimp_tsIab_tmp, [iaft_imp.beta], stats='f')[0]
 
             del Gimp_wsab_uniform
@@ -191,7 +211,7 @@ class EDLib(object):
                 Simp_static = estimate_zero_moment(Simp_wsIab_tmp, iw_mesh_tmp, "impurity self-energy")
             Simp_wsIab_tmp = Simp_wsIab_tmp - Simp_static
             iaft_imp.check_leakage(Simp_wsIab_tmp, stats='f', name="Impurity self-energy", w_input=True)
-            Simp_wsIab = iaft_imp.w_interpolate(Simp_wsIab_tmp, iw_mesh, stats='f', ir_notation=False)
+            Simp_wsIab = iaft_imp.w_interpolate(Simp_wsIab_tmp, iw_mesh, stats='f', phys_notation=True)
             aimbes.iaft.check_leakage(Simp_wsIab, stats='f', name="Impurity self-energy (interpolated)",
                                       w_input=True)
 

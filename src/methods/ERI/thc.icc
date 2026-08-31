@@ -332,7 +332,12 @@ auto thc::chol_metric_impl_ibz(int iq, int nIpts, nda::range a_range, nda::range
     utils::check( old_max > 1e-14, " Error in thc::chol_metric_impl_ibz: Reached truncation error of 1e-14 without convergence. This likely means that nIpts is too large. Current number of cholesky vectors = {}. Set nIpts to a value equal or larger than this. ",nchol);
 
     // stopping condition when thresh is set
-    if( thresh > 0.0 and thresh > old_max) break;
+    if( thresh > 0.0 and thresh > old_max) {
+      if (nIpts > 0 and nchol < nIpts) {
+        app_log(1, "[WARNING] thresh={} reached after {} interpolating points, before reaching requested nIpts={}.", thresh, nchol, nIpts);
+      }
+      break;
+    }
 
     utils::check( std::isfinite(old_max), 
           std::string("Error: Cholesky algorithm failed in thc::chol_metric_impl_ibz. \n") + 
@@ -604,7 +609,12 @@ auto thc::chol_metric_impl_ibz(int iq, int nIpts, nda::range a_range, nda::range
           std::string("       Found invalid residual:{}"),curr_max);
 
     // stopping condition when thresh is set
-    if( thresh > 0.0 and thresh > curr_max) break;
+    if( thresh > 0.0 and thresh > curr_max) {
+      if (nIpts > 0 and nchol < nIpts) {
+        app_log(1, "[WARNING] thresh={} reached after {} interpolating points, before reaching requested nIpts={}.", thresh, nchol, nIpts);
+      }
+      break;
+    }
     old_max = find_max();
   }  
   Timer.stop("IpIter");

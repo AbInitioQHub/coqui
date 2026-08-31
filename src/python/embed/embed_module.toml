@@ -17,7 +17,7 @@ namespaces = ""
 #    if reject_names and reject_names matches Qname : skip X
 #    else keep X.
 #
-match_names = "coqui_py::(downfold_2e|downfold_2e_return_vw|downfold_1e|dmft_embed|downfold_gloc|downfold_wloc)"
+match_names = "coqui_py::(downfold_2e|downfold_1e|dmft_embed|dmft_embed_with_projector_from_h5|downfold_gloc|downfold_gloc_with_projector_from_h5|downfold_coulomb|downfold_coulomb_with_projector_from_h5)"
 reject_names = ""
 
 # If true, transform methods with no arguments into a read only property

@@ -38,7 +38,7 @@ coqui.run_gw(h_int=my_eri, params=gw_params)
 
 #########
 
-ir = IAFT(beta=beta, wmax=wmax, prec=prec)
+ir = IAFT(beta=beta, wmax=wmax, prec=prec, basis='ir')
 with HDFArchive("gw.mbpt.h5", 'r') as ar:
     Gt = ar["scf/iter1/G_tskij"]
     Gt_hf = ar["scf/iter0/G_tskij"]

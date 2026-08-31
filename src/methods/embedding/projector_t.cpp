@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #include "methods/SCF/scf_common.hpp"
 #include "numerics/nda_functions.hpp"
 #include "methods/embedding/projector_t.h"
@@ -377,7 +398,7 @@ namespace methods {
 
       app_log(2, "Explicit make {} to Hermitian, and set the imaginary part to zero", name);
       app_log(2, "  -> The largest imaginary part = {}. \n", max_imag);
-      hermitize(O_sIab);
+      hermitize_in_tau(O_sIab);
       nda::for_each(O_sIab.shape(),
                     [&O_sIab](auto... i) mutable { O_sIab(i...) = ComplexType(O_sIab(i...).real(), 0.0); });
     } else {
@@ -448,7 +469,7 @@ namespace methods {
     if constexpr (force_real) {
       app_log(2, "Explicit make {} to Hermitian, and set the imaginary part to zero", name);
       app_log(2, "  -> The largest imaginary part = {}. \n", max_imag);
-      hermitize(O_tsIab);
+      hermitize_in_tau(O_tsIab);
       nda::for_each(O_tsIab.shape(),
                     [&O_tsIab](auto... i) mutable { O_tsIab(i...) = ComplexType(O_tsIab(i...).real(), 0.0); });
     } else {

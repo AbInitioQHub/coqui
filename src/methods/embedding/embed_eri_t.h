@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef COQUI_EMBED_ERI_T_H
 #define COQUI_EMBED_ERI_T_H
 
@@ -9,6 +30,7 @@
 #include "numerics/sparse/csr_blas.hpp"
 
 #include "IO/app_loggers.h"
+#include "IO/ptree/ptree_utilities.hpp"
 #include "utilities/Timer.hpp"
 
 #include "mean_field/MF.hpp"
@@ -17,7 +39,6 @@
 #include "methods/mb_state/mb_state.hpp"
 #include "methods/embedding/permut_symm.hpp"
 #include "methods/ERI/detail/concepts.hpp"
-#include "methods/ERI/div_treatment_e.hpp"
 #include "methods/GW/gw_t.h"
 #include "methods/embedding/dc_utilities.hpp"
 #include "methods/SCF/scf_common.hpp"
@@ -52,68 +73,63 @@ namespace methods {
 
   public:
     embed_eri_t(mf::MF &MF,
-                div_treatment_e div = gygi, div_treatment_e bare_div = gygi,
+                std::string div = "gygi", std::string bare_div = "gygi",
                 std::string output_type = "default"):
     _context(MF.mpi()), _MF(std::addressof(MF)),
     _div_treatment(div), _bare_div_treatment(bare_div), _Timer(),
     _output_type(output_type) {
 
-      if (_MF->nkpts_ibz() == 1 and _div_treatment != ignore_g0) {
+      if (_MF->nkpts_ibz() == 1 and _div_treatment != "ignore_g0") {
         app_log(2, " embed_eri_t: nkpts_ibz == 1 while div_treatment != ignore. Will take div_treatment = ignore_g0 anyway!");
-        _div_treatment = ignore_g0;
+        _div_treatment = "ignore_g0";
       }
 
-      if (_bare_div_treatment!=ignore_g0 and _bare_div_treatment!=gygi) {
+      if (_bare_div_treatment!="ignore_g0" and _bare_div_treatment!="gygi") {
         app_log(2, " embed_eri_t: bare_div_treatment only supports \"ignore_g0\" and \"gygi\". "
                    " coqui will take bare_div_treatment = \"gygi\" instead.");
-        _bare_div_treatment = gygi;
+        _bare_div_treatment = "gygi";
       }
     }
 
     ~embed_eri_t() = default;
 
-    template<bool return_wt = true, THC_ERI thc_t>
-    auto downfold_wloc(thc_t &eri, MBState &mb_state, std::string screen_type,
-                       bool force_permut_symm, bool force_real,
-                       imag_axes_ft::IAFT *ft,
-                       std::string g_grp, long g_iter)
+    template<bool return_wt = false, THC_ERI thc_t>
+    auto compute_downfolded_coulomb_tensors(
+      thc_t &eri, MBState &mb_state, std::string screen_type,
+      bool force_permut_symm, bool force_real, imag_axes_ft::IAFT *ft,
+      std::string greens_func_source, long greens_func_iteration,
+      bool write_to_hdf5 = false, bool q_dependent_output = false)
     -> std::tuple<nda::array<ComplexType, 4>, nda::array<ComplexType, 5> >;
 
     template<THC_ERI thc_t>
-    void downfolding_edmft(
-        thc_t &eri, MBState &mb_state, std::string screen_type,
-        bool force_permut_symm = true, bool force_real = true,
-        imag_axes_ft::IAFT *ft = nullptr,
-        std::string g_grp = "", long g_iter = -1, double dc_pi_mixing = 1.0);
+    void downfolding_edmft(thc_t &eri, MBState &mb_state, ptree const& pt,
+                           std::string screen_type);
+
 
     template<THC_ERI thc_t>
-    void downfolding_crpa(
-        thc_t &eri, MBState &mb_state, std::string screen_type,
-        std::string factorization_type = "none",
-        bool force_permut_symm = true, bool force_real = true,
-        imag_axes_ft::IAFT *ft = nullptr,
-        std::string g_grp = "", long g_iter = -1,
-        bool q_dependent = false, double thresh = 1e-6);
+    void downfolding_crpa(thc_t &eri, MBState &mb_state, ptree const& pt,
+                          std::string screen_type,
+                          std::string factorization_type = "none", double thresh=1e-6);
 
-    template<bool return_wt = true>
-    auto downfold_wloc_impl(
-        THC_ERI auto &eri, MBState &mb_state,
-        std::string screen_type, std::string permut_symm,
-        const imag_axes_ft::IAFT &ft, std::string g_grp, long g_iter)
+    template<bool return_wt = false>
+    auto compute_downfolded_coulomb_tensors_impl(
+      THC_ERI auto &eri, MBState &mb_state,
+      std::string screen_type, std::string permut_symm, const imag_axes_ft::IAFT &ft, 
+      std::string greens_func_source, long greens_func_iteration, 
+      bool write_to_hdf5, bool q_dependent_output)
     -> std::tuple<nda::array<ComplexType, 4>, nda::array<ComplexType, 5> >;
 
     void downfold_edmft_impl(THC_ERI auto &eri, MBState &mb_state,
                              std::string screen_type, std::string permut_symm,
-                             const imag_axes_ft::IAFT &ft,
-                             std::string g_grp, long g_iter,
-                             double dc_pi_mixing);
+                             std::array<std::string, 2> g_grp,
+                             std::array<long, 2> g_iter,
+                             std::array<double, 2> mixing = {1.0, 1.0});
 
     void downfold_crpa_impl(THC_ERI auto &eri, MBState &mb_state,
                             std::string screen_type,
                             [[maybe_unused]] std::string factorization_type,
                             std::string permut_symm,
-                            const imag_axes_ft::IAFT &ft,
-                            std::string g_grp = "", long g_iter = -1,
+                            std::string greens_func_source = "", long greens_func_iteration = -1,
                             bool q_dependent = false,
                             [[maybe_unused]] double thresh = 1e-6);
 
@@ -121,8 +137,7 @@ namespace methods {
                                     std::string screen_type,
                                     std::string factorization_type,
                                     std::string permut_symm,
-                                    const imag_axes_ft::IAFT &ft,
-                                    std::string g_grp = "", long g_iter = -1,
+                                    std::string greens_func_source = "", long greens_func_iteration = -1,
                                     double thresh = 1e-6);
 
     void downfold_bare_impl(std::string output,
@@ -277,7 +292,7 @@ namespace methods {
 
     auto downfold_2e_logic(long gw_iter, long weiss_f_iter, long weiss_b_iter, long embed_iter)
     -> std::tuple<std::string, long>;
-    void downfold_2e_logic(std::string g_grp, long g_iter, long gw_iter, long embed_iter);
+    void check_downfold_2e_logic(std::string greens_func_source, long greens_func_iteration, long gw_iter, long embed_iter);
 
     inline void print_downfold_timers() {
       app_log(2, "\n  DOWNFOLD_2E timers");
@@ -293,15 +308,15 @@ namespace methods {
     std::shared_ptr<mpi_context_t> _context;
     mf::MF* _MF = nullptr;
 
-    div_treatment_e _div_treatment;
-    div_treatment_e _bare_div_treatment;
+    std::string _div_treatment;
+    std::string _bare_div_treatment;
     utils::TimerManager _Timer;
 
     std::string _output_type = "default";
 
   public:
     mf::MF* MF() const { return _MF; }
-    const div_treatment_e& div_treatment() const { return _div_treatment; }
+    const std::string& div_treatment() const { return _div_treatment; }
 
   }; // embed_eri_t
 } // methods

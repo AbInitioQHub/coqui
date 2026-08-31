@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef COQUI_PADE_DRIVER_HPP
 #define COQUI_PADE_DRIVER_HPP
 
@@ -11,7 +32,7 @@
 namespace analyt_cont {
   struct pade_driver {
   public:
-    pade_driver() = default;
+    explicit pade_driver(pade_impl_e impl = pade_impl_e::original): _pade_kernel(impl) {}
 
     pade_driver(const pade_driver& other) = default;
     pade_driver(pade_driver&& other) = default;
@@ -21,6 +42,9 @@ namespace analyt_cont {
 
     ~pade_driver(){}
 
+    // FIXME We should not assume that iw_mesh has negative frequencies in the first half and positive 
+    //       frequencies in the second half. This excludes arbitrary input Matsubara data. 
+    //       Extracting positive frequencies should be done before calling pade_driver::init.
     template< nda::ArrayOfRank<1> mesh_iw_t, nda::MemoryArray Array_iw_t>
     void init(mesh_iw_t &&iw_mesh, Array_iw_t &&A_iw, int Nfit=-1, bool is_iw_pos_only=false) {
       using Aiw_value_type = typename std::decay_t<Array_iw_t>::value_type;
@@ -32,9 +56,11 @@ namespace analyt_cont {
 
       long niw_pos = (is_iw_pos_only)? niw : niw/2;
       if (Nfit == -1) Nfit = niw_pos;
-      utils::check(Nfit <= niw_pos,
-                   "pade_driver::init: Nfit ({}) > number of positive imaginary frequency points ({})",
-                   Nfit, niw_pos);
+      if (Nfit > niw_pos) {
+        app_log(4, "[WARNING]: Pade: Nfit ({}) is larger than the number of positive imaginary frequency points ({}). "
+                   "Setting Nfit to {}.\n", Nfit, niw_pos, niw_pos);
+        Nfit = niw_pos;
+      }
 
       // determine the imaginary frequencies for fitting
       auto Aiw_2D = nda::reshape(A_iw, std::array<long, 2>{niw, dim1});
@@ -60,7 +86,8 @@ namespace analyt_cont {
         A_fit(nda::ellipsis{}) = Aiw_2D(fit_iw_rng, nda::range::all);
       }
 
-      app_log(2, "Solving {}-point Pade interpolation.\n", Nfit);
+      app_log(2, "Solving {}-point Pade interpolation using {} implementation.\n",
+              Nfit, (_pade_kernel.implementation() == pade_impl_e::updated)? "updated" : "original");
       _pade_kernel.init(iw_fit, A_fit);
     }
 

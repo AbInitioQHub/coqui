@@ -17,7 +17,6 @@
 #include "mean_field/MF.hpp"
 #include "methods/ERI/detail/concepts.hpp"
 #include "methods/HF/thc_solver_comm.hpp"
-#include "methods/ERI/div_treatment_e.hpp"
 #include "methods/GW/g0_div_utils.hpp"
 
 namespace methods {
@@ -448,18 +447,18 @@ namespace methods {
                               THC_ERI auto &thc,
                               const nda::array<ComplexType, 1> &eps_inv_head) {
       app_log(1, "  Treatment of long-wavelength divergence in GW self-energy: {}",
-              div_enum_to_string(_div_treatment));
+              _div_treatment);
 
       auto div_treatment = _div_treatment;
-      if (thc.MF()->nqpts_ibz() == 1 and _div_treatment != ignore_g0) {
+      if (thc.MF()->nqpts_ibz() == 1 and _div_treatment != "ignore_g0") {
         app_log(2, "Sigma_div_correction: nqpts_ibz == 1 while div_treatment != ignore. "
                    "Will take div_treatment = ignore_g0 anyway!");
-        div_treatment = ignore_g0;
+        div_treatment = "ignore_g0";
       }
 
-      if (div_treatment == ignore_g0) {
+      if (div_treatment == "ignore_g0") {
         return;
-      } else if (div_treatment==gygi or div_treatment==gygi_extrplt or div_treatment==gygi_extrplt_2d) {
+      } else if (div_treatment.find("gygi") != std::string::npos) {
         auto MF = thc.MF();
         auto mpi = thc.mpi();
         app_log(1, "    - madelung = {}", MF->madelung());
@@ -520,7 +519,7 @@ namespace methods {
           sSigma_tskij.local() += sDelta_tskij.local();
         sSigma_tskij.communicator()->barrier();
       } else {
-        utils::check(false, "Unsupported divergence treatment: {}", div_enum_to_string(div_treatment));
+        utils::check(false, "Unsupported divergence treatment: {}", div_treatment);
       }
       app_log(1, "");
     }

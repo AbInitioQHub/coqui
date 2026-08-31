@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #include <cmath>
 
 #include "methods/SCF/simple_dyson.h"
@@ -99,10 +120,10 @@ namespace methods {
                                                          {_nts, _ns, _nkpts_ibz, _nbnd, _nbnd});
       auto Gt_loc = dG_tskij.local();
       auto Gw_loc = dG_wskij_tmp.local();
-      _FT->w_to_tau(Gw_loc, Gt_loc, imag_axes_ft::fermi);
+      _FT->w_to_tau(Gw_loc, Gt_loc, imag_axes_ft::fermion);
       dG_wskij_tmp.reset();
 
-      _FT->check_leakage(dG_tskij, imag_axes_ft::fermi, "Green's function");
+      _FT->check_leakage(dG_tskij, imag_axes_ft::fermion, "Green's function");
 
       // Gather to shared memory
       _Timer.start("DYSON_GATHER");
@@ -126,17 +147,23 @@ namespace methods {
     _context->comm.barrier();
   }
 
+
   template<typename X_t, typename Xt_t>
-  void simple_dyson::compute_eigenspectra([[maybe_unused]] double mu, const X_t&_sF_skij, [[maybe_unused]] const Xt_t &_G_shm, const Xt_t &_Sigma_shm, nda::array<ComplexType, 4> &spectra){
+  void simple_dyson::compute_eigenspectra(
+    const X_t&_sF_skij, 
+    const Xt_t &_Sigma_shm, 
+    nda::array<ComplexType, 4> &spectra){
+
     utils::check(spectra.shape() == std::array<long, 4>{_nw, _ns, _nkpts_ibz, _nbnd},
                  "simple_dyson::compute_eigenspectra: Incorrect dimension for spectra.");
     using math::shm::make_shared_array;
+    
     spectra() = 0.0;
-    // TODO shared memory or distributed array!!!
-    nda::array<ComplexType, 4> Sigmaw_skij(_ns, _nkpts_ibz, _nbnd, _nbnd);
+    nda::matrix<ComplexType> Sigmaw_ij(_nbnd, _nbnd);
     nda::matrix<ComplexType> FpSigma(_nbnd, _nbnd);
+    auto& SFS = Sigmaw_ij;
     auto sS_inv = make_shared_array<Array_view_4D_t>(*_context, {_ns, _nkpts_ibz, _nbnd, _nbnd});
-    nda::matrix<ComplexType> SFS(_nbnd, _nbnd);
+    auto Sigma_tskij = _Sigma_shm.local();
     auto S  = _sS_skij.local();
     auto H0 = _sH0_skij.local();
     auto F  = _sF_skij.local();
@@ -153,20 +180,32 @@ namespace methods {
     }
     sS_inv.win().fence();
 
-    for (size_t n = _context->comm.rank(); n < _nw; n+=_context->comm.size()) {
-      _FT->tau_to_w(_Sigma_shm.local(), Sigmaw_skij, imag_axes_ft::fermi, n);
-      for (size_t i = 0; i < _ns*_nkpts_ibz; ++i) {
-        size_t is = i / _nkpts_ibz; // i = is * _nkpts_ibz + ik
-        size_t ik = i % _nkpts_ibz;
-        //auto Sigma_ij = Sigma_wskij(n, is, ik, nda::range::all, nda::range::all);
-        auto Sigma_ij = Sigmaw_skij(is, ik, nda::range::all, nda::range::all);
-        FpSigma = H0(is, ik, nda::ellipsis{}) + F(is, ik, nda::ellipsis{}) + Sigma_ij;
-        nda::blas::gemm(ComplexType(1.0), S_inv(is, ik, nda::range::all, nda::range::all), FpSigma,
-                        ComplexType(0.0), SFS);
+    auto nw_half = _nw/2 + _nw%2;
 
-        auto eigvals = spectra(n, is, ik, nda::range::all);
-        // Matsubara quantities are not Hermitian!
-        eigvals = nda::linalg::geigenvalues(SFS);
+    // Define M(iw) = S^{-1} * [H0 + F + Sigma(iw)], we have M(-iw) = S^{-1} * M(iw)^{\dagger} * S and thus 
+    // eigvals(M(-iw)) = conj(eigvals(M(iw))). Thus we only need to compute eigvals for half of the frequencies. 
+    // This relation holds for general non-orthogonal basis with general oeverlap matrix S. 
+    for (size_t nsk = _context->comm.rank(); nsk < nw_half*_ns*_nkpts_ibz; nsk+=_context->comm.size()) {
+
+      // nsk = n_neg*ns*nkpts_ibz + is*nkpts_ibz + k
+      auto n_neg = nsk / (_ns*_nkpts_ibz); 
+      auto n_pos = _nw - n_neg - 1;
+      auto is = (nsk / _nkpts_ibz) % _ns;
+      auto ik = nsk % _nkpts_ibz;
+
+      auto Sigma_tij = nda::make_regular(Sigma_tskij(nda::range::all, is, ik, nda::ellipsis{}));
+      _FT->tau_to_w(Sigma_tij, Sigmaw_ij, imag_axes_ft::fermion, n_pos);
+
+      FpSigma = H0(is, ik, nda::ellipsis{}) + F(is, ik, nda::ellipsis{}) + Sigmaw_ij;
+
+      nda::blas::gemm(ComplexType(1.0), S_inv(is, ik, nda::ellipsis{}), FpSigma, ComplexType(0.0), SFS);
+
+      // Matsubara quantities are not Hermitian!
+      spectra(n_pos, is, ik, nda::range::all) = nda::linalg::geigenvalues(SFS);
+
+      // exploit eigvals(M(-iw)) = conj(eigvals(M(iw)))
+      if (n_neg != n_pos) {
+        spectra(n_neg, is, ik, nda::range::all) = nda::conj(spectra(n_pos, is, ik, nda::range::all));
       }
     }
     _context->comm.all_reduce_in_place_n(spectra.data(), spectra.size(), std::plus<>{});
@@ -181,7 +220,7 @@ namespace methods {
   template void simple_dyson::solve_dyson(sArray_t<Array_view_4D_t>&, sArray_t<Array_view_5D_t>&,
       const sArray_t<Array_view_4D_t>&, const sArray_t<Array_view_5D_t> &, double);
 
-  template void simple_dyson::compute_eigenspectra(double,const sArray_t<Array_view_4D_t>&,
-      const sArray_t<Array_view_5D_t> &, const sArray_t<Array_view_5D_t> &, nda::array<ComplexType, 4> &);
+  template void simple_dyson::compute_eigenspectra(const sArray_t<Array_view_4D_t>&,
+      const sArray_t<Array_view_5D_t> &, nda::array<ComplexType, 4> &);
 
 } // methods

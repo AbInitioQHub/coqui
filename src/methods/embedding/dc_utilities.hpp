@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef AIMBES_DC_UTILITIES_HPP
 #define AIMBES_DC_UTILITIES_HPP
 
@@ -139,7 +160,7 @@ nda::array<ComplexType, 4> exchange_double_counting(const nda::MemoryArrayOfRank
     std::string prefix = "__dummy_model__";
     auto mf = std::make_shared<mf::MF>(mf::MF(mf::model::make_dummy_model(mpi,nb,1.0)));
     solvers::hf_t hf;
-    solvers::gw_t gw(&ft, string_to_div_enum("ignore_g0"), prefix);
+    solvers::gw_t gw(&ft, "ignore_g0", prefix);
     chol_reader_t chol(mf, "./", chol_file, each_q, single_file);
 
     sArray_t<Array_view_5D_t> Sigma_shm(math::shm::make_shared_array<Array_view_5D_t>(
@@ -232,11 +253,11 @@ nda::array<ComplexType, 4> exchange_double_counting(const nda::MemoryArrayOfRank
       }
     }
   }
-  ft.check_leakage(gw_dc_tsIab, imag_axes_ft::fermi, std::addressof(comm), "double counting GW self-energy");
+  ft.check_leakage(gw_dc_tsIab, imag_axes_ft::fermion, std::addressof(comm), "double counting GW self-energy");
 
   if constexpr (w_out) {
     nda::array<ComplexType, 5> gw_dc_wsIab(ft.nw_f(), ns, nImps, nImpOrbs, nImpOrbs);
-    ft.tau_to_w(gw_dc_tsIab, gw_dc_wsIab, imag_axes_ft::fermi);
+    ft.tau_to_w(gw_dc_tsIab, gw_dc_wsIab, imag_axes_ft::fermion);
     return gw_dc_wsIab;
   } else {
     return gw_dc_tsIab;
@@ -329,11 +350,11 @@ auto gw_double_counting_dmft(utils::Communicator auto &comm,
       }
     }
   }
-  ft.check_leakage(gw_dc_tsIab, imag_axes_ft::fermi, std::addressof(comm), "double counting GW self-energy");
+  ft.check_leakage(gw_dc_tsIab, imag_axes_ft::fermion, std::addressof(comm), "double counting GW self-energy");
 
   if constexpr (w_out) {
     nda::array<ComplexType, 5> gw_dc_wsIab(ft.nw_f(), ns, nImps, nImpOrbs, nImpOrbs);
-    ft.tau_to_w(gw_dc_tsIab, gw_dc_wsIab, imag_axes_ft::fermi);
+    ft.tau_to_w(gw_dc_tsIab, gw_dc_wsIab, imag_axes_ft::fermion);
     return gw_dc_wsIab;
   } else {
     return gw_dc_tsIab;
@@ -381,11 +402,11 @@ auto gw_edmft_double_counting(utils::Communicator auto &comm,
       }
     }
   }
-  ft.check_leakage(gw_dc_tsIab, imag_axes_ft::fermi, std::addressof(comm), "double counting GW self-energy");
+  ft.check_leakage(gw_dc_tsIab, imag_axes_ft::fermion, std::addressof(comm), "double counting GW self-energy");
 
   if constexpr (w_out) {
     nda::array<ComplexType, 5> gw_dc_wsIab(ft.nw_f(), ns, nImps, nImpOrbs, nImpOrbs);
-    ft.tau_to_w(gw_dc_tsIab, gw_dc_wsIab, imag_axes_ft::fermi);
+    ft.tau_to_w(gw_dc_tsIab, gw_dc_wsIab, imag_axes_ft::fermion);
     return gw_dc_wsIab;
   } else {
     return gw_dc_tsIab;

@@ -1,0 +1,27 @@
+[mean_field.qe]
+name     = "mf_qe"
+prefix   = "pwscf"
+outdir   = "qe_output_dir/OUT/"
+filetype = "h5"
+
+[interaction.thc]
+name        = "eri"
+mean_field  = "mf_qe"
+storage     = "incore"
+thresh      = 1e-6
+chol_block_size = 8
+r_blk       = 20
+distr_tol   = 0.4
+
+[hf]
+interaction = "eri"
+beta      = 2000
+lambda    = 1200.0
+iaft_prec = "high"
+niter     = 12
+restart   = false
+outdir    = "./"
+prefix    = "hf"
+[hf.iter_alg]
+alg    = "damping"
+mixing = 0.7

@@ -11,6 +11,7 @@ add_subdirectory(GF2)
 add_subdirectory(embedding)
 add_subdirectory(SCF)
 add_subdirectory(pproc)
+add_subdirectory(tests)
 
 SET(SRCS
   MBPT_drivers.cpp

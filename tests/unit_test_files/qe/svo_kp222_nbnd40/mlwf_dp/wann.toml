@@ -1,0 +1,16 @@
+[mean_field.qe]
+name     = "svo"
+prefix   = "svo"
+outdir   = "../out"
+nbnd     = 40
+
+[wannier90.library_mode]
+mean_field   = "svo"
+prefix       = "svo"
+[wannier90.library_mode.shells]
+atoms = [0,1,2,3]
+sort  = [0,1,1,1]
+l     = [2,1,1,1]
+dim   = [5,3,3,3]
+SO    = [0,0,0,0]
+irrep = [0,0,0,0]

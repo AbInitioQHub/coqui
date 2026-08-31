@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #include "nda/nda.hpp"
 #include "numerics/nda_functions.hpp"
 
@@ -5,15 +26,16 @@
 #include "methods/embedding/embed_t.h"
 
 namespace methods {
-  void embed_t::dmft_embed(MBState &mb_state, iter_scf::iter_scf_t *iter_solver,
+  void embed_t::dmft_embed(MBState &mb_state, simple_dyson &dyson,
+                           iter_scf::iter_scf_t *iter_solver,
                            bool qp_approx_mbpt, bool corr_only) {
     std::string filename = mb_state.coqui_prefix + ".mbpt.h5";
     utils::check(std::filesystem::exists(filename),
                  "embed_t::dmft_embed: checkpoint file, {}, does not exist!", filename);
     if (!qp_approx_mbpt)
-      dmft_embed_impl(mb_state, iter_solver, corr_only);
+      dmft_embed_impl(mb_state, dyson, iter_solver, corr_only);
     else
-      dmft_embed_qp_impl(mb_state, iter_solver);
+      dmft_embed_qp_impl(mb_state, dyson, iter_solver);
   }
 
   void embed_t::dmft_embed_logic(long gw_iter, long weiss_f_iter, long embed_iter, std::string filename) {
@@ -49,26 +71,30 @@ namespace methods {
     }
   }
 
-  void embed_t::dmft_embed_impl(MBState &mb_state,
+  void embed_t::dmft_embed_impl(MBState &mb_state, simple_dyson &dyson,
                                 iter_scf::iter_scf_t *iter_solver,
                                 bool corr_only) {
     using math::shm::make_shared_array;
-    for( auto& v: {"EMBED_TOTAL", "EMBED_ALLOC",
+    for (auto &v: {"EMBED_TOTAL", "EMBED_ALLOC",
                    "EMBED_UPFOLD", "EMBED_DYSON", "EMBED_FIND_MU",
-                   "EMBED_ITERATIVE", "EMBED_READ", "EMBED_WRITE"} ) {
+                   "EMBED_ITERATIVE", "EMBED_READ", "EMBED_WRITE"}) {
       _Timer.add(v);
     }
 
     _Timer.start("EMBED_TOTAL");
     std::string filename = mb_state.coqui_prefix + ".mbpt.h5";
-    auto ft = *mb_state.ft;
-    auto& proj = mb_state.proj_boson.value().proj_fermi();
+    auto &ft = *mb_state.ft;
+    auto &proj = mb_state.proj_boson.value().proj_fermi();
     auto nImps = proj.nImps();
     auto nImpOrbs = proj.nImpOrbs();
 
     _Timer.start("EMBED_READ");
     auto [gw_iter, weiss_f_iter, weiss_b_iter, embed_iter] = chkpt::read_input_iterations(filename);
-    long embed_out_iter = (embed_iter>0)? embed_iter+1 : gw_iter;
+    utils::check(weiss_f_iter == weiss_b_iter,
+                 "embed_t::dmft_embed_impl: inconsistent downfolding iterations "
+                 "for fermionic ({}) and bosonic ({}) Weiss fields in {}",
+                 weiss_f_iter, weiss_b_iter, filename);
+    long embed_out_iter = (embed_iter > 0) ? embed_iter+1 : 1;
     _Timer.stop("EMBED_READ");
 
     ft.metadata_log();
@@ -77,17 +103,24 @@ namespace methods {
                "╔═╗╔═╗╔═╗ ╦ ╦╦  ┌┬┐┌┬┐┌─┐┌┬┐  ┌─┐┌┬┐┌┐ ┌─┐┌┬┐\n"
                "║  ║ ║║═╬╗║ ║║   │││││├┤  │   ├┤ │││├┴┐├┤  ││\n"
                "╚═╝╚═╝╚═╝╚╚═╝╩  ─┴┘┴ ┴└   ┴   └─┘┴ ┴└─┘└─┘─┴┘\n");
-    app_log(1, "  - CoQui checkpoint file:                      {}", filename);
-    app_log(1, "  - Non-local MBPT solution for embedding ");
+    app_log(1, "  - CoQui checkpoint file:                      {}\n", filename);
+    app_log(1, "    Non-local self-energy for embedding ");
     app_log(1, "      HDF5 group:                              scf");
-    app_log(1, "      Iteration:                               {}", gw_iter);
-    app_log(1, "  - Embedded solution output");
+    app_log(1, "      Iteration:                               {}\n", gw_iter);
+    if (!mb_state.has_local_selfenergies()) {
+      app_log(1, "    Local self-energy corrections");
+      app_log(1, "      HDF5 group:                              downfold_1e");
+      app_log(1, "      Iteration:                               {}\n", weiss_f_iter);
+    } else {
+      app_log(1, "    Local self-energy corrections provided directly through MBState\n"
+                 "    (no read from checkpoint file)\n");
+    }
+    app_log(1, "    Embedded solution output");
     app_log(1, "      HDF5 group:                              embed");
     app_log(1, "      Iteration:                               {}", embed_out_iter);
-    app_log(1, "  - Embed correlated self-energy only:         {}", corr_only);
-    if (proj.C_file() != "") {
+    app_log(1, "      Embed correlated self-energy only:       {}\n", corr_only);
+    if (proj.C_file() != "")
       app_log(1, "  - Transformation matrices:                   {}", proj.C_file());
-    }
     app_log(1, "  - Number of impurities:                      {}", nImps);
     app_log(1, "  - Number of local orbitals per impurity:     {}", nImpOrbs);
     app_log(1, "  - Range of primary orbitals for local basis: [{}, {})\n", proj.W_rng()[0].first(), proj.W_rng()[0].last());
@@ -108,7 +141,6 @@ namespace methods {
     auto& sG_tskij = mb_state.sG_tskij.value();
     auto& sSigma_tskij = mb_state.sSigma_tskij.value();
     double mu;
-    auto dyson = simple_dyson(_MF, &ft, mb_state.coqui_prefix);
     _Timer.stop("EMBED_ALLOC");
 
     _Timer.start("EMBED_READ");
@@ -129,12 +161,7 @@ namespace methods {
 
     // Check local self-energy corrections in MBState
     bool sigma_local_given = false;
-    if (!mb_state.Sigma_imp_wsIab or !mb_state.Sigma_dc_wsIab) {
-      // Read local self-energy corrections from the checkpoint file if they are not set in MBState.
-      app_log(2, "MBState does not contain local self-energy corrections\n"
-                 "-> trying to read them from the checkpoint file {} in", filename);
-      app_log(2, "  - HDF5 group:           downfold_1e");
-      app_log(2, "  - Iteration:            {}\n", weiss_f_iter);
+    if (!mb_state.has_local_selfenergies()) {
 
       long nw = ft.nw_f();
       mb_state.Sigma_imp_wsIab.emplace(nda::array<ComplexType, 5>(nw, _MF->nspin(), nImps, nImpOrbs, nImpOrbs));
@@ -157,21 +184,20 @@ namespace methods {
       _context->comm.broadcast_n(mb_state.Vhf_imp_sIab.value().data(), mb_state.Vhf_imp_sIab.value().size(), 0);
       _context->comm.broadcast_n(mb_state.Vhf_dc_sIab.value().data(), mb_state.Vhf_dc_sIab.value().size(), 0);
       if (sigma_local_given)
-        app_log(2, "Found local self-energy corrections in the checkpoint file {}", filename);
+        app_log(1, "Successfully found the local self-energy corrections in the checkpoint h5 {}.\n", filename);
     } else {
-      app_log(2, "Found local self-energy corrections already set in MBState.");
       sigma_local_given = true;
     }
     _Timer.stop("EMBED_READ");
 
     _Timer.start("EMBED_UPFOLD");
     // upfold and add corrections from active spaces
-    if (sigma_local_given) {
-      app_log(2, "Add local impurity corrections to the GW solution from scf/iter{}", gw_iter);
-      if (!corr_only) add_Vhf_correction(mb_state);
-      add_Sigma_dyn_correction(mb_state);
-    } else {
-      app_log(2, "Local self-energy corrections are not found, skipping the addition of local corrections.");
+    if (!corr_only) add_Vhf_correction(mb_state);
+    add_Sigma_dyn_correction(mb_state);
+
+    if (_context->node_comm.root()) {
+      hermitize_in_tau(sVhf_skij.local(), "Fock matrix");
+      hermitize_in_tau(sSigma_tskij.local(), "dynamic self-energy");
     }
     _context->comm.barrier();
     _Timer.stop("EMBED_UPFOLD");
@@ -179,16 +205,19 @@ namespace methods {
     _Timer.start("EMBED_ITERATIVE");
     // if embed_iter is -1 -> mix with the previous gw results
     // if embed_iter != -1 -> mix with embed_iter-1
-    auto [Vhf_conv, Sigma_conv] = solve_iterative(
-        *_context, *iter_solver, (embed_iter==-1)? gw_iter+1 : embed_iter+1,
-        mb_state.coqui_prefix, sVhf_skij, sSigma_tskij, &ft, false,
-        (embed_iter==-1)? std::array<std::string, 3>{"scf", "F_skij", "Sigma_tskij"} :
-                          std::array<std::string, 3>{"embed", "F_skij", "Sigma_tskij"});
+    double Vhf_conv, Sigma_conv;
+    if (iter_solver != nullptr) {
+      std::tie(Vhf_conv, Sigma_conv) = solve_iterative(
+          *_context, *iter_solver, (embed_iter==-1)? gw_iter+1 : embed_iter+1,
+          mb_state.coqui_prefix, sVhf_skij, sSigma_tskij, &ft,
+          (embed_iter==-1)? std::array<std::string, 3>{"scf", "F_skij", "Sigma_tskij"} :
+                            std::array<std::string, 3>{"embed", "F_skij", "Sigma_tskij"});
+    }
     _Timer.stop("EMBED_ITERATIVE");
 
     _Timer.start("EMBED_FIND_MU");
     // find chemical potential
-    mu = update_mu(mu, dyson, *_MF, ft, sVhf_skij, sG_tskij, sSigma_tskij);
+    mu = update_mu(mu, dyson, *_MF, ft, sVhf_skij, sSigma_tskij);
     _Timer.stop("EMBED_FIND_MU");
 
     _Timer.start("EMBED_DYSON");
@@ -200,16 +229,16 @@ namespace methods {
     auto [e_1e, e_hf] = eval_hf_energy(sDm_skij, sVhf_skij, dyson.sH0_skij(), k_weight, false);
     auto e_corr = eval_corr_energy(_context->comm, ft, sG_tskij, sSigma_tskij, k_weight);
     double e_tot_new = e_1e + e_hf + e_corr;
-    app_log(2, "\nEnergy contributions");
-    app_log(2, "----------------------");
-    app_log(2, "  non-interacting (H0):        {} a.u.", e_1e);
-    app_log(2, "  Hartree-Fock:                {} a.u.", e_hf);
-    app_log(2, "  correlation:                 {} a.u.", e_corr);
-    app_log(2, "  total energy:                {} a.u.\n", e_tot_new);
+    app_log(1, "\nEnergy contributions");
+    app_log(1, "----------------------");
+    app_log(1, "  non-interacting (H0):        {} a.u.", e_1e);
+    app_log(1, "  Hartree-Fock:                {} a.u.", e_hf);
+    app_log(1, "  correlation:                 {} a.u.", e_corr);
+    app_log(1, "  total energy:                {} a.u.\n", e_tot_new);
     
-    if (embed_iter == -1 or embed_iter >= 1) {
-      app_log(2, "abs max diff of Fock matrix:   {}", Vhf_conv);
-      app_log(2, "abs max diff of self-energy:   {}\n", Sigma_conv);
+    if (iter_solver != nullptr && (embed_iter == -1 || embed_iter >= 1)) {
+      app_log(1, "abs max diff of Fock matrix:   {}", Vhf_conv);
+      app_log(1, "abs max diff of self-energy:   {}\n", Sigma_conv);
     }
 
     _Timer.start("EMBED_WRITE");
@@ -238,7 +267,7 @@ namespace methods {
     print_dmft_embed_timers();
   }
 
-  void embed_t::dmft_embed_qp_impl(MBState &mb_state,
+  void embed_t::dmft_embed_qp_impl(MBState &mb_state, simple_dyson &dyson,
                                    iter_scf::iter_scf_t *iter_solver) {
     using math::shm::make_shared_array;
     for( auto& v: {"EMBED_TOTAL", "EMBED_ALLOC",
@@ -293,7 +322,6 @@ namespace methods {
     auto& sG_tskij = mb_state.sG_tskij.value();
     auto& sSigma_tskij = mb_state.sSigma_tskij.value();
     double mu;
-    auto dyson = simple_dyson(_MF, &ft, mb_state.coqui_prefix);
     _Timer.stop("EMBED_ALLOC");
 
     _Timer.start("EMBED_READ");
@@ -379,7 +407,7 @@ namespace methods {
     sVcorr_skij.communicator()->barrier();
 
     // find chemical potential
-    mu = update_mu(mu, dyson, *_MF, ft, sVcorr_skij, sG_tskij, sSigma_tskij);
+    mu = update_mu(mu, dyson, *_MF, ft, sVcorr_skij, sSigma_tskij);
     _Timer.stop("EMBED_FIND_MU");
 
     _Timer.start("EMBED_DYSON");
@@ -461,13 +489,13 @@ namespace methods {
     sSigma_correction_upfold.set_zero();
 
     nda::array<ComplexType, 5> Sigma_imp_tsIab(mb_state.ft->nt_f(), _MF->nspin(), nImps, nImpOrbs, nImpOrbs);
-    mb_state.ft->w_to_tau(mb_state.Sigma_imp_wsIab.value(), Sigma_imp_tsIab, imag_axes_ft::fermi);
-    mb_state.ft->check_leakage(Sigma_imp_tsIab, imag_axes_ft::fermi, sSigma_tskij.communicator(), "impurity self-energy");
+    mb_state.ft->w_to_tau(mb_state.Sigma_imp_wsIab.value(), Sigma_imp_tsIab, imag_axes_ft::fermion);
+    mb_state.ft->check_leakage(Sigma_imp_tsIab, imag_axes_ft::fermion, sSigma_tskij.communicator(), "impurity self-energy");
 
     if (subtract_dc) {
       nda::array<ComplexType, 5> Sigma_dc_tsIab(mb_state.ft->nt_f(), _MF->nspin(), nImps, nImpOrbs, nImpOrbs);
-      mb_state.ft->w_to_tau(mb_state.Sigma_dc_wsIab.value(), Sigma_dc_tsIab, imag_axes_ft::fermi);
-      mb_state.ft->check_leakage(Sigma_dc_tsIab, imag_axes_ft::fermi, sSigma_tskij.communicator(), "DC self-energy");
+      mb_state.ft->w_to_tau(mb_state.Sigma_dc_wsIab.value(), Sigma_dc_tsIab, imag_axes_ft::fermion);
+      mb_state.ft->check_leakage(Sigma_dc_tsIab, imag_axes_ft::fermion, sSigma_tskij.communicator(), "DC self-energy");
       Sigma_imp_tsIab -= Sigma_dc_tsIab;
     }
 

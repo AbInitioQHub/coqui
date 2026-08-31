@@ -1,13 +1,34 @@
+"""
+==========================================================================
+CoQuí: Correlated Quantum ínterface
+
+Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==========================================================================
+"""
+
 import sys
 import h5py
+from coqui._lib.utils_module import app_log
 
 class IterSCF(object):
     @staticmethod
     def damping_impl(h5_grp, mixing, X, dataset):
-        print("IterSCF::damping: alpha * X + (1-alpha) * X_prev")
-        print("  - X              = {}".format(dataset))
-        print("  - X_prev from h5 = {}".format(h5_grp.name + "/" + dataset))
-        print("  - alpha          = {}\n".format(mixing))
+        app_log(1, "IterSCF::damping: alpha * X + (1-alpha) * X_prev")
+        app_log(1, "  - X              = {}".format(dataset))
+        app_log(1, "  - X_prev from h5 = {}".format(h5_grp.name + "/" + dataset))
+        app_log(1, "  - alpha          = {}\n".format(mixing))
         sys.stdout.flush()
 
         X_prev = h5_grp[dataset][()].view(complex)[...,0]
@@ -16,8 +37,8 @@ class IterSCF(object):
 
     @staticmethod
     def damping(coqui_h5, current_iter, mixing, data_dict):
-        print(f"\nApplying mixing for impurity self-energy with mixing factor = {mixing}")
-        print("We will mix the double counting terms if there is no previous impurity solution.")
+        app_log(1, f"\nApplying mixing for impurity self-energy with mixing factor = {mixing}")
+        app_log(1, "We will mix the double counting terms if there is no previous impurity solution.")
         with h5py.File(coqui_h5, 'r') as f:
             df_grp = f['downfold_1e']
             found_imp_solutions = False
@@ -43,13 +64,13 @@ class IterSCF(object):
         from collections import deque
         from .diis import diis_solve
 
-        print("\nIterSCF::diis")
-        print("----------------")
-        print("  - chekptoint h5        = {}".format(diis_chkpt))
-        print("  - vector list          = {}".format(list(current_vec.keys())))
-        print("  - max subspace size    = {}".format(diis_subspace))
-        print("  - current iteration    = {}".format(current_iter))
-        print("  - extrapolation        = {}".format(extrplt))
+        app_log(1, "\nIterSCF::diis")
+        app_log(1, "----------------")
+        app_log(1, "  - checkpoint h5        = {}".format(diis_chkpt))
+        app_log(1, "  - vector list          = {}".format(list(current_vec.keys())))
+        app_log(1, "  - max subspace size    = {}".format(diis_subspace))
+        app_log(1, "  - current iteration    = {}".format(current_iter))
+        app_log(1, "  - extrapolation        = {}".format(extrplt))
         sys.stdout.flush()
 
         # initialize vector, residual spaces
@@ -117,22 +138,22 @@ class IterSCF(object):
                         else:
                             vec_grp[f"vec{i}/{key}"] = data
 
-            print("  - restart diis          = {}".format(diis_restart))
-            print("  - current residual size = {}".format(len(res_list)))
-            print("  - current vector size   = {}".format(len(vec_list)))
+            app_log(1, "  - restart diis          = {}".format(diis_restart))
+            app_log(1, "  - current residual size = {}".format(len(res_list)))
+            app_log(1, "  - current vector size   = {}".format(len(vec_list)))
             sys.stdout.flush()
 
         if extrplt:
-            print("\nSolving DIIS equation for extrapolation coefficients:")
+            app_log(1, "\nSolving DIIS equation for extrapolation coefficients:")
             coeffs = diis_solve(res_list)
-            print(f"Coefficients = {coeffs}\n")
+            app_log(1, f"Coefficients = {coeffs}\n")
             # linear extrapolation
             for key in current_vec.keys():
                 current_vec[key] *= coeffs[-1]
                 for i, c in enumerate(coeffs[:-1]):
                     current_vec[key] += c * vec_list[i][key]
         else:
-            print(f"\nDIIS starting iteration not yet achieved - "
-                  f"expanding vector and residual spaces without DIIS extrapolation.\n")
+            app_log(1, f"\nDIIS starting iteration not yet achieved - "
+                       f"expanding vector and residual spaces without DIIS extrapolation.\n")
 
 

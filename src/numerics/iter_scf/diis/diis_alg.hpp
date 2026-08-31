@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef COQUI_DIIS_ALG_HPP
 #define COQUI_DIIS_ALG_HPP
 
@@ -22,9 +43,9 @@ namespace iter_scf {
  *
  *  The code closely follows the original ideas from P. Pulay 
  *  and further publications. 
- *  The implementation does not use any specific choise of the residual---
+ *  The implementation does not use any specific choice of the residual---
  *  it is defined outside of the class and passed as a pointer. 
- *  A the moment, only commutator residual  is tested. 
+ *  A the moment, only commutator residual is tested.
  *  The space of probe vectors used for extrapolation and residuals are stored 
  *  in the corresponding linear spaces. 
  *  The internal linear system (composed of residual overlaps and Lagrange multipliers) 
@@ -47,26 +68,30 @@ template<typename Vector>
 public:
     // External control of the DIIS driver whether to do extrapolation
     // if it is false, the subspaces will grow and B-matrix will be evaluated as usual
-    bool extrap; // Perform extrapolation
-    bool grow_xvsp; // Controls simple growing of the xvec subspace. 
+    bool extrap;
+    // External control whether to grow x_vsp "only" but not res_vsp and the B-matrix
+    // (no extrapolation as well)
+    bool grow_xvsp_only;
 
-    auto get_x() {
-        if(state == nullptr) {
+    auto get_extrapolated_state() {
+        if(extrapolated_state == nullptr) {
             APP_ABORT("DIIS state is not initialized! ABORT!");
         }
-        return state->get();
+        return extrapolated_state->get();
     }
 private:
     
-    nda::matrix<ComplexType> m_B; // Overlap matrix of the residuals
-    nda::array<ComplexType, 1> m_C; // Vector of extrapolation coefs
-    std::complex<double> lambda; // Lagrange multiplier for the constraint
-    size_t max_subsp_size;
-    VSpace<Vector>* res_vsp; // The subspace of residuals
-    VSpace<Vector>* x_vsp;   // The subspace of X vectors
-    opt_state<Vector>* state = nullptr;
+    nda::matrix<ComplexType> m_B;       // Overlap matrix of the residuals
+    nda::array<ComplexType, 1> m_C;     // Vector of extrapolation coefficients
+    std::complex<double> lambda;        // Lagrange multiplier for the constraint
+    size_t max_subsp_size;              // maximum size of the DIIS subspace
 
-    diis_residual<Vector>* residual;  // Defines residual. Must be already initialized
+    // non-owning pointers
+    VSpace<Vector>* res_vsp;            // vector space of residuals
+    VSpace<Vector>* x_vsp;              // vector space of states
+    opt_state<Vector>* extrapolated_state = nullptr; // diis extrapolated state
+
+    diis_residual<Vector>* residual;    // Defines residual. Must be already initialized
 
     std::string diis_str = "DIIS: ";
 
@@ -82,7 +107,7 @@ private:
     }
 
     void print_C() {
-        std::cout << diis_str << "Extrapolation coefs:" << std::endl;
+        std::cout << diis_str << "Extrapolation coefficients:" << std::endl;
         std::cout << std::setprecision(10);
         for(auto i : nda::range(0, m_B.shape()[0]))
                 std::cout << m_C(i) << " ";
@@ -92,14 +117,30 @@ private:
 
 public:
 
-    void init(opt_state<Vector>* state_, diis_residual<Vector>* residual_, 
-              size_t max_subsp_size_, 
-              bool extrap_, VSpace<Vector>* x_vsp_, 
-              VSpace<Vector>* res_vsp_, Vector& x_start) {
+    /**
+     * Initialization of the DIIS algorithm
+     * 1. setup pointers for non-owning data used in DIIS kernel, including
+     *     a. diis extrapolated state (extrapolated_state_)
+     *     b. residual definition (residual_)
+     *     c. vector space of states (x_vsp_)
+     *     d. vector space of residuals (res_vsp_)
+     * 2. add the starting vector () to the X vector space
+     *
+     *  @param extrapolated_state_ - [INPUT] Pointer to the diis output state
+     *  @param residual_           - [INPUT] Pointer to the residual definition
+     *  @param x_vsp_              - [INPUT] Pointer to the vector space of the states
+     *  @param res_vsp_            - [INPUT] Pointer to the vector space of residuals
+     *  @param max_subsp_size_     - [INPUT] Maximum size of the DIIS subspace
+     *  @param extrap_             - [INPUT] Whether to perform extrapolation or just grow the subspace
+     *  @param x_start             - [INPUT] Initial vector to be added to the X vector space
+     */
+    void init(opt_state<Vector>* extrapolated_state_, diis_residual<Vector>* residual_,
+              VSpace<Vector>* x_vsp_, VSpace<Vector>* res_vsp_,
+              size_t max_subsp_size_, bool extrap_, const Vector& x_start) {
 
         utils::check(residual_->is_inited(), "diis_alg: The residual is not initialized");
 
-        state = state_;
+        extrapolated_state = extrapolated_state_;
         residual = residual_;
         x_vsp = x_vsp_;
         res_vsp = res_vsp_;
@@ -111,47 +152,55 @@ public:
 #endif
     };
 
-    int next_step(Vector& vec) {
-        if(x_vsp->size() == 0 || grow_xvsp) {
-            app_log(2, diis_str + "Growing subspace without extrapolation");
-            x_vsp->add_to_vspace(vec);
-            state->put(vec); 
-            app_log(2, ""); // beautification
+    /**
+     * Perform the next DIIS step
+     *
+     * return 1 if extrapolation was performed
+     *        0 if no extrapolation (just growing the subspace)
+     */
+    int next_step(const Vector& new_vec) {
+        if (x_vsp->size() == 0 || grow_xvsp_only) {
+            app_log(2, diis_str + "Growing vector subspace only. No extrapolation.\n");
+            x_vsp->add_to_vspace(new_vec);    // growing vector space
+            app_log(2, "");
             return 0;
         }
-        // Normal execution
-        if(res_vsp->size() < max_subsp_size) {
-            app_log(2, diis_str + "Normal execution");
-            
-            state->put(vec); 
+
+        if (res_vsp->size() < max_subsp_size) {
+            // Normal execution
+            app_log(2, diis_str + "Growing vector and residual subspaces for DIIS\n");
+            // Fill the extrapolated state with the current vector for residual computation
+            extrapolated_state->put(new_vec);
             Vector res;
             if(! residual->get_diis_residual(res) ) {
                 APP_ABORT(diis_str +  "Could not get residual!!! ABORT!");
             }
             update_overlaps(res); // the overlap with res is added in any case...
 
-            res_vsp->add_to_vspace(res);
-            x_vsp->add_to_vspace(vec);
-        }
-        else {  // The subspace is already of the maximum size
-                app_log(2, diis_str + "Reached maximum subspace. The first vector will be kicked out of the subspace.");
-                res_vsp->purge_vec(0); // can do it smarter and purge the one with the smallest coef
-                x_vsp->purge_vec(0);   
-                purge_overlap(0);
+            res_vsp->add_to_vspace(res);   // growing residual space
+            x_vsp->add_to_vspace(new_vec); // growing vector space
+        } else {
+            // The subspace is already of the maximum size
+            app_log(2, diis_str + "Reached maximum subspace -> the first vector will be kicked out of the subspace.\n");
+            // can do it smarter and purge the one with the smallest coef
+            res_vsp->purge_vec(0); // remove the first residual
+            x_vsp->purge_vec(0);   // remove the first vector
+            purge_overlap(0);      // purge overlap matrix of residuals
 
-            state->put(vec); 
+            // Fill the extrapolated state with the current vector for residual computation
+            extrapolated_state->put(new_vec);
             Vector res;
             if(! residual->get_diis_residual(res) ) {
                 APP_ABORT(diis_str +  "Could not get residual!!! ABORT!");
             }
             update_overlaps(res);
-            res_vsp->add_to_vspace(res);
-            x_vsp->add_to_vspace(vec);
+            res_vsp->add_to_vspace(res);   // growing residual space
+            x_vsp->add_to_vspace(new_vec); // growing vector space
         }
-        if(extrap && (res_vsp->size() > 1) ) {
-            compute_coefs(1);
 
-            app_log(2, diis_str + "Performing the DIIS extrapolation...");
+        if (extrap && (res_vsp->size() > 1) ) {
+            app_log(2, diis_str + "Performing the DIIS extrapolation. \n");
+            compute_coefs(1);
             print_B();
             print_C();
             if(m_B.shape()[0] == m_B.shape()[1] && m_B.shape()[0] == m_C.shape()[0]) {
@@ -161,18 +210,16 @@ public:
                 app_log(2, diis_str + "Squared predicted error of extrapolated vector (e,e) = {}", std::real(exp_error));
             }
 
+            // build extrapolated vector
             Vector result = x_vsp->make_linear_comb(m_C);
-
-            app_log(2, ""); // beautification
-            state->put(result);
+            app_log(2, "");
+            extrapolated_state->put(result); // update extrapolated state
             return 1;
             
-        }
-        else {
-            app_log(2, diis_str + "Nothing to be done in DIIS...");
+        } else {
+            app_log(2, diis_str + "DIIS extrapolation condition is not satisfied -> Skipping the extrapolation step\n");
             print_B();
-            app_log(2, ""); // beautification
-            state->put(vec); 
+            app_log(2, "");
             return 0;
         }
         app_log(2, ""); // beautification

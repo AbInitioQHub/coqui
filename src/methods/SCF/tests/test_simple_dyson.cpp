@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #undef NDEBUG
 
 #include "catch2/catch.hpp"
@@ -35,8 +56,8 @@ namespace bdft_tests {
     double beta = 1000;
     double wmax = 12.0;
     auto mf = mf::make_MF(context, mf::pyscf_source, filepath, "pyscf");
-    imag_axes_ft::IAFT ft(beta, wmax, imag_axes_ft::ir_source);
-    simple_dyson dyson(std::addressof(mf), std::addressof(ft));
+    imag_axes_ft::IAFT ft(beta, wmax, imag_axes_ft::ir_basis, "high");
+    simple_dyson dyson(std::addressof(mf), std::addressof(ft), 1e-9, "bisection");
   }
 
   TEST_CASE("dyson", "[methods_scf]") {
@@ -46,7 +67,7 @@ namespace bdft_tests {
     double beta = 1000;
     double wmax = 1.2;
     auto mf = mf::make_MF(context, mf::pyscf_source, filepath, "pyscf");
-    imag_axes_ft::IAFT ft(beta, wmax, imag_axes_ft::ir_source);
+    imag_axes_ft::IAFT ft(beta, wmax, imag_axes_ft::ir_basis, "high");
     hamilt::pseudopot psp(mf);
     sArray_t<Array_view_4D_t> F(math::shm::make_shared_array<Array_view_4D_t>(
         *context, {mf.nspin(), mf.nkpts(), mf.nbnd(), mf.nbnd()}));
@@ -58,10 +79,10 @@ namespace bdft_tests {
         *context, {ft.nt_f(), mf.nspin(), mf.nkpts(), mf.nbnd(), mf.nbnd()}));
     hamilt::set_fock(mf, std::addressof(psp), F, true);
 
-    simple_dyson dyson( std::addressof(mf), std::addressof(ft));
+    simple_dyson dyson(std::addressof(mf), std::addressof(ft), 1e-9, "bisection");
     context->comm.barrier();
 
-    double mu = update_mu(0.0, dyson, mf, ft, F, G, Sigma);
+    double mu = update_mu(0.0, dyson, mf, ft, F, Sigma);
     CHECK(mu == Approx(0.175));
     context->comm.barrier();
 

@@ -1,11 +1,27 @@
-import numpy as np
-import os
-import sys
+"""
+==========================================================================
+CoQuí: Correlated Quantum ínterface
+
+Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==========================================================================
+"""
+
 import h5._h5py as h5
 import argparse
 
 # Usage: 
-# export PYTHONPATH=/mnt/home/cyeh/Projects/nda/nda.build/build_tensor/deps/h5/python:$PYTHONPATH
 # python3 read_last_it.py --inp mbpt.gf2.iterative.mbpt.h5  --out mbpt.gf2.last.mbpt.h5 --keep_first_it True
 # Attention: may not work correctly if h5 file is corrupted
 
@@ -54,12 +70,10 @@ def copy_all_and_last_iters(g_in, g_out, keep_first_iter=False):
             if gg_in.has_dataset('final_iter'):
                 final_iter = h5.h5_read(gg_in, 'final_iter')
                 h5.h5_write(gg_out, 'final_iter', final_iter)
-                # copy the last two iterations
+                # copy the last iteration
                 if gg_in.has_subgroup('iter'+str(final_iter)):
                     copy_from_key(gg_in, gg_out, 'iter'+str(final_iter))
-                if gg_in.has_subgroup('iter'+str(final_iter-1)):
-                    copy_from_key(gg_in, gg_out, 'iter'+str(final_iter-1))
-                if keep_first_iter and final_iter!=1 and final_iter-1!=1:
+                if keep_first_iter and final_iter!=1:
                     if gg_in.has_subgroup('iter1'):
                         copy_from_key(gg_in, gg_out, 'iter1')
             else:

@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef COQUI_SCF_COMMON_HPP
 #define COQUI_SCF_COMMON_HPP
 
@@ -7,7 +28,7 @@
 
 #include "mean_field/MF.hpp"
 #include "utilities/mpi_context.h"
-#include "methods/SCF/qp_context.h"
+#include "methods/SCF/qp_params_t.h"
 #include "methods/SCF/mb_solver_t.h"
 #include "methods/mb_state/mb_state.hpp"
 #include "numerics/imag_axes_ft/IAFT.hpp"
@@ -18,6 +39,128 @@
 
 namespace methods {
   // TODO Put everything in "scf" namespace to isolate using directives
+
+namespace detail {
+
+template<typename eval_t>
+auto bracket_mu_root(double old_mu, double delta, eval_t &&eval_f)
+  -> std::tuple<double, double, double, double> {
+  
+  double f_old = eval_f(old_mu);
+
+  if (f_old >= 0.0) {
+    double mu_hi = old_mu;
+    double mu_lo = old_mu - delta;
+    double f_lo = eval_f(mu_lo);
+    while (f_lo > 0.0) {
+      mu_lo -= delta;
+      f_lo = eval_f(mu_lo);
+    }
+    return {mu_lo, mu_hi, f_lo, f_old};
+  }
+
+  double mu_lo = old_mu;
+  double mu_hi = old_mu + delta;
+  double f_hi = eval_f(mu_hi);
+  while (f_hi < 0.0) {
+    mu_hi += delta;
+    f_hi = eval_f(mu_hi);
+  }
+  return {mu_lo, mu_hi, f_old, f_hi};
+}
+
+template<typename eval_t>
+auto update_mu_bisection_impl(double old_mu, double tol, double delta, eval_t &&eval_f)
+  -> std::tuple<double, double> {
+  
+  double f_old = eval_f(old_mu);
+  if (std::abs(f_old) < tol) {
+    return {old_mu, f_old};
+  }
+
+  auto breaket = bracket_mu_root(old_mu, delta, std::forward<eval_t>(eval_f));
+  auto mu_lo = std::get<0>(breaket);
+  auto mu_hi = std::get<1>(breaket);
+  
+  double mu_mid = 0.5 * (mu_lo + mu_hi);
+  double f_mid = eval_f(mu_mid);
+  while (std::abs(f_mid) >= tol) {
+    if (f_mid >= 0.0) {
+      mu_hi = mu_mid;
+    } else {
+      mu_lo = mu_mid;
+    }
+    mu_mid = 0.5 * (mu_lo + mu_hi);
+    f_mid = eval_f(mu_mid);
+  }
+  return {mu_mid, f_mid};
+}
+
+template<typename eval_t>
+auto update_mu_midpoint_impl(double old_mu, double tol, double delta, eval_t &&eval_f,
+                             int max_bisection_iter = 200, double mu_width_tol = 1e-12)
+  -> std::tuple<double, double, double, double> {
+  
+  auto [mu_lo, mu_hi, f_lo, f_hi] = bracket_mu_root(old_mu, delta, std::forward<eval_t>(eval_f));
+
+  // Bisection for right boundary f(mu_right) < +tol
+  // by iterating (r_lo, r_hi) while enforcing
+  //     f(r_lo) < +tol and f(r_hi) >= +tol.
+  double r_lo = mu_lo;
+  double r_hi = mu_hi;
+  double f_r_hi = f_hi;
+
+  // extend r_hi until f(r_hi) >= tol to ensure that
+  // we cover the entire acceptable region for right boundary
+  while (f_r_hi < tol) {
+    r_lo = r_hi;
+    r_hi += delta;
+    f_r_hi = eval_f(r_hi);
+  }
+
+  for (int it = 0; it < max_bisection_iter and (r_hi - r_lo) > mu_width_tol; ++it) {
+    double r_mid = 0.5 * (r_lo + r_hi);
+    double f_r_mid = eval_f(r_mid);
+    if (f_r_mid < tol) {
+      r_lo = r_mid;
+    } else {
+      r_hi = r_mid;
+    }
+  }
+  double mu_right = r_lo;
+
+  // Bisection for left boundary f(mu_left) > -tol
+  // by iterating (l_lo, l_hi) while enforcing
+  //     f(l_lo) <= -tol and f(l_hi) > -tol.
+  double l_lo = mu_lo;
+  double l_hi = mu_hi;
+  double f_l_lo = f_lo;
+
+  // extend l_lo until f(l_lo) <= -tol to ensure that
+  // we cover the entire acceptable region for left boundary
+  while (f_l_lo > -tol) {
+    l_hi = l_lo;
+    l_lo -= delta;
+    f_l_lo = eval_f(l_lo);
+  }
+
+  for (int it = 0; it < max_bisection_iter and (l_hi - l_lo) > mu_width_tol; ++it) {
+    double l_mid = 0.5 * (l_lo + l_hi);
+    double f_l_mid = eval_f(l_mid);
+    if (f_l_mid > -tol) {
+      l_hi = l_mid;
+    } else {
+      l_lo = l_mid;
+    }
+  }
+  double mu_left = l_hi;
+
+  double mu = 0.5 * (mu_left + mu_right);
+  return {mu, eval_f(mu), mu_left, mu_right};
+}
+
+} // namespace detail
+
 template<nda::Array Array_base_t>
 using sArray_t = math::shm::shared_array<Array_base_t>;
 using Array_view_3D_t = nda::array_view<ComplexType, 3>;
@@ -37,7 +180,7 @@ auto distributed_tau_to_w(mpi3::communicator& comm,
   auto nw = FT.nw_f();
 
   if (nda::sum(X_tau_shm.local()) != ComplexType(0.0))
-    FT.check_leakage(X_tau_shm, imag_axes_ft::fermi, "self-energy");
+    FT.check_leakage(X_tau_shm, imag_axes_ft::fermion, "self-energy");
 
   int np = comm.size();
   long nkpools = utils::find_proc_grid_max_npools(np, nkpts, 0.2);
@@ -57,7 +200,7 @@ auto distributed_tau_to_w(mpi3::communicator& comm,
     X_t_sub = X_tau_shm.local()(all, all, k_rng, i_rng, j_rng);
 
     auto X_w_loc = dX_wskij.local();
-    FT.tau_to_w(X_t_sub, X_w_loc, imag_axes_ft::fermi);
+    FT.tau_to_w(X_t_sub, X_w_loc, imag_axes_ft::fermion);
   }
 
   auto dX_wskij_out = make_distributed_array<Array_5D_t>(
@@ -67,13 +210,13 @@ auto distributed_tau_to_w(mpi3::communicator& comm,
 }
 
 template<nda::MemoryArray Array_t>
-void hermitize(Array_t &&A_ij, std::string name="") {
+void hermitize_in_tau(Array_t &&A_ij, std::string name="") {
   constexpr int rank = ::nda::get_rank<Array_t>;
   using value_type = typename std::decay_t<Array_t>::value_type;
   if (name != "")
-    app_log(2, "Explicitly make {} Hermitian.", name);
+    app_log(4, "Explicitly make {} Hermitian.", name);
   utils::check(A_ij.shape(rank-1)==A_ij.shape(rank-2),
-               "hermitize: Incorrect dimensions of {} for the last axes = ({}, {})",
+               "hermitize_in_tau: Incorrect dimensions of {} for the last axes = ({}, {})",
                name, A_ij.shape(rank-2), A_ij.shape(rank-1));
   long nbnd = A_ij.shape(rank-1);
   long dim0 = std::accumulate(A_ij.shape().begin(), A_ij.shape().end()-2, 1, std::multiplies<>{});
@@ -103,7 +246,8 @@ template<nda::ArrayOfRank<5> Array_base_t>
 void compute_G_from_mf(h5::group iter_grp, imag_axes_ft::IAFT &ft, sArray_t<Array_base_t> &sG_tskij);
 
 template<typename X_t>
-double update_mu(double old_mu, const mf::MF &mf, const X_t &sE_ski, double beta, double mu_tol=1e-9);
+double update_mu(double old_mu, const mf::MF &mf, const X_t &sE_ski, double beta,
+                 double mu_tol=1e-9, std::string mu_update_alg="bisection");
 
 double compute_Nelec(double mu, const mf::MF &mf, const sArray_t<Array_view_3D_t> &sE_ski, double beta);
 
@@ -116,14 +260,14 @@ double compute_Nelec(double mu, const mf::MF &mf, const sArray_t<Array_view_3D_t
  * @param sMO_skia      - [INPUT] MO coefficients
  * @param mu            - [INPUT] chemical potential
  * @param FT            - [INPUT] Fourier transform driver on imaginary axes
- * @param qp_context    - [INPUT] setups for quasi-paritcle eqn
+ * @param qp_params    - [INPUT] setups for quasiparticle eqn
  */
 void solve_qp_eqn(sArray_t<Array_view_3D_t> &sE_ska,
                   const sArray_t<Array_view_5D_t> &sSigma_tskij,
                   const sArray_t<Array_view_4D_t> &sVhf_skij,
                   const sArray_t<Array_view_4D_t> &sMO_skia,
                   double mu,
-                  const imag_axes_ft::IAFT &FT, qp_context_t &qp_context);
+                  const imag_axes_ft::IAFT &FT, qp_params_t &qp_params);
 
 /**
  * Given a dynamic self-energy in the primary basis, return the static approximation (Phys. Rev. Lett. 96, 226402 (2006)) of it
@@ -137,48 +281,43 @@ void solve_qp_eqn(sArray_t<Array_view_3D_t> &sE_ska,
  * @param sE_ska       - [INPUT] quasi-particle energies
  * @param mu           - [INPUT] chemical potential
  * @param FT           - [INPUT] Fourier transform driver on imaginary axes
- * @param qp_context   - [INPUT] setups for quasi-paritcle eqn, including mode "qp_energy" or mode "fermi"
+ * @param qp_params   - [INPUT] setups for quasi-paritcle eqn, including mode "qp_energy" or mode "fermi"
  * @return static approximation to the dynamic self-energy in the primary basis
  */
 auto qp_approx(const sArray_t<Array_view_5D_t> &sSigma_tskij,
                const sArray_t<Array_view_4D_t> &sMO_skia,
                const sArray_t<Array_view_3D_t> &sE_ska, double mu,
-               const imag_axes_ft::IAFT &FT, qp_context_t &qp_context)
+               const imag_axes_ft::IAFT &FT, qp_params_t &qp_params)
   -> sArray_t<Array_view_4D_t>;
 
 /**
  * Given a correlated solver, compute the dynamic self-energy and
- * solve the quasi-particle eqn in the presence of correlated potential V_corr(w) in MO basis
+ * solve the quasi-particle Eqn in the presence of correlated potential V_corr(w) in MO basis
  * Specifically, this functions does the following:
  * 1. compute dynamic self-energy from 'corr_solver'
  * 2. compute diagonals of V_corr(iw) in MO basis
  * 3. solve the quasiparticle equations for e_qp with V_corr(w)
  * 4. compute the new Heff using the new e_qp and MO coefficients
  * 5. update e_qp and Heff in-place
- * @tparam update_W      - whether to evaluate the screened interactions using mb_solver_t
  * @tparam eri_t         - THC-ERI
  * @tparam corr_solver_t - correlated solver
- * @param sHeff_skij     - [INPUT] Hartree-Fock Hamiltonian
- *                         [OUTPUT] effective quasiparticle Hamiltonian:
- * @param sE_ska         - [INPUT] initial qp energies
- *                         [OUTPUT] updated qp energies
- * @param sMO_skia       - [INPUT] MO coefficients
+ * @param mb_state       - [INPUT/OUTPUT] many-body state whose contents will be updated 
+ * @param mu             - [INPUT] chemical potential
  * @param mb_solver      - [INPUT] many-body solver context
  * @param eri            - [INPUT] THC-ERI instance
  * @param FT             - [INPUT] Fourier transform driver on imaginary axes
- * @param mu             - [INPUT] chemical potential
- * @param qp_context     - [INPUT] setups for quasi-paritcle eqn
- * @return new qp energies in share memory sE_ska(ns, nkpts, nbnd)
+ * @param qp_params     - [INPUT] setups for quasi-paritcle eqn
+ * @param fixed_w        - [INPUT] whether to keep the screened interactions fixed from mb_state. 
+ *                         If false, the dynamically screened interaction will be updated at each iteration.
  */
-template<bool update_W=true, typename eri_t, typename corr_solver_t>
+template<typename eri_t, typename corr_solver_t>
 void add_evscf_vcorr(MBState &mb_state,
-                     sArray_t<Array_view_3D_t> &sE_ska,
-                     const sArray_t<Array_view_4D_t> &sMO_skia,
                      double mu,
                      solvers::mb_solver_t<corr_solver_t> &mb_solver,
                      eri_t &eri,
                      const imag_axes_ft::IAFT &FT,
-                     qp_context_t &qp_context);
+                     qp_params_t &qp_params, 
+                     bool fixed_w=false);
 /**
  * Add correlated potential V_corr with static approximation to the effective quasiparticle Hamiltonian
  * The static approximation follows T. Kotani et. al., Phys. Rev. B 76, 165106 (2007) in which
@@ -188,25 +327,21 @@ void add_evscf_vcorr(MBState &mb_state,
  * @tparam keep_W        - whether to keep the screened interactions from corr_solver_t fixed
  * @tparam eri_t         - THC-ERI
  * @tparam corr_solver_t - correlated solver
- * @param sHeff_skij     - [INPUT/OUTPUT] effective quasiparticle Hamiltonian:
- * @param sE_ska         - [INPUT/OUTPUT] qp energies
- * @param sMO_skia       - [INPUT] molecular orbitals coefficients
+ * @param mb_state       - [INPUT/OUTPUT] many-body state whose contents will be updated
  * @param corr_solver    - [INPUT] correlated solver instance
  * @param eri            - [INPUT] THC-ERI instance
  * @param FT             - [INPUT] Fourier transform driver on imaginary axes
  * @param mu             - [INPUT] chemical potential
- * @param qp_context     - [INPUT] setups for quasiparitcle eqn
+ * @param qp_params     - [INPUT] setups for quasiparitcle eqn
  * @return new qp energies in share memory sE_ska(ns, nkpts, nbnd)
  */
 template<typename eri_t, typename corr_solver_t>
 void add_qpscf_vcorr(MBState &mb_state,
-                     const sArray_t<Array_view_3D_t> &sE_ska,
-                     const sArray_t<Array_view_4D_t> &sMO_skia,
                      double mu,
                      solvers::mb_solver_t<corr_solver_t> &mb_solver,
                      eri_t &eri,
                      const imag_axes_ft::IAFT &FT,
-                     qp_context_t &qp_context);
+                     qp_params_t &qp_params);
 
 template<typename function_t>
 double qp_eqn_linearized(double Vhf, function_t &Sigma, long I, double mu, double eps_ks, double eta = 0.0);
@@ -233,8 +368,29 @@ void update_G(dyson_type &dyson, const mf::MF &mf, const imag_axes_ft::IAFT &FT,
  * Solve f(mu) = nelec(mu) - nelec_target = 0 using bisection method
  */
 template<typename dyson_type, typename X_t, typename Xt_t>
-double update_mu(double old_mu, dyson_type& dyson, const mf::MF &mf, const imag_axes_ft::IAFT &FT,
-                 const X_t&F, const Xt_t&G, const Xt_t&Sigma);
+double update_mu_bisection(double old_mu, dyson_type& dyson, const mf::MF &mf,
+                           const imag_axes_ft::IAFT &FT,
+                           const X_t&F, const Xt_t&Sigma);
+
+/**
+ * Update chemical potential (_mu) for current _F and _Sigma as 
+ * the center of the acceptable mu interval by two bisections:
+ *   1) right boundary: nelec(mu_right) - nelec_target < +mu_tol
+ *   2) left boundary:  nelec(mu_left)  - nelec_target > -mu_tol
+ * Return mu = 0.5 * (mu_left + mu_right)
+ */
+template<typename dyson_type, typename X_t, typename Xt_t>
+double update_mu_midpoint(double old_mu, dyson_type& dyson, const mf::MF &mf,
+                          const imag_axes_ft::IAFT &FT,
+                          const X_t&F, const Xt_t&Sigma);
+
+/**
+ * Dispatch the chemical-potential update using the user-selected Dyson setting.
+ */
+template<typename dyson_type, typename X_t, typename Xt_t>
+double update_mu(double old_mu, dyson_type& dyson, const mf::MF &mf,
+                 const imag_axes_ft::IAFT &FT,
+                 const X_t&F, const Xt_t&Sigma);
 
 /**
  * Compute the total number of electrons as a function of mu and spectra
@@ -256,7 +412,7 @@ double compute_Nelec(double mu, const nda::array<ComplexType, 4> &spectra,
  */
 template<typename comm_t, typename X_t>
 double solve_iterative(utils::mpi_context_t<comm_t> &context, iter_scf::iter_scf_t& iter_solver,
-                     long it, std::string h5_prefix, X_t &sHeff_skij);
+                     long it, std::string h5_prefix, X_t &sHeff_skij, const X_t &sS_skij);
 /**
  * Iterative solver for the SCF solution of self-energy
  * @param context      - [INPUT] mpi context
@@ -271,21 +427,21 @@ double solve_iterative(utils::mpi_context_t<comm_t> &context, iter_scf::iter_scf
  */
 template<typename comm_t, typename X_t, typename Xt_t>
 auto solve_iterative(utils::mpi_context_t<comm_t> &context, iter_scf::iter_scf_t& iter_solver,
-                     long it, std::string h5_prefix, X_t &sF_skij, Xt_t &sSigma_tskij,
-                     const imag_axes_ft::IAFT *FT, bool restart,
+                     long iteration, std::string h5_prefix, X_t &sF_skij, Xt_t &sSigma_tskij,
+                     const imag_axes_ft::IAFT *FT,
                      std::array<std::string,3> dataset={"scf", "F_skij", "Sigma_tskij"})
   -> std::tuple<double, double>;
 
 template<typename MPI_Context_t, typename X_t, typename Xt_t>
 auto damping_impl(MPI_Context_t &context, iter_scf::iter_scf_t& iter_solver,
-                  long it, std::string h5_prefix, X_t &sF_skij, Xt_t &sSigma_tskij,
+                  long iteration, std::string h5_prefix, X_t &sF_skij, Xt_t &sSigma_tskij,
                   std::array<std::string,3> datasets={"scf", "F_skij", "Sigma_tskij"})
 -> std::tuple<double, double>;
 
 template<typename MPI_Context_t, typename X_t, typename Xt_t>
 auto diis_impl(MPI_Context_t &context, iter_scf::iter_scf_t& iter_solver,
-               long it, std::string h5_prefix, X_t &sF_skij, Xt_t &sSigma_tskij,
-               const imag_axes_ft::IAFT *FT, bool restart,
+               long iteration, std::string h5_prefix, X_t &sF_skij, Xt_t &sSigma_tskij,
+               const imag_axes_ft::IAFT *FT,
                std::array<std::string,3> datasets={"scf", "F_skij", "Sigma_tskij"})
 -> std::tuple<double, double>;
 
@@ -312,7 +468,7 @@ void write_mf_data(mf::MF &mf, const imag_axes_ft::IAFT &ft, hamilt::pseudopot &
  */
 template<typename MPI_Context_t>
 auto read_greens_function(MPI_Context_t &context, mf::MF *mf,
-                          std::string filename, long scf_iter, std::string scf_grp = "scf")
+                          std::string filename, long scf_iter=-1, std::string scf_grp = "scf")
 -> sArray_t<Array_view_5D_t>;
 
 }

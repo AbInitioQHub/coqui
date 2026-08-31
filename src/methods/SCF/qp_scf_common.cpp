@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #include "nda/linalg.hpp"
 #include "nda/linalg/det_and_inverse.hpp"
 #include "numerics/nda_functions.hpp"
@@ -11,6 +32,7 @@
 #include "methods/ERI/mb_eri_context.h"
 #include "methods/SCF/mb_solver_t.h"
 #include "methods/SCF/scf_common.hpp"
+#include "methods/SCF/qp_solvers.hpp"
 
 namespace methods {
 
@@ -152,7 +174,7 @@ void solve_qp_eqn(sArray_t<Array_view_3D_t> &sE_ska,
                   const sArray_t<Array_view_4D_t> &sVhf_skij,
                   const sArray_t<Array_view_4D_t> &sMO_skia,
                   double mu,
-                  const imag_axes_ft::IAFT &FT, qp_context_t &qp_context) {
+                  const imag_axes_ft::IAFT &FT, qp_params_t &qp_params) {
   using math::shm::make_shared_array;
   using math::nda::make_distributed_array;
   using local_Array_4D_t = nda::array<ComplexType, 4>;
@@ -203,7 +225,7 @@ void solve_qp_eqn(sArray_t<Array_view_3D_t> &sE_ska,
         }
       }
     }
-    FT.tau_to_w(dSigma_tska.local(), dSigma_wska.local(), imag_axes_ft::fermi);
+    FT.tau_to_w(dSigma_tska.local(), dSigma_wska.local(), imag_axes_ft::fermion);
   }
 
   // ------ basis transformation from primary to MO basis ------
@@ -250,49 +272,49 @@ void solve_qp_eqn(sArray_t<Array_view_3D_t> &sE_ska,
       return std::make_tuple(s_rng.first()+s_loc, k_rng.first()+k_loc, a_rng.first()+a_loc);
     };
 
-    analyt_cont::AC_t AC(qp_context.ac_alg);
+    analyt_cont::AC_t AC(qp_params.ac_alg);
     auto n_to_iw = nda::map([&](int n) { return FT.omega(n); });
     nda::array<ComplexType, 1> iw_mesh(n_to_iw(FT.wn_mesh()));
 
     app_log(2, "\n* Solving quasiparticle equation for given Sigma(iw): ");
     app_log(2, "  - processor grid for quasi-particle equation: (s, k, a) = ({}, {}, {})", 1, nkpools, np_a);
-    app_log(2, "  - quasi-particle equation algorithm:          {}", qp_context.qp_type);
-    app_log(2, "  - ac algorithm:                               {}", qp_context.ac_alg);
-    app_log(2, "  - eta:                                        {}", qp_context.eta);
-    app_log(2, "  - tolerance for quasi-particle equation:      {}\n", qp_context.tol);
-    AC.init(iw_mesh, Sigma_loc_2D, qp_context.Nfit);
-    if (qp_context.qp_type == "sc" or qp_context.qp_type == "sc_bisection") {
+    app_log(2, "  - quasi-particle equation algorithm:          {}", qp_params.qp_type);
+    app_log(2, "  - ac algorithm:                               {}", qp_params.ac_alg);
+    app_log(2, "  - eta:                                        {}", qp_params.eta);
+    app_log(2, "  - tolerance for quasi-particle equation:      {}\n", qp_params.tol);
+    AC.init(iw_mesh, Sigma_loc_2D, qp_params.Nfit);
+    if (qp_params.qp_type == "sc" or qp_params.qp_type == "sc_bisection") {
       double res;
       for (size_t I = 0; I < dim1; ++I) {
         std::tie(E_loc_1D(I), res) =
-            qp_eqn_bisection(Vhf_loc_1D(I).real(), AC, I, mu, E_loc_1D(I).real(), qp_context.tol, qp_context.eta);
+            qp_eqn_bisection(Vhf_loc_1D(I).real(), AC, I, mu, E_loc_1D(I).real(), qp_params.tol, qp_params.eta);
       }
-    } else if (qp_context.qp_type == "sc_newton") {
+    } else if (qp_params.qp_type == "sc_newton") {
       bool conv;
       double res;
       for (size_t I = 0; I < dim1; ++I) {
         std::tie(E_loc_1D(I), res, conv) =
-            qp_eqn_secant(Vhf_loc_1D(I).real(), AC, I, mu, E_loc_1D(I).real(), 400, qp_context.tol, qp_context.eta);
+            qp_eqn_secant(Vhf_loc_1D(I).real(), AC, I, mu, E_loc_1D(I).real(), 400, qp_params.tol, qp_params.eta);
         if (!conv) {
           auto [is, ik, ia] = I_to_ska(I);
           app_warning("secant method fails to converge at (s,k,a) = ({},{},{}); residual = {}", is, ik, ia, res);
         }
       }
-    } else if (qp_context.qp_type == "linearized") {
+    } else if (qp_params.qp_type == "linearized") {
       for (size_t I = 0; I < dim1; ++I) {
-        E_loc_1D(I) = qp_eqn_linearized(Vhf_loc_1D(I).real(), AC, I, mu, E_loc_1D(I).real(), qp_context.eta);
+        E_loc_1D(I) = qp_eqn_linearized(Vhf_loc_1D(I).real(), AC, I, mu, E_loc_1D(I).real(), qp_params.eta);
       }
-    } else if (qp_context.qp_type == "spectral") {
+    } else if (qp_params.qp_type == "spectral") {
       bool conv;
       for (size_t I = 0; I < dim1; ++I) {
-        std::tie(E_loc_1D(I), conv) = qp_eqn_spectral(Vhf_loc_1D(I).real(), AC, I, mu, E_loc_1D(I).real(), qp_context.tol, qp_context.eta);
+        std::tie(E_loc_1D(I), conv) = qp_eqn_spectral(Vhf_loc_1D(I).real(), AC, I, mu, E_loc_1D(I).real(), qp_params.tol, qp_params.eta);
         if (!conv) {
           auto [is, ik, ia] = I_to_ska(I);
           app_warning("spectral method fails to converge at (s,k,a) = ({},{},{})", is, ik, ia);
         }
       }
     } else {
-      utils::check(false, "add_evscf_vcorr: unknown type of qp equation: {}", qp_context.qp_type);
+      utils::check(false, "solve_qp_eqn: unknown type of qp equation: {}", qp_params.qp_type);
     }
   }
   dSigma_wska.reset();
@@ -310,19 +332,22 @@ void solve_qp_eqn(sArray_t<Array_view_3D_t> &sE_ska,
   comm->barrier();
 }
 
-template<bool update_W, typename eri_t, typename corr_solver_t>
+template<typename eri_t, typename corr_solver_t>
 void add_evscf_vcorr(MBState &mb_state,
-                     sArray_t<Array_view_3D_t> &sE_ska,
-                     const sArray_t<Array_view_4D_t> &sMO_skia,
                      double mu,
                      solvers::mb_solver_t<corr_solver_t> &mb_solver,
                      eri_t &eri,
                      const imag_axes_ft::IAFT &FT,
-                     qp_context_t &qp_context) {
+                     qp_params_t &qp_params, 
+                     bool fixed_w) {
   using math::shm::make_shared_array;
 
-  auto& sHeff_skij = mb_state.sF_skij.value();
   auto mpi = eri.mpi();
+
+  auto& sHeff_skij = mb_state.sHeff_skij.value();
+  auto& sMO_skia = mb_state.sMO_skia.value();
+  auto& sE_ska = mb_state.sE_ska.value();
+  
   auto [ns, nkpts, nbnd, nbnd2] = sHeff_skij.shape();
   auto nt = FT.nt_f();
 
@@ -331,20 +356,30 @@ void add_evscf_vcorr(MBState &mb_state,
   mb_state.sG_tskij.emplace(make_shared_array<Array_view_5D_t>(*mpi, {nt, ns, nkpts, nbnd, nbnd}));
   {
     update_G(mb_state.sG_tskij.value(), sMO_skia, sE_ska, mu, FT);
-    FT.check_leakage(mb_state.sG_tskij.value(), imag_axes_ft::fermi, "Green's function");
-    ///
-    if constexpr (update_W) {
+    FT.check_leakage(mb_state.sG_tskij.value(), imag_axes_ft::fermion, "Green's function");
+    
+    // update dyanmically screened interaction in mb_state if necessary.
+    if (not fixed_w or not mb_state.dW_qtPQ.has_value()) {
       utils::check(mb_solver.scr_eri!=nullptr, "add_evscf_vcorr: mb_solver.scr_eri == nullptr when update_W is true.");
       mb_solver.scr_eri->update_w(mb_state, eri, mb_solver.corr->iter());
     }
+    
     mb_solver.corr->evaluate(mb_state, eri);
-    FT.check_leakage(mb_state.sSigma_tskij.value(), imag_axes_ft::fermi, "Self-energy");
+    FT.check_leakage(mb_state.sSigma_tskij.value(), imag_axes_ft::fermion, "Self-energy");
     mpi->comm.barrier();
+
+    // deallocate dynamically screened interaction if it is not fixed for the next iteration.
+    if (not fixed_w) {
+      mb_state.dW_qtPQ.reset();
+    }
   }
-  solve_qp_eqn(sE_ska, mb_state.sSigma_tskij.value(), sHeff_skij, sMO_skia, mu, FT, qp_context);
+
+  // Solve the QP equation to get new QP energies. 
+  solve_qp_eqn(sE_ska, mb_state.sSigma_tskij.value(), sHeff_skij, sMO_skia, mu, FT, qp_params);
   mb_state.sG_tskij.reset();
   mb_state.sSigma_tskij.reset();
 
+  /** Update sHeff_skij with the new QP energies while keeping MO coefficients the same */
   // Basis transformation back to the primary basis.
   auto sMOinv_skai = make_shared_array<Array_view_4D_t>(*mpi, {ns, nkpts, nbnd, nbnd});
   sMOinv_skai.win().fence();
@@ -377,7 +412,7 @@ void add_evscf_vcorr(MBState &mb_state,
 auto qp_approx(const sArray_t<Array_view_5D_t> &sSigma_tskij,
                const sArray_t<Array_view_4D_t> &sMO_skia,
                const sArray_t<Array_view_3D_t> &sE_ska, double mu,
-               const imag_axes_ft::IAFT &FT, qp_context_t &qp_context)
+               const imag_axes_ft::IAFT &FT, qp_params_t &qp_params)
                -> sArray_t<Array_view_4D_t> {
   using math::shm::make_shared_array;
   using math::nda::make_distributed_array;
@@ -432,7 +467,7 @@ auto qp_approx(const sArray_t<Array_view_5D_t> &sSigma_tskij,
         }
       }
     }
-    FT.tau_to_w(dSigma_tskab.local(), dSigma_wskab.local(), imag_axes_ft::fermi);
+    FT.tau_to_w(dSigma_tskab.local(), dSigma_wskab.local(), imag_axes_ft::fermion);
   }
 
   // Static approximation for V_QPGW
@@ -451,32 +486,32 @@ auto qp_approx(const sArray_t<Array_view_5D_t> &sSigma_tskij,
     return std::make_tuple(s_rng.first()+s_loc, k_rng.first()+k_loc, a_rng.first()+a_loc, b_rng.first()+b_loc);
   };
 
-  analyt_cont::AC_t AC(qp_context.ac_alg);
+  analyt_cont::AC_t AC(qp_params.ac_alg);
   auto n_to_iw = nda::map([&](int n) { return FT.omega(n); });
   nda::array<ComplexType, 1> iw_mesh(n_to_iw(FT.wn_mesh()));
 
   app_log(2, "\n* Applying the static approximation (Phys. Rev. Lett. 93, 126406) to Sigma(w): ");
   app_log(2, "  - processor grid for V_QPGW : (s, k, a, b) = ({}, {}, {})", 1, nkpools, np_a, np_b);
-  app_log(2, "  - ac algorithm:               {}", qp_context.ac_alg);
-  app_log(2, "  - eta:                        {}", qp_context.eta);
-  app_log(2, "  - off-diagonal mode:          {}\n", qp_context.off_diag_mode);
+  app_log(2, "  - ac algorithm:               {}", qp_params.ac_alg);
+  app_log(2, "  - eta:                        {}", qp_params.eta);
+  app_log(2, "  - off-diagonal mode:          {}\n", qp_params.off_diag_mode);
   auto Sigma_loc_2D = nda::reshape(dSigma_wskab.local(), std::array<long, 2>{nw, dim1});
-  AC.init(iw_mesh, Sigma_loc_2D, qp_context.Nfit);
+  AC.init(iw_mesh, Sigma_loc_2D, qp_params.Nfit);
 
   auto sVcorr_skij = make_shared_array<Array_view_4D_t>(*comm, *internode_comm, *node_comm, {ns, nkpts, nbnd, nbnd});
   sVcorr_skij.win().fence();
   for (size_t I = 0; I < dim1; ++I) {
     auto [s, k, a, b] = I_to_skab(I);
-    if (qp_context.off_diag_mode == "qp_energy") {
+    if (qp_params.off_diag_mode == "qp_energy") {
       double eps_a = sE_ska.local()(s, k, a).real() - mu;
       double eps_b = sE_ska.local()(s, k, b).real() - mu;
-      sVcorr_skij.local()(s, k, a, b) = 0.5 * ( AC.evaluate(ComplexType(eps_a, qp_context.eta), I)
-                                                 + AC.evaluate(ComplexType(eps_b, qp_context.eta), I) );
-    } else if (qp_context.off_diag_mode == "fermi") {
+      sVcorr_skij.local()(s, k, a, b) = 0.5 * ( AC.evaluate(ComplexType(eps_a, qp_params.eta), I)
+                                                 + AC.evaluate(ComplexType(eps_b, qp_params.eta), I) );
+    } else if (qp_params.off_diag_mode == "fermi") {
       double eps_a = (a == b)? sE_ska.local()(s, k, a).real() - mu : 0.0;
-      sVcorr_skij.local()(s, k, a, b) = AC.evaluate(ComplexType(eps_a, qp_context.eta), I);
+      sVcorr_skij.local()(s, k, a, b) = AC.evaluate(ComplexType(eps_a, qp_params.eta), I);
     } else {
-      utils::check(false, "unknown off_diag_mode: {}. Valid options are \"fermi\" and \"qp_energy\"");
+      utils::check(false, "qp_approx: unknown off-diagonal mode: {}", qp_params.off_diag_mode);
     }
   }
   sVcorr_skij.win().fence();
@@ -518,214 +553,46 @@ auto qp_approx(const sArray_t<Array_view_5D_t> &sSigma_tskij,
 
 template<typename eri_t, typename corr_solver_t>
 void add_qpscf_vcorr(MBState &mb_state,
-                     const sArray_t<Array_view_3D_t> &sE_ska,
-                     const sArray_t<Array_view_4D_t> &sMO_skia,
                      double mu,
                      solvers::mb_solver_t<corr_solver_t> &mb_solver,
                      eri_t &eri,
                      const imag_axes_ft::IAFT &FT,
-                     qp_context_t &qp_context) {
+                     qp_params_t &qp_params) {
   using math::shm::make_shared_array;
 
-  auto& sVhf_skij = mb_state.sF_skij.value();
+  auto& sHeff_skij = mb_state.sHeff_skij.value();
+  auto& sMO_skia = mb_state.sMO_skia.value();
+  auto& sE_ska = mb_state.sE_ska.value();
   auto mpi = eri.mpi();
-  //auto comm = sVhf_skij.communicator();
-  //auto internode_comm = sVhf_skij.internode_comm();
-  //auto node_comm = sVhf_skij.node_comm();
-  auto [ns, nkpts, nbnd, nbnd2] = sVhf_skij.shape();
+  auto [ns, nkpts, nbnd, nbnd2] = sHeff_skij.shape();
   auto nt = FT.nt_f();
 
   mb_state.sSigma_tskij.emplace(make_shared_array<Array_view_5D_t>(*mpi, {nt, ns, nkpts, nbnd, nbnd}));
   mb_state.sG_tskij.emplace(make_shared_array<Array_view_5D_t>(*mpi, {nt, ns, nkpts, nbnd, nbnd}));
   update_G(mb_state.sG_tskij.value(), sMO_skia, sE_ska, mu, FT);
-  FT.check_leakage(mb_state.sG_tskij.value(), imag_axes_ft::fermi, "Green's function");
-  // screen interaction
+  FT.check_leakage(mb_state.sG_tskij.value(), imag_axes_ft::fermion, "Green's function");
+  
+  // compute screen interaction
   utils::check(mb_solver.scr_eri!=nullptr, "add_qpscf_vcorr: mb_solver.scr_eri == nullptr.");
   mb_solver.scr_eri->update_w(mb_state, eri, mb_solver.corr->iter());
-  // evaluate self-energy in the primary basis
+  
+  // compute dynamic self-energy in the primary basis
   mb_solver.corr->evaluate(mb_state, eri);
-  FT.check_leakage(mb_state.sSigma_tskij.value(), imag_axes_ft::fermi, "Self-energy");
-  mpi->comm.barrier();
+  FT.check_leakage(mb_state.sSigma_tskij.value(), imag_axes_ft::fermion, "Self-energy");
 
-  auto sVcorr_skij = qp_approx(mb_state.sSigma_tskij.value(),  sMO_skia, sE_ska, mu, FT, qp_context);
-  if (mpi->node_comm.root()) sVhf_skij.local() += sVcorr_skij.local();
+  // Add the correlation contribution to the QP Hamiltonian.
+  auto sVcorr_skij = qp_approx(mb_state.sSigma_tskij.value(),  sMO_skia, sE_ska, mu, FT, qp_params);
+  if (mpi->node_comm.root()) sHeff_skij.local() += sVcorr_skij.local();
   mpi->comm.barrier();
+ 
+  // deallocation
+  mb_state.dW_qtPQ.reset();
   mb_state.sG_tskij.reset();
   mb_state.sSigma_tskij.reset();
   mpi->comm.barrier();
 }
 
 
-
-template<typename function_t>
-auto qp_eqn_spectral(double Vhf, function_t &Sigma, long I, double mu, double eps0, double tol, double eta)
-  -> std::tuple<double, bool> {
-  double w_min = eps0 - mu - 1.0;
-  double w_max = eps0 - mu + 1.0;
-  //long Nw = (w_max - w_min) / tol1;
-  long Nw = 1000;
-
-  nda::array<ComplexType, 1> w_grid(Nw);
-  int i = 0;
-  std::transform(w_grid.begin(), w_grid.end(), w_grid.begin(),
-                 [&](const ComplexType & ) {return w_min + (i++)*(w_max - w_min)/(Nw - 1) + eta*1i;} );
-
-  nda::array<ComplexType, 1> SigmaR_w(Nw);
-  Sigma.evaluate(w_grid, SigmaR_w, I);
-
-  // estimates peak position
-  double Aw_max = 0.0;
-  long nmax = -1;
-  for (size_t n = 0; n < Nw; ++n) {
-    ComplexType Gw = 1.0 / (w_grid(n) + mu - Vhf - SigmaR_w(n));
-    if (std::abs(Gw.imag()) > Aw_max) {
-      nmax = n;
-      Aw_max = std::abs(Gw.imag());
-    }
-  }
-
-  // fine tune the peak within a given tol
-  auto Aw = [&](ComplexType w) {
-    return std::abs((1.0 / ( w + mu - Vhf - Sigma.evaluate(w, I) )).imag());
-  };
-  ComplexType eps_qp = w_grid(nmax);
-  ComplexType eps_qp_dw = eps_qp + tol;
-  double Aw_dw = Aw(eps_qp_dw);
-  if ( Aw_dw >= Aw_max) {
-    while (Aw_dw >= Aw_max) {
-      eps_qp = eps_qp_dw;
-      Aw_max = Aw_dw;
-      eps_qp_dw += tol;
-      Aw_dw = Aw(eps_qp_dw);
-    }
-  } else {
-    eps_qp_dw = eps_qp - tol;
-    Aw_dw = Aw(eps_qp_dw);
-    while (Aw_dw >= Aw_max) {
-      eps_qp = eps_qp_dw;
-      Aw_max = Aw_dw;
-      eps_qp_dw -= tol;
-      Aw_dw = Aw(eps_qp_dw);
-    }
-  }
-
-  if (nmax != -1) {
-    return std::make_tuple(eps_qp.real()+mu, true);
-  } else {
-    return std::make_tuple(eps0, false);
-  }
-}
-
-template<typename function_t>
-double qp_eqn_linearized(double Vhf, function_t &Sigma, long I, double mu, double eps_ks, double eta) {
-  double h = 1e-6;
-  double Sigma_ks = Sigma.evaluate(ComplexType(eps_ks-mu, eta), I).real();
-  double dSigma = (Sigma.evaluate(ComplexType(eps_ks-mu+h, eta), I).real() - Sigma_ks);
-  double Z = 1.0 / (1.0 - dSigma/h);
-
-  return Z * ( Vhf + Sigma_ks - (1 - 1.0/Z) * eps_ks );
-}
-
-template<typename function_t>
-auto qp_eqn_secant(double Vhf, function_t &Sigma, long I, double mu, double w0, int maxiter, double tol, double eta)
-  -> std::tuple<double, double, bool> {
-  auto qp_res = [&](ComplexType w) {
-    return (w - Vhf - Sigma.evaluate(w-mu, I)).real();
-  };
-
-  bool conv = false;
-  double p=0, p0, p1, q, q0, q1;
-  double eps = 1e-4;
-
-  p0 = w0;
-  p1 = (p0 >= 0)? w0 * (1 + eps) + eps : w0 * (1 + eps) - eps;
-  q0 = qp_res(ComplexType(p0, eta));
-  q1 = qp_res(ComplexType(p1, eta));
-
-  if (std::abs(q1) < std::abs(q0)) {
-    double tmp = p1;
-    p1 = p0;
-    p0 = tmp;
-
-    tmp = q1;
-    q1 = q0;
-    q0 = tmp;
-  }
-
-  for (long it = 0; it < maxiter; ++it) {
-    if (std::abs(q1) > std::abs(q0)) {
-      p = (-q0/q1 * p1 + p0) / (1 - q0/q1);
-    } else {
-      p = (-q1/q0 * p0 + p1) / (1 - q1/q0);
-    }
-
-    if (std::abs(p - p1) < tol) {
-      // TODO we should check res as well?
-      conv = true;
-      break;
-    }
-
-    p0 = p1;
-    q0 = q1;
-    p1 = p;
-    q1 = qp_res(ComplexType(p1, eta));
-  }
-
-  q = qp_res(ComplexType(p, eta));
-  return std::make_tuple(p, q, conv);
-}
-
-template<typename function_t>
-auto qp_eqn_bisection(double Vhf, function_t &Sigma, long I, double mu, double eps0, double tol, double eta)
-  -> std::tuple<double, double> {
-  auto qp_res = [&](ComplexType w) {
-    return (w - Vhf - Sigma.evaluate(w-mu, I)).real();
-  };
-
-  double eps1, eps2, eps_mid;
-  double eps = eps0;
-  double res = qp_res(ComplexType(eps0, eta));
-  double delta = 0.01;
-
-  app_log(6, "I = {0}, Vhf = {1:.12f}, Sigma = {2:.12f}, eps = {3:.12f}, res = {4:.12f}",
-          I, Vhf, Sigma.evaluate(ComplexType(eps0,eta), I).real(), eps, res);
-  if (std::abs(res) < tol) return std::make_tuple(eps, res);
-
-  if (res >= 0) {
-    eps2 = eps0;
-    eps1 = eps0 - delta;
-    double res1 = qp_res(ComplexType(eps1, eta));
-    while (res1 > 0) {
-      app_log(6, "I = {0}, eps = {1:.12f}, res = {2:.12f}", I, eps1, res1);
-      eps1 -= delta;
-      res1 = qp_res(ComplexType(eps1, eta));
-    }
-  } else {
-    eps1 = eps0;
-    eps2 = eps0 + delta;
-    double res2 = qp_res(ComplexType(eps2, eta));
-    while (res2 < 0) {
-      app_log(6, "I = {0}, eps = {1:.12f}, res = {2:.12f}", I, eps2, res2);
-      eps2 += delta;
-      res2 = qp_res(ComplexType(eps2, eta));
-    }
-  }
-  eps_mid = (eps1 + eps2) * 0.5;
-  res = qp_res(ComplexType(eps_mid, eta));
-  while (std::abs(res) > tol) {
-    app_log(6, "I = {0}, eps = {1:.12f}, res = {2:.12f}", I, eps_mid, res);
-    if (res >= 0) {
-      eps2 = eps_mid;
-    } else {
-      eps1 = eps_mid;
-    }
-    eps_mid = (eps1 + eps2) * 0.5;
-    res = qp_res(ComplexType(eps_mid, eta));
-  }
-  app_log(6, "I = {0}, eps = {1:.12f}, res = {2:.12f}", I, eps_mid, res);
-  eps = eps_mid;
-  return std::make_tuple(eps, res);
-}
 
 double compute_Nelec(double mu, const mf::MF &mf, const sArray_t<Array_view_3D_t> &sE_ski, double beta) {
   auto [ns, nkpts, nbnd] = sE_ski.shape();
@@ -748,62 +615,41 @@ double compute_Nelec(double mu, const mf::MF &mf, const sArray_t<Array_view_3D_t
 }
 
 template<typename X_t>
-double update_mu(double old_mu, const mf::MF &mf, const X_t &sE_ski, double beta, double mu_tol) {
+double update_mu(double old_mu, const mf::MF &mf, const X_t &sE_ski, double beta,
+                 double mu_tol, std::string mu_update_alg) {
   double nel_target = mf.nelec();
-  double nel, mu1, mu2, mu_mid;
-  double mu = old_mu;
   double delta = 0.2;
-  nel = compute_Nelec(old_mu, mf, sE_ski, beta);
-  app_log(2, "Initial chemical potential (mu) = {}, nelec = {}", old_mu, nel);
+  auto eval_f = [&](double mu) {
+    return compute_Nelec(mu, mf, sE_ski, beta) - nel_target;
+  };
+  double nel_old = compute_Nelec(old_mu, mf, sE_ski, beta);
+  app_log(2, "Initial chemical potential (mu) = {}, nelec = {}", old_mu, nel_old);
 
-  if (std::abs(nel - nel_target) < mu_tol) {
+  if (mu_update_alg == "bisection") {
+    auto [mu, f_mu] = detail::update_mu_bisection_impl(old_mu, mu_tol, delta, eval_f);
+    double nel = f_mu + nel_target;
+    app_log(2, "Chemical potential found (mu) = {} a.u.", mu);
+    app_log(2, "Number of electrons per unit cell = {}", nel);
+    return mu;
+  } else if (mu_update_alg == "midpoint") {
+    auto [mu, f_mu, mu_left, mu_right] =
+        detail::update_mu_midpoint_impl(old_mu, mu_tol, delta, eval_f);
+    double nel = f_mu + nel_target;
+    app_log(2, "Chemical potential bounds found (mu_left, mu_right) = ({}, {}) a.u.",
+            mu_left, mu_right);
     app_log(2, "Chemical potential found (mu) = {} a.u.", mu);
     app_log(2, "Number of electrons per unit cell = {}", nel);
     return mu;
   }
-
-  if (nel >= nel_target) {
-    mu2 = old_mu;
-    mu1 = old_mu - delta;
-    double nel1 = compute_Nelec(mu1, mf, sE_ski, beta);
-    while (nel1 > nel_target) {
-      mu1 -= delta;
-      nel1 = compute_Nelec(mu1, mf, sE_ski, beta);
-    }
-    app_log(4, "mu = {}, nelec = {}", mu1, nel1);
-  } else {
-    mu1 = old_mu;
-    mu2 = old_mu + delta;
-    double nel2 = compute_Nelec(mu2, mf, sE_ski, beta);
-    while (nel2 < nel_target) {
-      mu2 += delta;
-      nel2 = compute_Nelec(mu2, mf, sE_ski, beta);
-    }
-    app_log(4, "mu = {}, nelec = {}", mu2, nel2);
-  }
-  mu_mid = (mu1 + mu2) * 0.5;
-  nel = compute_Nelec(mu_mid, mf, sE_ski, beta);
-  app_log(4, "mu = {}, nelec = {}", mu_mid, nel);
-
-  while (std::abs(nel - nel_target) >= mu_tol) {
-    if (nel >= nel_target) {
-      mu2 = mu_mid;
-    } else {
-      mu1 = mu_mid;
-    }
-    mu_mid = (mu1 + mu2) * 0.5;
-    nel = compute_Nelec(mu_mid, mf, sE_ski, beta);
-    app_log(4, "mu = {}, nelec = {}", mu_mid, nel);
-  }
-  mu = mu_mid;
-  app_log(2, "Chemical potential found (mu) = {} a.u.", mu);
-  app_log(2, "Number of electrons per unit cell = {}", nel);
-  return mu;
+  utils::check(false,
+               "qp_scf_common.cpp::update_mu: unknown mu update algorithm {}.",
+               mu_update_alg);
+  return old_mu;
 }
 
 template<typename comm_t, typename X_t>
 double solve_iterative(utils::mpi_context_t<comm_t> &context, iter_scf::iter_scf_t& iter_solver,
-                       long it, std::string h5_prefix, X_t &sHeff_skij) {
+                       long it, std::string h5_prefix, X_t &sHeff_skij, const X_t &sS_skij) {
   double conv = 0;
   if (it == 1) {
     // Just check changes w.r.t. mf
@@ -832,6 +678,11 @@ double solve_iterative(utils::mpi_context_t<comm_t> &context, iter_scf::iter_scf
       conv =  std::abs((*max_iter));
     }
     context.node_comm.broadcast_n(&conv, 1, 0);
+    if (iter_solver.iter_alg() == iter_scf::DIIS and context.comm.root()) {
+      // Initialize DIIS solver at the root process since the solver currently doesn't support MPI
+      iter_solver.initialize(sHeff_skij.local(), sS_skij.local(), h5_prefix);
+    }
+    context.comm.barrier();
   } else {
     iter_solver.metadata_log();
     if (context.node_comm.root()) {
@@ -879,21 +730,13 @@ void write_mf_data(mf::MF &mf, const imag_axes_ft::IAFT &ft,
 
 /** Instantiation of public template **/
 
-template double update_mu(double, const mf::MF&, const sArray_t<Array_view_3D_t>&, double, double);
+template double update_mu(double, const mf::MF&, const sArray_t<Array_view_3D_t>&, double, double, std::string);
 
-template void add_evscf_vcorr<true>(MBState&, sArray_t<Array_view_3D_t>&,
-    const sArray_t<Array_view_4D_t>&, double, solvers::mb_solver_t<>&, thc_reader_t&, const imag_axes_ft::IAFT&, qp_context_t&);
-template void add_evscf_vcorr<true>(MBState&, sArray_t<Array_view_3D_t>&,
-    const sArray_t<Array_view_4D_t>&, double, solvers::mb_solver_t<>&, chol_reader_t&, const imag_axes_ft::IAFT&, qp_context_t&);
-template void add_evscf_vcorr<false>(MBState&, sArray_t<Array_view_3D_t>&,
-    const sArray_t<Array_view_4D_t>&, double, solvers::mb_solver_t<>&, thc_reader_t&, const imag_axes_ft::IAFT&, qp_context_t&);
-template void add_evscf_vcorr<false>(MBState&, sArray_t<Array_view_3D_t>&,
-    const sArray_t<Array_view_4D_t>&, double, solvers::mb_solver_t<>&, chol_reader_t&, const imag_axes_ft::IAFT&, qp_context_t&);
+template void add_evscf_vcorr(MBState&, double, solvers::mb_solver_t<>&, thc_reader_t&, const imag_axes_ft::IAFT&, qp_params_t&, bool);
+template void add_evscf_vcorr(MBState&, double, solvers::mb_solver_t<>&, chol_reader_t&, const imag_axes_ft::IAFT&, qp_params_t&, bool);
 
-template void add_qpscf_vcorr(MBState&, const sArray_t<Array_view_3D_t>&, const sArray_t<Array_view_4D_t>&,
-    double, solvers::mb_solver_t<>&, thc_reader_t&, const imag_axes_ft::IAFT&, qp_context_t&);
-template void add_qpscf_vcorr(MBState&, const sArray_t<Array_view_3D_t>&, const sArray_t<Array_view_4D_t>&,
-    double, solvers::mb_solver_t<>&, chol_reader_t&, const imag_axes_ft::IAFT&, qp_context_t&);
+template void add_qpscf_vcorr(MBState&, double, solvers::mb_solver_t<>&, thc_reader_t&, const imag_axes_ft::IAFT&, qp_params_t&);
+template void add_qpscf_vcorr(MBState&, double, solvers::mb_solver_t<>&, chol_reader_t&, const imag_axes_ft::IAFT&, qp_params_t&);
 
 template double qp_eqn_linearized(double, analyt_cont::AC_t &, long, double, double, double);
 template std::tuple<double,double> qp_eqn_bisection(double, analyt_cont::AC_t &, long, double, double, double, double);
@@ -901,7 +744,7 @@ template std::tuple<double,double,bool> qp_eqn_secant(double, analyt_cont::AC_t 
 template std::tuple<double,bool> qp_eqn_spectral(double, analyt_cont::AC_t &, long, double, double, double, double);
 
 template double solve_iterative(utils::mpi_context_t<mpi3::communicator>&, iter_scf::iter_scf_t&, long, std::string,
-                                sArray_t<Array_view_4D_t>&);
+                                sArray_t<Array_view_4D_t>&, const sArray_t<Array_view_4D_t>&);
 template void compute_G_from_mf(h5::group, imag_axes_ft::IAFT&, sArray_t<nda::array_view<ComplexType, 5>>&);
 
 } // methods

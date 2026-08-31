@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 
 #include "mpi3/communicator.hpp"
 #include "nda/nda.hpp"
@@ -9,7 +30,6 @@
 
 #include "mean_field/MF.hpp"
 #include "methods/ERI/detail/concepts.hpp"
-#include "methods/ERI/div_treatment_e.hpp"
 
 #include "methods/HF/hf_t.h"
 
@@ -28,11 +48,11 @@ namespace methods {
      *   myhf.evaluate(F_chol, Dm, cholesky_eri); // Cholesky-HF
      *
      */
-    hf_t::hf_t(div_treatment_e div): _div_treatment(div), _Timer() {
-      if (_div_treatment!=ignore_g0 and _div_treatment!=gygi) {
+    hf_t::hf_t(std::string div): _div_treatment(div), _Timer() {
+      if (_div_treatment!="ignore_g0" and _div_treatment!="gygi") {
         app_log(2, " hf_t: div_treatment only supports \"ignore_g0\" and \"gygi\". "
                    " coqui will take div_treatment = \"gygi\" instead.");
-        _div_treatment = gygi;
+        _div_treatment = "gygi";
       }
     }
 
@@ -46,12 +66,12 @@ namespace methods {
                          const nda::MemoryArrayOfRank<4> auto &S_skij,
                          double madelung) {
 
-      if (_div_treatment == ignore_g0) {
+      if (_div_treatment == "ignore_g0") {
         app_log(1, "No finite-size correction to the non-local HF exchange potential.\n");
         return;
       }
       app_log(1, "  Treatment of long-wavelength divergence in the non-local HF exchange potential : {}\n",
-              div_enum_to_string(_div_treatment));
+              _div_treatment);
 
       decltype(nda::range::all) all;
       long ns = Dm_skij.extent(0);
@@ -101,8 +121,13 @@ namespace methods {
       app_log(2, "    Total:                 {0:.3f} sec", _Timer.elapsed("TOTAL"));
       app_log(2, "    Allocations:           {0:.3f} sec", _Timer.elapsed("ALLOC"));
       app_log(2, "    Coulomb:               {0:.3f} sec", _Timer.elapsed("COULOMB"));
-      app_log(2, "    Exchange:              {0:.3f} sec\n", _Timer.elapsed("EXCHANGE"));
-    }
+      app_log(2, "    Exchange:              {0:.3f} sec", _Timer.elapsed("EXCHANGE"));
+      app_log(2, "    Cholesky integrals IO: {0:.3f} sec", _Timer.elapsed("CHOL"));
+      app_log(2, "    Cholesky J IO:         {0:.3f} sec", _Timer.elapsed("CHOL J"));
+      app_log(2, "    Cholesky K IO:         {0:.3f} sec", _Timer.elapsed("CHOL K"));
+      app_log(2, "    J BLAS:                {0:.3f} sec", _Timer.elapsed("J BLAS"));
+      app_log(2, "    K BLAS:                {0:.3f} sec\n", _Timer.elapsed("K BLAS"));
+   }
 
     // instantiate templates
     using Arr4D = nda::array<ComplexType, 4>;

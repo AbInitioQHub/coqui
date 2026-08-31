@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef COQUI_PPROC_T_HPP
 #define COQUI_PPROC_T_HPP
 
@@ -17,6 +38,8 @@
 #include "utilities/mpi_context.h"
 #include "numerics/ac/AC_t.hpp"
 #include "numerics/imag_axes_ft/iaft_utils.hpp"
+#include "methods/SCF/qp_params_t.h"
+#include "methods/SCF/qp_solvers.hpp"
 
 namespace methods {
   namespace mpi3 = boost::mpi3;
@@ -57,16 +80,28 @@ namespace methods {
                                bool translate_home_cell=false);
     /**
      * Wannier interpolation plus analytical continuation for spectral functions on the provided k-points.
+     * Also computes quasiparticle energies on the IBZ k-mesh from the dynamic self-energy and
+     * Wannier-interpolates them along the k-path.
      * (Only for dyson-type calculation)
      * @param mf - [INPUT] a mean-field instance for all the metadata of the system
      * @param project_file - [INPUT] a h5 file which stores the projection matrices and the target k-points
      * @param ac_params - [INPUT] parameters for ac
+     * @param qp_params - [INPUT] parameters for quasiparticle equation solver
      */
-    void spectral_interpolation(mf::MF &mf, ptree const& pt, std::string project_file, analyt_cont::ac_context_t &ac_params,
+    void spectral_interpolation(mf::MF &mf, ptree const& pt, std::string project_file,
+                                analyt_cont::ac_context_t &ac_params,
                                 std::string grp_name="scf", long iter=-1, bool translate_home_cell=false);
 
     void local_density_of_state(mf::MF &mf, std::string project_file, analyt_cont::ac_context_t &ac_params,
                                 std::string grp_name="scf", long iter=-1, bool translate_home_cell=false);
+            
+    /**
+     * Compute quasiparticle energies on the IBZ k-mesh by solving the QP equation
+     * E_a = F_aa + Re[Sigma_aa(E_a - mu)] for each (spin, k, band).
+     * Writes E_ska to {grp_name}/iter{N}/qp_approx/E_ska in the checkpoint file.
+     */
+    void compute_qp_on_ibz_kmesh(mf::MF &mf, const qp_params_t &qp_params, 
+                                std::string grp_name="scf", long iter=-1);
 
   private:
     template<nda::ArrayOfRank<4> local_Array_4D_t, typename communicator_t>

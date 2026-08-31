@@ -1,3 +1,24 @@
+/**
+ * ==========================================================================
+ * CoQuí: Correlated Quantum ínterface
+ *
+ * Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ * ==========================================================================
+ */
+
+
 #ifndef COQUI_COM_DIIS_RESIDUAL_H
 #define COQUI_COM_DIIS_RESIDUAL_H
 
@@ -17,10 +38,9 @@ protected:
     bool com_initialized = false; // full initialization flag
 
     const imag_axes_ft::IAFT *FT = nullptr;
-    Array_4D _S; // Overlap matrix
+    Array_4D _S;  // Overlap matrix
     Array_4D _H0; // Non-interacting Hamiltonian
-
-    double mu; // Chemical potential
+    double mu;    // Chemical potential
 
     Array_5D G_incoming; 
     long iter = -1;
@@ -60,14 +80,22 @@ public:
         x_vsp = x_space;
     }
 
-    virtual void initialize(opt_state<FockSigma> * state_, const Array_4D& S, const Array_4D& H0, 
-    const imag_axes_ft::IAFT *FT_, std::string mbpt_output_){
+    /**
+     * Initialization of the commutator residual
+     * @param state_         - [INPUT] Pointer to the current state
+     * @param S              - [INPUT] Overlap matrix
+     * @param H0             - [INPUT] Non-interacting Hamiltonian
+     * @param FT_            - [INPUT] Imaginary frequency FT axes
+     * @param mbpt_output_   - [INPUT] HDF5 output prefix for reading G and mu
+     */
+    void initialize(opt_state<FockSigma> *current_state_, const Array_4D& S, const Array_4D& H0,
+                    const imag_axes_ft::IAFT *FT_, std::string mbpt_output_) {
         if(!com_initialized) {
-            state = state_;
+            current_state = current_state_;
             FT = FT_;
             _S = S;
             _H0 = H0;
-             mbpt_output= mbpt_output_;
+            mbpt_output= mbpt_output_;
         }
     
         is_initialized = true;
@@ -78,14 +106,14 @@ public:
 
     // Commutator residual
     // This may not be the most memory-efficient implementation...
-    virtual bool get_diis_residual(FockSigma& res) {
+    bool get_diis_residual(FockSigma& res) override {
         utils::check(com_initialized, "DIIS commutator residual is not initialized");
             upload_g_mu(); // TODO if it hasn't been supplied externally
             // Warning! Sigma here is in tau!
-            FockSigma x_last = state->get();
+            FockSigma x_last = current_state->get();
 
             Array_5D C_t;
-            commutator_t(FT, C_t, G_incoming, x_last, mu, _S, _H0);
+            commutator_t(C_t, FT, G_incoming, x_last, mu, _S, _H0);
 
             auto Fz = x_last.get_fock();
             Fz() = 0;
