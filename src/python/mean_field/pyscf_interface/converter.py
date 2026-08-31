@@ -21,7 +21,7 @@ limitations under the License.
 import os
 from functools import reduce
 import numpy as np
-import h5._h5py as h5
+import h5
 
 from pyscf import lib
 from pyscf.pbc.df import ft_ao
@@ -128,41 +128,39 @@ def dump_to_h5(mf, mo=False, outdir='./', prefix='pyscf', nbnd_out=None):
   if nbnd_out is None:
     nbnd_out = nbnd
 
-  f = h5.File(filename, 'w')
-  g = h5.Group(f)
+  with h5.HDFArchive(filename, 'w') as g:
+    g['nkpts'] = np.int32(nkpts)
+    g['nbnd'] = np.int32(nbnd_out)
+    g['nspin'] = np.int32(nspin)
+    g['nspin_in_basis'] = np.int32(nspin_in_basis)
+    g['natoms'] = np.int32(natoms)
+    g['species'] = species
+    g['nspecies'] = np.int32(nspecies)
+    g['nelec'] = np.float64(mf.cell.nelectron)
+    g['at_ids'] = charges.astype(np.int32)
+    g['at_pos'] = coords
+    g['latt'] = mf.cell.lattice_vectors()
+    g['recv'] = b  # a*b = 2*pi
+    g['kp_grid'] = kp_grid.astype(np.int32)
+    g['kpts'] = mf.kpts  # in absolute unit
+    g['k_weight'] = np.ones(len(mf.kpts), dtype=float)/len(mf.kpts)
+    g['madelung'] = tools.pbc.madelung(mf.cell, mf.kpts)
+    g['enuc'] = mf.cell.energy_nuc()
 
-  h5.h5_write(g, 'nkpts', np.int32(nkpts))
-  h5.h5_write(g, 'nbnd', np.int32(nbnd_out))
-  h5.h5_write(g, 'nspin', np.int32(nspin))
-  h5.h5_write(g, 'nspin_in_basis', np.int32(nspin_in_basis))
-  h5.h5_write(g, 'natoms', np.int32(natoms))
-  h5.h5_write(g, 'species', species)
-  h5.h5_write(g, 'nspecies', np.int32(nspecies))
-  h5.h5_write(g, 'nelec', np.float64(mf.cell.nelectron) )
-  h5.h5_write(g, 'at_ids', charges.astype(np.int32))
-  h5.h5_write(g, 'at_pos', coords)
-  h5.h5_write(g, 'latt', mf.cell.lattice_vectors() )
-  h5.h5_write(g, 'recv', b) # a*b = 2*pi
-  h5.h5_write(g, 'kp_grid', kp_grid.astype(np.int32) )
-  h5.h5_write(g, 'kpts', mf.kpts) # in absolute unit
-  h5.h5_write(g, 'k_weight', np.ones(len(mf.kpts), dtype=float)/len(mf.kpts) )
-  h5.h5_write(g, 'madelung', tools.pbc.madelung(mf.cell, mf.kpts))
-  h5.h5_write(g, 'enuc', mf.cell.energy_nuc())
+    g.create_group("FFT")
+    fft_g = g["FFT"]
+    fft_g['ecut'] = ecut
+    fft_g['fft_mesh'] = mesh.astype(np.int32)
 
-  fft_g = g.create_group("FFT")
-  h5.h5_write(fft_g, 'ecut', ecut)
-  h5.h5_write(fft_g, 'fft_mesh', mesh.astype(np.int32))
-
-  scf_g = g.create_group("SCF")
-  h5.h5_write(scf_g, 'ovlp', S[:,:,:nbnd_out,:nbnd_out])
-  h5.h5_write(scf_g, 'H0', H0[:,:,:nbnd_out,:nbnd_out])
-  h5.h5_write(scf_g, 'Fock', F[:,:,:nbnd_out,:nbnd_out])
-  h5.h5_write(scf_g, 'dm', dm[:,:,:nbnd_out,:nbnd_out])
-  h5.h5_write(scf_g, 'mo_coeff', mo_coeff[:,:,:nbnd_out,:nbnd_out])
-  h5.h5_write(scf_g, 'eigval', mo_energy[:,:,:nbnd_out])
-  h5.h5_write(scf_g, 'occ', mo_occ[:,:,:nbnd_out])
-
-  del f
+    g.create_group("SCF")
+    scf_g = g["SCF"]
+    scf_g['ovlp'] = S[:,:,:nbnd_out,:nbnd_out]
+    scf_g['H0'] = H0[:,:,:nbnd_out,:nbnd_out]
+    scf_g['Fock'] = F[:,:,:nbnd_out,:nbnd_out]
+    scf_g['dm'] = dm[:,:,:nbnd_out,:nbnd_out]
+    scf_g['mo_coeff'] = mo_coeff[:,:,:nbnd_out,:nbnd_out]
+    scf_g['eigval'] = mo_energy[:,:,:nbnd_out]
+    scf_g['occ'] = mo_occ[:,:,:nbnd_out]
 
   dump_orb(outdir+"/Orb_fft", Orb_G[:,:nbnd_out])
 
@@ -268,40 +266,39 @@ def mol_dump_to_h5(mf, becke_grid_level=3, mo=False, outdir='./', prefix='pyscf'
   if nbnd_out is None:
     nbnd_out = nbnd
 
-  f = h5.File(filename, 'w')
-  g = h5.Group(f)
+  with h5.HDFArchive(filename, 'w') as g:
+    g['nkpts'] = np.int32(nkpts)
+    g['nbnd'] = np.int32(nbnd_out)
+    g['nspin'] = np.int32(nspin)
+    g['nspin_in_basis'] = np.int32(nspin_in_basis)
+    g['natoms'] = np.int32(natoms)
+    g['species'] = species
+    g['nspecies'] = np.int32(nspecies)
+    g['nelec'] = np.float64(mf.mol.nelectron)
+    g['at_ids'] = charges.astype(np.int32)
+    g['at_pos'] = coords
+    g['latt'] = np.eye(3, dtype=float)
+    g['recv'] = 2*np.pi*np.eye(3, dtype=float)  # a*b = 2*pi
+    g['kpts'] = np.zeros((1,3), dtype=float)  # in absolute unit
+    g['k_weight'] = np.ones(1, dtype=float)
+    g['madelung'] = 0.0
+    g['enuc'] = mf.mol.energy_nuc()
 
-  h5.h5_write(g, 'nkpts', np.int32(nkpts))
-  h5.h5_write(g, 'nbnd', np.int32(nbnd_out))
-  h5.h5_write(g, 'nspin', np.int32(nspin))
-  h5.h5_write(g, 'nspin_in_basis', np.int32(nspin_in_basis))
-  h5.h5_write(g, 'natoms', np.int32(natoms))
-  h5.h5_write(g, 'species', species)
-  h5.h5_write(g, 'nspecies', np.int32(nspecies))
-  h5.h5_write(g, 'nelec', np.float64(mf.mol.nelectron) )
-  h5.h5_write(g, 'at_ids', charges.astype(np.int32))
-  h5.h5_write(g, 'at_pos', coords)
-  h5.h5_write(g, 'latt', np.eye(3, dtype=float))
-  h5.h5_write(g, 'recv', 2*np.pi*np.eye(3, dtype=float)) # a*b = 2*pi
-  h5.h5_write(g, 'kpts', np.zeros((1,3), dtype=float)) # in absolute unit
-  h5.h5_write(g, 'k_weight', np.ones(1, dtype=float))
-  h5.h5_write(g, 'madelung', 0.0)
-  h5.h5_write(g, 'enuc', mf.mol.energy_nuc())
+    g.create_group("BECKE")
+    becke_g = g["BECKE"]
+    becke_g['r_grid'] = r_grid
+    becke_g['weight'] = becke_weights
+    becke_g['number_of_rpoints'] = np.int32(becke_weights.shape[0])
 
-  becke_g = g.create_group("BECKE")
-  h5.h5_write(becke_g, 'r_grid', r_grid)
-  h5.h5_write(becke_g, 'weight', becke_weights)
-  h5.h5_write(becke_g, 'number_of_rpoints', np.int32(becke_weights.shape[0]) )
-
-  scf_g = g.create_group("SCF")
-  h5.h5_write(scf_g, 'ovlp', S[:,:,:nbnd_out,:nbnd_out])
-  h5.h5_write(scf_g, 'H0', H0[:,:,:nbnd_out,:nbnd_out])
-  h5.h5_write(scf_g, 'Fock', F[:,:,:nbnd_out,:nbnd_out])
-  h5.h5_write(scf_g, 'dm', dm[:,:,:nbnd_out,:nbnd_out])
-  h5.h5_write(scf_g, 'mo_coeff', mo_coeff[:,:,:nbnd_out,:nbnd_out])
-  h5.h5_write(scf_g, 'eigval', mo_energy[:,:,:nbnd_out])
-  h5.h5_write(scf_g, 'occ', mo_occ[:,:,:nbnd_out])
-  del f
+    g.create_group("SCF")
+    scf_g = g["SCF"]
+    scf_g['ovlp'] = S[:,:,:nbnd_out,:nbnd_out]
+    scf_g['H0'] = H0[:,:,:nbnd_out,:nbnd_out]
+    scf_g['Fock'] = F[:,:,:nbnd_out,:nbnd_out]
+    scf_g['dm'] = dm[:,:,:nbnd_out,:nbnd_out]
+    scf_g['mo_coeff'] = mo_coeff[:,:,:nbnd_out,:nbnd_out]
+    scf_g['eigval'] = mo_energy[:,:,:nbnd_out]
+    scf_g['occ'] = mo_occ[:,:,:nbnd_out]
 
   dump_orb(outdir+"/Orb_r", Orb_r[:,:nbnd_out])
 
@@ -317,10 +314,8 @@ def dump_orb(outdir, Orb_G):
 
   nsk, nao, nG = Orb_G.shape[:3]
   for isk in range(nsk):
-    f = h5.File(outdir+"/Orb_"+str(isk)+".h5", 'w')
-    grp = h5.Group(f)
-    h5.h5_write(grp, "Orb_"+str(isk), Orb_G[isk])
-    del f
+    with h5.HDFArchive(outdir+"/Orb_"+str(isk)+".h5", 'w') as grp:
+      grp["Orb_"+str(isk)] = Orb_G[isk]
 
 
 

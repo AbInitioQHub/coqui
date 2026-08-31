@@ -449,6 +449,41 @@ template<typename comm_t, typename X_t, nda::ArrayOfRank<1> Array1D>
 double eval_corr_energy(comm_t& comm, const imag_axes_ft::IAFT &FT,
                         const X_t & G_shm, const X_t & Sigma_shm,
                         Array1D &k_weight);
+
+/**
+ * Evaluate the electronic grand potential from the Luttinger-Ward functional 
+ * and the derived thermodynamic properties (Helmholtz free energy, entropy, 
+ * electron number) using a given Dyson-SCF solution: 
+ *
+ *     Omega = Phi[G] - Tr[Sigma G] - Tr ln(-G0) - Tr ln(1 - G0 Sigma) , 
+ *
+ * Derived quantities (spin degeneracy and k-weights included throughout):
+ *
+ *     Helmholtz free energy  A = Omega + mu N , 
+ *     entropy                S = beta (E - A) ,  
+ *
+ * where N is the electron number and E is the total electronic energy.
+ *
+ * @param comm           - [INPUT] communicator the (is, ik) and frequency loops are distributed over
+ * @param dyson          - [INPUT] dyson object (provides MF, IAFT, H0, S, spectra)
+ * @param sF_skij        - [INPUT] Hartree-Fock potential (see F_has_H0)
+ * @param sSigma_tskij   - [INPUT] dynamic self-energy in imaginary time
+ * @param elec_energies  - [INPUT] electronic energy contributions:
+ *                                 [0] one-electron (H0), [1] Hartree-Fock,
+ *                                 [2] correlation, [3] total
+ * @param Phi_dynamical  - [INPUT] dynamical part of the Luttinger-Ward functional Phi
+ * @param mu             - [INPUT] chemical potential
+ * @param F_has_H0       - [INPUT] whether sF_skij already includes the non-interacting
+ *                                Hamiltonian H0; if false, H0 is added internally
+ * @return - thermodynamic observables (Omega, A, S, N)
+ */
+template<typename comm_t, typename dyson_type, typename X_t, typename Xt_t>
+auto eval_thermodynamic_properties(comm_t& comm, dyson_type &dyson, 
+                                   const X_t &sF_skij, const Xt_t &sSigma_tskij, 
+                                   const std::vector<double> &elec_energies, double Phi_dynamical, 
+                                   double mu, bool F_has_H0)
+-> thermodynamics_t;
+
 template<typename X_t, nda::ArrayOfRank<1> Array1D>
 auto eval_hf_energy(const X_t &sDm_skij, const X_t &sF_skij, const X_t &sH0_skij,
                     Array1D &k_weight, bool F_has_H0=true)

@@ -20,7 +20,7 @@ limitations under the License.
 
 import os
 import numpy as np
-import h5._h5py as h5
+import h5
 
 from pyscf import lib
 from pyscf.pbc import gto, df
@@ -121,37 +121,37 @@ def gdf_dump_to_h5(gdf, mo=False, outdir=None, qpts=None, qk_to_kmq=None):
     if not os.path.exists(outdir):
         os.system("mkdir " + outdir)
     filename = outdir + '/chol_info.h5'
-    f = h5.File(filename, 'w')
-    g = h5.Group(f).create_group("Interaction")
-    h5.h5_write(g, 'Np', np.int32(Naux))
-    h5.h5_write(g, "tol", -1.0)
-    h5.h5_write(g, 'nkpts', np.int32(nkpts))
-    h5.h5_write(g, 'nbnd', np.int32(nbnd))
-    h5.h5_write(g, 'kpts', gdf.kpts)
-    h5.h5_write(g, 'qpts', qpts)
-    h5.h5_write(g, 'qk_to_kmq', qk_to_kmq.astype(np.int32))
-    del f
+    with h5.HDFArchive(filename, 'w') as root:
+        root.create_group("Interaction")
+        g = root["Interaction"]
+        g['Np'] = np.int32(Naux)
+        g["tol"] = -1.0
+        g['nkpts'] = np.int32(nkpts)
+        g['nbnd'] = np.int32(nbnd)
+        g['kpts'] = gdf.kpts
+        g['qpts'] = qpts
+        g['qk_to_kmq'] = qk_to_kmq.astype(np.int32)
 
     # loop over q-points: extract V(k, k-q)(Q, i, j)
     V_Qskij = np.zeros((Naux, 1, nkpts, nbnd, nbnd), dtype=complex)
     for iq in range(nqpts):
         filename = outdir + "/Vq{}.h5".format(iq)
-        f = h5.File(filename, 'w')
-        g = h5.Group(f).create_group("Interaction")
-        h5.h5_write(g, "Np", np.int32(Naux))
-        for ik in range(nkpts):
-            ikk = qk_to_kmq[iq, ik]
-            k, kmq = gdf.kpts[ik], gdf.kpts[ikk]
-            Q_loc = 0
-            for bufferR, bufferI, sign in gdf.sr_loop((k, kmq), compact=False):
-                X = (bufferR + bufferI*1j)
-                X = X.reshape(-1, nbnd, nbnd)
-                Qsize = X.shape[0]
-                V_Qskij[Q_loc:Q_loc+Qsize,0,ik] = X
-                Q_loc += Qsize
-        h5.h5_write(g, 'Vq{}'.format(iq), V_Qskij)
+        with h5.HDFArchive(filename, 'w') as root:
+            root.create_group("Interaction")
+            g = root["Interaction"]
+            g["Np"] = np.int32(Naux)
+            for ik in range(nkpts):
+                ikk = qk_to_kmq[iq, ik]
+                k, kmq = gdf.kpts[ik], gdf.kpts[ikk]
+                Q_loc = 0
+                for bufferR, bufferI, sign in gdf.sr_loop((k, kmq), compact=False):
+                    X = (bufferR + bufferI*1j)
+                    X = X.reshape(-1, nbnd, nbnd)
+                    Qsize = X.shape[0]
+                    V_Qskij[Q_loc:Q_loc+Qsize,0,ik] = X
+                    Q_loc += Qsize
+            g['Vq{}'.format(iq)] = V_Qskij
         V_Qskij[:] = 0.0
-        del f
 
 
 def mol_gdf_dump_to_h5(gdf, mo=False, outdir=None):
@@ -177,35 +177,35 @@ def mol_gdf_dump_to_h5(gdf, mo=False, outdir=None):
     if not os.path.exists(outdir):
         os.system("mkdir " + outdir)
     filename = outdir + '/chol_info.h5'
-    f = h5.File(filename, 'w')
-    g = h5.Group(f).create_group("Interaction")
-    h5.h5_write(g, 'Np', np.int32(Naux))
-    h5.h5_write(g, "tol", -1.0)
-    h5.h5_write(g, 'nkpts', np.int32(nkpts))
-    h5.h5_write(g, 'nbnd', np.int32(nbnd))
-    h5.h5_write(g, 'kpts', kpts)
-    h5.h5_write(g, 'qpts', qpts)
-    h5.h5_write(g, 'qk_to_kmq', qk_to_kmq.astype(np.int32))
-    del f
+    with h5.HDFArchive(filename, 'w') as root:
+        root.create_group("Interaction")
+        g = root["Interaction"]
+        g['Np'] = np.int32(Naux)
+        g["tol"] = -1.0
+        g['nkpts'] = np.int32(nkpts)
+        g['nbnd'] = np.int32(nbnd)
+        g['kpts'] = kpts
+        g['qpts'] = qpts
+        g['qk_to_kmq'] = qk_to_kmq.astype(np.int32)
 
     # loop over q-points: extract V(k, k-q)(Q, i, j)
     V_Qskij = np.zeros((Naux, 1, nkpts, nbnd, nbnd), dtype=complex)
     filename = outdir + "/Vq0.h5"
-    f = h5.File(filename, 'w')
-    g = h5.Group(f).create_group("Interaction")
-    h5.h5_write(g, "Np", np.int32(Naux))
-    Q_loc = 0
-    for L in gdf.loop():
-        # L = (Naux, nbnd*(nbnd+1)//2)
-        print("Shape of eri = ", L.shape)
-        L_unpack = lib.unpack_tril(L, lib.SYMMETRIC, axis=1)
-        print("Shape of unpack eri = ", L_unpack.shape)
-        Q_size = L_unpack.shape[0]
-        V_Qskij[Q_loc:Q_loc+Q_size,0,0] = L_unpack
-        Q_loc += Q_size
-    h5.h5_write(g, 'Vq0', V_Qskij)
+    with h5.HDFArchive(filename, 'w') as root:
+        root.create_group("Interaction")
+        g = root["Interaction"]
+        g["Np"] = np.int32(Naux)
+        Q_loc = 0
+        for L in gdf.loop():
+            # L = (Naux, nbnd*(nbnd+1)//2)
+            print("Shape of eri = ", L.shape)
+            L_unpack = lib.unpack_tril(L, lib.SYMMETRIC, axis=1)
+            print("Shape of unpack eri = ", L_unpack.shape)
+            Q_size = L_unpack.shape[0]
+            V_Qskij[Q_loc:Q_loc+Q_size,0,0] = L_unpack
+            Q_loc += Q_size
+        g['Vq0'] = V_Qskij
     V_Qskij[:] = 0.0
-    del f
 
 
 
