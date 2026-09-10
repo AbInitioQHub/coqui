@@ -568,6 +568,10 @@ if(ENABLE_DLR)
     set(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT FALSE)
   endif()
 
+  # Allow a user-provided cppdlr source tree
+  if(DEFINED CPPDLR)
+    set(FETCHCONTENT_SOURCE_DIR_CPPDLR ${CPPDLR})
+  endif()
   FetchContent_Declare(
       cppdlr
       GIT_REPOSITORY https://github.com/flatironinstitute/cppdlr.git
