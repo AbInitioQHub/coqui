@@ -216,6 +216,14 @@ class _IAFTIRAdapter(object):
         h5_grp['imaginary_fourier_transform']['eps'] = self.eps
         h5_grp['imaginary_fourier_transform']['basis'] = "ir"
 
+        iaft_grp = h5_grp['imaginary_fourier_transform']
+        iaft_grp.create_group('tau_mesh')
+        iaft_grp['tau_mesh']['fermion'] = self.tau_mesh('f', rel_notation=True)
+        iaft_grp['tau_mesh']['boson'] = self.tau_mesh('b', rel_notation=True)
+        iaft_grp.create_group('iwn_mesh')
+        iaft_grp['iwn_mesh']['fermion'] = self.wn_mesh('f')
+        iaft_grp['iwn_mesh']['boson'] = self.wn_mesh('b')
+
     def __str__(self):
         return ("Mesh details on the imaginary axis\n"
                 "----------------------------------\n"

@@ -265,3 +265,68 @@ def test_tau_notation(basis):
     assert np.allclose(Dm_abs, Dm_rel, atol=1e-12)
 
 
+@pytest.mark.parametrize("basis", [
+    ("dlr"),
+    ("ir"),
+])
+def test_iaft_mesh_roundtrip_through_checkpoint(basis):
+    """save() must record the meshes in exactly the layout and conventions
+    chkpt_utils.cpp uses - tau on the rescaled [-1, 1] axis, wn as the CoQui odd/even
+    integer index - so that both the C++ read_iaft and from_coqui_chkpt can validate a
+    rebuilt grid against them. A checkpoint we just wrote must then load back cleanly."""
+    iaft = IAFT(beta=5.0, wmax=10.0, prec="high", basis=basis, verbose=False)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        chkpt = os.path.join(tmpdir, "iaft_mesh.h5")
+        with HDFArchive(chkpt, 'w') as ar:
+            iaft.save(ar)
+
+        with HDFArchive(chkpt, 'r') as ar:
+            grp = ar['imaginary_fourier_transform']
+            np.testing.assert_allclose(grp['tau_mesh']['fermion'],
+                                       iaft.tau_mesh('f', rel_notation=True))
+            np.testing.assert_allclose(grp['tau_mesh']['boson'],
+                                       iaft.tau_mesh('b', rel_notation=True))
+            np.testing.assert_array_equal(grp['iwn_mesh']['fermion'], iaft.wn_mesh('f'))
+            np.testing.assert_array_equal(grp['iwn_mesh']['boson'], iaft.wn_mesh('b'))
+
+        # the grid validation in from_coqui_chkpt must accept what save() just wrote
+        restored = IAFT.from_coqui_chkpt(chkpt, verbose=False)
+        assert restored == iaft
+
+
+def test_from_coqui_chkpt_rejects_mismatched_grid():
+    """A checkpoint whose stored mesh disagrees with the grid rebuilt from its own
+    scalar metadata cannot be reinterpreted on that grid, so the load must fail loudly
+    instead of silently handing back an IAFT on the wrong nodes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        chkpt = os.path.join(tmpdir, "iaft_bad_mesh.h5")
+        with HDFArchive(chkpt, 'w') as ar:
+            ar.create_group('imaginary_fourier_transform')
+            grp = ar['imaginary_fourier_transform']
+            grp['beta'] = 5.0
+            grp['wmax'] = 10.0
+            grp['prec'] = 'high'
+            grp['basis'] = 'dlr'
+            grp.create_group('tau_mesh')
+            grp['tau_mesh']['fermion'] = np.array([-1.0, 0.0, 1.0])
+            grp['tau_mesh']['boson'] = np.array([-1.0, 0.0, 1.0])
+
+        with pytest.raises(ValueError, match="tau_mesh"):
+            IAFT.from_coqui_chkpt(chkpt, verbose=False)
+
+
+def test_from_coqui_chkpt_without_meshes_still_loads():
+    """Old checkpoints that do not contain the meshes must still load."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        chkpt = os.path.join(tmpdir, "iaft_no_mesh.h5")
+        with HDFArchive(chkpt, 'w') as ar:
+            ar.create_group('imaginary_fourier_transform')
+            grp = ar['imaginary_fourier_transform']
+            grp['beta'] = 5.0
+            grp['wmax'] = 10.0
+            grp['prec'] = 'high'
+            grp['basis'] = 'dlr'
+
+        restored = IAFT.from_coqui_chkpt(chkpt, verbose=False)
+        assert restored.beta == pytest.approx(5.0)
