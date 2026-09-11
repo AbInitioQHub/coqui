@@ -375,6 +375,35 @@ if(ENABLE_SPDLOG)
 endif()
 
 ######################################################################
+# Python, c2py and clair for pybinding
+#
+# Fetched before nda and the other dependencies so that they all reuse this
+# single, self-consistent c2py target instead of resolving one of their own.
+######################################################################
+if(COQUI_PYTHON_SUPPORT)
+  find_package(Python COMPONENTS Interpreter Development NumPy)
+
+  if(DEFINED C2PY)
+    set(FETCHCONTENT_SOURCE_DIR_C2PY ${C2PY})
+  endif()
+  FetchContent_Declare(
+    c2py
+    GIT_REPOSITORY https://github.com/flatironinstitute/c2py
+    GIT_TAG        unstable
+    EXCLUDE_FROM_ALL
+  )
+  if(NOT TARGET c2py)
+    FetchContent_MakeAvailable(c2py)
+  else()
+    message(STATUS "Reusing c2py target already provided by other dependency")
+  endif()
+
+  if (COQUI_UPDATE_PYTHON_BINDINGS)
+    find_program(clair-c2py clair-c2py REQUIRED)
+  endif()
+endif()
+
+######################################################################
 # nda: a C++ library providing multi-dimensional array classes
 ######################################################################
 if(DEFINED NDA) 
@@ -484,25 +513,6 @@ if(ENABLE_CPPTRACE)
   )
   FetchContent_MakeAvailable(cpptrace)
 endif(ENABLE_CPPTRACE)
-
-########################
-# Find Python, c2py and clair for pybinding
-########################
-if(COQUI_PYTHON_SUPPORT)
-  find_package(Python COMPONENTS Interpreter Development NumPy)
-  # Fetch the c2py library
-  FetchContent_Declare(
-    c2py
-    GIT_REPOSITORY https://github.com/flatironinstitute/c2py
-    GIT_TAG        unstable
-    EXCLUDE_FROM_ALL
-  )
-  FetchContent_MakeAvailable(c2py)
-
-  if (COQUI_UPDATE_PYTHON_BINDINGS)
-    find_program(clair-c2py clair-c2py REQUIRED)
-  endif()
-endif()
 
 ######################################################################
 # lab-cosmo sphericart 
