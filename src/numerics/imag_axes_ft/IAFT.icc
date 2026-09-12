@@ -25,6 +25,31 @@ void IAFT::tau_to_w(ndaArray_A &&X_ti, ndaArray_B &&X_wi, stats_e stats) const {
   }
 }
 
+template<nda::MemoryArray ndaArray_A_t, nda::MemoryArray ndaArray_B_t>
+void IAFT::tau_to_w(ndaArray_A_t &&X_ti, stats_e stats_A, ndaArray_B_t &&X_wi, stats_e stats_B) const {
+  if (stats_A == stats_B) {
+    tau_to_w(X_ti, X_wi, stats_A);
+  } else {
+    static_assert(nda::get_rank<ndaArray_A_t> == nda::get_rank<ndaArray_B_t>,
+                  "iaft::tau_to_w: incorrect rank of array X_wi and X_ti. ");
+
+    size_t nt = (stats_A == fermion)? nt_f() : nt_b();
+    size_t nw = (stats_B == fermion)? nw_f() : nw_b();
+    utils::check(X_ti.shape(0) == nt, "iaft::tau_to_w: incorrect dimension of nw for X_t; stats = {}", int(stats_A));
+    utils::check(X_wi.shape(0) == nw, "iaft::tau_to_w: incorrect dimension of nt for X_w; stats = {}", int(stats_B));
+
+    long dim1 = std::accumulate(X_ti.shape().begin()+1, X_ti.shape().end(), 1, std::multiplies<>{});
+    auto X_ti_2D = nda::reshape(X_ti, shape_t<2>{nt, dim1});
+    auto X_wi_2D = nda::reshape(X_wi, shape_t<2>{nw, dim1});
+
+    // t -> t other -> w
+    nda::matrix<ComplexType> TT(nw, nt);
+    TT = (stats_A == fermion)? Twt_bb() * Ttt_bf() : Twt_ff() * Ttt_fb();
+    nda::blas::gemm(TT, X_ti_2D, X_wi_2D);
+  }
+}
+
+
 template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::tau_to_w(ndaArray_A &&X_ti, ndaArray_B &&Xw_i, stats_e stats, size_t iw) const {
   static_assert(nda::get_rank<ndaArray_A>-1 == nda::get_rank<ndaArray_B>,
@@ -235,6 +260,37 @@ void IAFT::tau_to_beta(ndaArray_A &&A_ti, ndaArray_B &&A_beta_i) const {
   auto A_it_2D = nda::transpose(A_ti_2D);
   //(dim1) = (dim1,nt_f) * (nt_f)
   nda::blas::gemv(A_it_2D, T_beta_t_ff(), A_beta_i_1D);
+}
+
+/**
+ * Interpolation from bosonic sparse sampling nodes to tau = beta^{-} with particle-hole symmetry.
+ * This function is useful for Matsubara frequency summation: 1/beta \sum_{n} A(iwn) = -1.0 * A(tau=beta^{-})
+ * @param A_ti_pos - [INPUT] imaginary-time tensor on bosonic tau grid
+ * @param A_beta_i - [OUTPUT] imaginary-time tensor at tau = beta^{-}
+ */
+template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
+void IAFT::tau_to_beta_PHsym(ndaArray_A &&A_ti_pos, ndaArray_B &&A_beta_i) const {
+  static_assert(nda::get_rank<ndaArray_A>-1 == nda::get_rank<ndaArray_B>,
+                "iaft::tau_to_beta_PHsym: incorrect rank of array A_ti_pos and A_beta_i. ");
+
+  size_t nt_half = (nt_b()%2==0)? nt_b()/2 : nt_b()/2 + 1;
+  utils::check(A_ti_pos.shape(0) == nt_half, "iaft::tau_to_beta_PHsym: incorrect dimension of nt_half for A_ti_pos.");
+  long dim1 = std::accumulate(A_ti_pos.shape().begin()+1, A_ti_pos.shape().end(), 1, std::multiplies<>{});
+  utils::check(A_beta_i.size() == dim1, "iaft::tau_to_beta_PHsym: incorrect dimension for A_beta_i");
+
+  auto A_beta_i_1D = nda::reshape(A_beta_i, shape_t<1>{dim1});
+  nda::matrix_const_view<ComplexType> A_ti_pos_2D({nt_half, dim1}, A_ti_pos.data());
+  auto A_it_pos_2D = nda::transpose(A_ti_pos_2D);
+
+  nda::array<ComplexType, 1> T_beta_tau(nt_b());
+  nda::blas::gemv(nda::transpose(Ttt_fb()), T_beta_t_ff(), T_beta_tau);
+  nda::array<ComplexType, 1> T_beta_tau_pos(nt_half);
+  for (long it = 0; it < nt_half; ++it) {
+      long imt = nt_b() - it - 1;
+      T_beta_tau_pos(it) = (it == imt)? T_beta_tau(it) : T_beta_tau(it) + T_beta_tau(imt);
+  }
+  // (w,i) = (w,t) * (t,i)
+  nda::blas::gemv(A_it_pos_2D, T_beta_tau_pos, A_beta_i_1D);
 }
 
 /**
