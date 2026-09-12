@@ -191,8 +191,9 @@ inline std::string get_mf(const std::shared_ptr<utils::mpi_context_t<comm_t>> &m
  *
  * padding_factor accounts for what the eigenvalue spectrum does not capture: thermal and
  * correlation broadening extend the spectral weight beyond these ranges. f = 1.5 is an
- * empirical value: on our test systems (five materials, b/a 0.21-0.98, beta 100-1000,
- * one-shot G0W0) it reaches ~1e-10 Ha accuracy. 
+ * empirical value: on our test systems (five materials, beta 100-1000, one-shot G0W0) it
+ * saturates the accuracy of the imaginary-axis representation, ~1e-11 Ha on well-conditioned
+ * systems. Some systems show a ~1e-9 ceiling that belongs to the DLR grid potentially.
  *
  * Parameters:
  *   mf            : MF object whose eigval() is used.
