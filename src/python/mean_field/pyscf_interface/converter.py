@@ -2,7 +2,7 @@
 ==========================================================================
 CoQuí: Correlated Quantum ínterface
 
-Copyright (c) 2022-2026 Simons Foundation & The CoQuí developer team
+Copyright (c) 2022-2025 Simons Foundation & The CoQuí developer team
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,6 +29,7 @@ from pyscf.pbc import scf, dft, tools
 
 from pyscf import dft as mol_dft
 from pyscf import scf as mol_scf
+from pyscf import grad as mol_grad
 
 
 def dump_to_h5(mf, mo=False, outdir='./', prefix='pyscf', nbnd_out=None):
@@ -189,8 +190,11 @@ def mol_dump_to_h5(mf, becke_grid_level=3, mo=False, outdir='./', prefix='pyscf'
   filename = outdir + prefix + '.h5'
   print("# Dump the mean-field information from a pyscf calculation (HF/DFT) into {}".format(filename))
 
+  natoms  = mf.mol.natm
   nkpts, nbnd = 1, mf.mol.nao_nr()
+  nbnd_aux = mf.with_df.auxmol.nao_nr()
   if isinstance(mf, mol_scf.hf.RHF) or isinstance(mf, mol_dft.rks.RKS):
+    mf_grad = mol_grad.RHF(mf)
     nspin = 1
     nspin_in_basis = 1
     S = np.zeros((nspin, nkpts, nbnd, nbnd), dtype=complex)
@@ -200,11 +204,15 @@ def mol_dump_to_h5(mf, becke_grid_level=3, mo=False, outdir='./', prefix='pyscf'
     mo_coeff = np.zeros((nspin, nkpts, nbnd, nbnd), dtype=complex)
     mo_occ = np.zeros((nspin, nkpts, nbnd), dtype=float)
     mo_energy = np.zeros((nspin, nkpts, nbnd), dtype=float)
-
+    H0_grad = np.zeros((natoms, 3, nspin, nkpts, nbnd, nbnd), dtype=complex)
+    S_grad = np.zeros((natoms, 3, nspin, nkpts, nbnd, nbnd), dtype=complex)
     S[0,0], H0[0,0], dm[0,0] = mf.get_ovlp(), mf.get_hcore(), mf.make_rdm1()
     F[0,0] = mf.get_fock()
     mo_coeff[0,0], mo_occ[0,0], mo_energy[0,0] = np.asarray(mf.mo_coeff), np.asarray(mf.mo_occ), np.asarray(mf.mo_energy)
+    H0_grad[:, :, 0, 0] = get_H0_grad(mf_grad)
+    S_grad[:, :, 0, 0] = get_ovlp_grad(mf_grad)
   elif isinstance(mf, mol_scf.uhf.UHF) or isinstance(mf, mol_dft.uks.UKS):
+    mf_grad = mol_grad.UHF(mf)
     nspin = 2
     nspin_in_basis = 2 if mo else 1
     S = np.zeros((nspin, nkpts, nbnd, nbnd), dtype=complex)
@@ -214,12 +222,17 @@ def mol_dump_to_h5(mf, becke_grid_level=3, mo=False, outdir='./', prefix='pyscf'
     mo_coeff = np.zeros((nspin, nkpts, nbnd, nbnd), dtype=complex)
     mo_occ = np.zeros((nspin, nkpts, nbnd), dtype=float)
     mo_energy = np.zeros((nspin, nkpts, nbnd), dtype=float)
-
+    H0_grad = np.zeros((natoms, 3, nspin, nkpts, nbnd, nbnd), dtype=complex)
+    S_grad = np.zeros((natoms, 3, nspin, nkpts, nbnd, nbnd), dtype=complex)
     S[0,0], H0[0,0], dm[:,0] = mf.get_ovlp(), mf.get_hcore(), mf.make_rdm1()
     S[1] = S[0]
     H0[1] = H0[0]
     F[:,0] = mf.get_fock()
     mo_coeff[:,0], mo_occ[:,0], mo_energy[:,0] = np.asarray(mf.mo_coeff), np.asarray(mf.mo_occ), np.asarray(mf.mo_energy)
+    H0_grad[:, :, 0, 0] = get_H0_grad(mf_grad)
+    H0_grad[:, :, 1] = H0_grad[:, :, 0]
+    S_grad[:, :, 0, 0] = get_ovlp_grad(mf_grad)
+    S_grad[:, :, 1] = S_grad[:, :, 0]
   else:
     raise ValueError("Incorrect type of mf object.")
 
@@ -236,7 +249,7 @@ def mol_dump_to_h5(mf, becke_grid_level=3, mo=False, outdir='./', prefix='pyscf'
         diff = S[s, k] - np.eye(nbnd)
         orth_error = max(orth_error, np.max(np.abs(diff)))
     print("Maximum error of orthogonalization: {}".format(orth_error))
-  natoms  = mf.mol.natm
+
   species = np.asarray(mf.mol.elements)
   species = np.unique(species)
   nspecies = len(species)
@@ -263,12 +276,24 @@ def mol_dump_to_h5(mf, becke_grid_level=3, mo=False, outdir='./', prefix='pyscf'
     else:
       Orb_r[s] = Orb_ao.T
 
+
+  # Atomic orbitals slice by atom
+  slice = mf.mol.aoslice_by_atom()
+  bnd_slice = np.zeros((natoms, 2), dtype=int)
+  for a in range(natoms):
+      bnd_slice[a, :] = slice[a, 2:4]
+  slice = mf.with_df.auxmol.aoslice_by_atom()
+  bnd_slice_aux = np.zeros((natoms, 2), dtype=int)
+  for a in range(natoms):
+      bnd_slice_aux[a, :] = slice[a, 2:4]
+
   if nbnd_out is None:
     nbnd_out = nbnd
 
   with h5.HDFArchive(filename, 'w') as g:
     g['nkpts'] = np.int32(nkpts)
     g['nbnd'] = np.int32(nbnd_out)
+    g['nbnd_aux'] = np.int32(nbnd_aux)
     g['nspin'] = np.int32(nspin)
     g['nspin_in_basis'] = np.int32(nspin_in_basis)
     g['natoms'] = np.int32(natoms)
@@ -283,6 +308,9 @@ def mol_dump_to_h5(mf, becke_grid_level=3, mo=False, outdir='./', prefix='pyscf'
     g['k_weight'] = np.ones(1, dtype=float)
     g['madelung'] = 0.0
     g['enuc'] = mf.mol.energy_nuc()
+    g['grad_nuc'] = mf_grad.grad_nuc().astype(complex)
+    g['bnd_slice'] = bnd_slice
+    g['bnd_slice_aux'] = bnd_slice_aux
 
     g.create_group("BECKE")
     becke_g = g["BECKE"]
@@ -293,7 +321,9 @@ def mol_dump_to_h5(mf, becke_grid_level=3, mo=False, outdir='./', prefix='pyscf'
     g.create_group("SCF")
     scf_g = g["SCF"]
     scf_g['ovlp'] = S[:,:,:nbnd_out,:nbnd_out]
+    scf_g['ovlp_grad'] = S_grad[:,:,:nbnd_out,:nbnd_out]
     scf_g['H0'] = H0[:,:,:nbnd_out,:nbnd_out]
+    scf_g['H0_grad'] = H0_grad[:,:,:nbnd_out,:nbnd_out]
     scf_g['Fock'] = F[:,:,:nbnd_out,:nbnd_out]
     scf_g['dm'] = dm[:,:,:nbnd_out,:nbnd_out]
     scf_g['mo_coeff'] = mo_coeff[:,:,:nbnd_out,:nbnd_out]
@@ -318,10 +348,27 @@ def dump_orb(outdir, Orb_G):
       grp["Orb_"+str(isk)] = Orb_G[isk]
 
 
+def get_H0_grad(mf_grad):
+  natoms  = mf_grad.base.mol.natm
+  nbnd = mf_grad.base.mol.nao_nr()
+  H0_grad = np.zeros((natoms, 3, nbnd, nbnd), dtype=complex)
+  hcore_deriv = mf_grad.hcore_generator(mf_grad.mol)
+  for iatom in range(natoms):
+    H0_grad[iatom] = hcore_deriv(iatom)
+  print('shape of H0_grad: ', H0_grad.shape)
+  return H0_grad
 
 
-
-
-
-
-
+def get_ovlp_grad(mf_grad):
+  natoms  = mf_grad.base.mol.natm
+  nbnd = mf_grad.base.mol.nao_nr()
+  aoslices = mf_grad.base.mol.aoslice_by_atom()
+  S_grad = np.zeros((natoms, 3, nbnd, nbnd), dtype=complex)
+  tmp = -mf_grad.base.mol.intor('int1e_ipovlp', comp=3)
+  for iatom in range(natoms):
+      for direction in range(3):
+        p0, p1 = aoslices[iatom, 2:4]
+        S_grad[iatom, direction, p0:p1, :] += tmp[direction, p0:p1, :]
+        S_grad[iatom, direction, :, p0:p1] += tmp[direction, p0:p1, :].T.conj()
+  print('shape of S_grad: ', S_grad.shape)
+  return S_grad
