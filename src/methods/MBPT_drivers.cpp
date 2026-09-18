@@ -360,6 +360,29 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
     qp_scf_loop(mb_state, eri, ft, qp_params, mb_solver_t(&hf,&gw,&scr_eri), iter_solver.get(),
                 niter, restart, conv_thr);
 
+  } else if (solver_type == "lqsgw") {
+
+    // Linearized QP self-consistent GW (Kutepov et al. 2017): 
+    qp_params_t qp_params;
+    qp_params.qp_scf_mode = "lqsscf";
+    qp_params.mu_tolerance = mu_tol; qp_params.mu_update_alg = mu_update_alg;
+    
+    // Controls of the linearized fit. 
+    qp_params.lqp_n_fit = io::get_value_with_default<int>(pt, "lqp.n_fit", 6); 
+    qp_params.lqp_fit_order = io::get_value_with_default<int>(pt, "lqp.fit_order", -1);
+    qp_params.lqp_fit_resid_tol = io::get_value_with_default<double>(pt, "lqp.fit_resid_tol", 1e-8);
+    
+    if (io::get_value_with_default<bool>(pt,"iter_alg.enable", true)) {
+      iter_solver = std::make_unique<iter_scf::iter_scf_t>(iter_scf::make_iter_scf(pt));
+    } else {
+      iter_solver = nullptr;
+    }
+    solvers::scr_coulomb_t scr_eri(&ft, "rpa", div_treatment);
+    solvers::gw_t gw(&ft, div_treatment, output);
+    MBState mb_state(mpi, ft, output);
+    qp_scf_loop(mb_state, eri, ft, qp_params, mb_solver_t(&hf,&gw,&scr_eri), iter_solver.get(),
+                niter, restart, conv_thr);
+
   } else
     APP_ABORT("mbpt: Unknown solver type: {}",solver_type);
 }

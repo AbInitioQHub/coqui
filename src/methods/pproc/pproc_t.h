@@ -38,8 +38,9 @@
 #include "utilities/mpi_context.h"
 #include "numerics/ac/AC_t.hpp"
 #include "numerics/imag_axes_ft/iaft_utils.hpp"
-#include "methods/SCF/qp_params_t.h"
-#include "methods/SCF/qp_solvers.hpp"
+#include "methods/SCF/qp/qp_params_t.h"
+#include "methods/SCF/qp/qp_solvers.hpp"
+#include "methods/SCF/qp/linearized_qp.hpp"
 
 namespace methods {
   namespace mpi3 = boost::mpi3;
@@ -104,6 +105,59 @@ namespace methods {
                                 std::string grp_name="scf", long iter=-1);
 
   private:
+    /**
+     * qp_type == "lqp" branch of compute_qp_on_ibz_kmesh: matrix linearization of Sigma(iw)
+     * around w = 0 in the KS basis:
+     *  1. K = F + Sigma(0) - mu,
+     *  2. Z = (1 - dSigma/d(iw))^-1
+     *  3. H_QP = Z^1/2 K Z^1/2, 
+     * solved independently at every (s,k).
+     * 
+     * Writes to qp_approx/{E_ska, Heff_skij, Z_ska, mu, qp_type} and
+     * qp_approx/lqp/{min_eig_sk, fit_resid_sk, n_fit, fit_order, cond}.
+     *
+     * @param FT           - [INPUT] Fourier transform driver on the imaginary axes, as read from
+     *                       the checkpoint; supplies the tau and Matsubara meshes and beta
+     * @param qp_params    - [INPUT] only the lqp_* fields are used; see methods::lqp::fit_params_t
+     * @param sFhf_skij    - [INPUT] static one-body matrix (ns, nk, nb, nb) in the KS basis,
+     *                       **including H0** (the caller adds system/H0_skij to F_skij)
+     * @param sSigma_tskij - [INPUT] dynamic self-energy (nt, ns, nk, nb, nb) on FT's fermionic
+     *                       tau mesh, same basis as sFhf_skij
+     * @param mu           - [INPUT] chemical potential [Ha] of the iteration being processed
+     * @param filename     - [INPUT] checkpoint the results are appended to
+     * @param grp_name     - [INPUT] top-level group, "scf" or "embed"
+     * @param iter         - [INPUT] iteration index; the results go to {grp_name}/iter{iter}
+     */
+    void lqp_on_ibz_kmesh_impl(imag_axes_ft::IAFT const& FT, qp_params_t const& qp_params,
+                                 math::shm::shared_array<nda::array_view<ComplexType, 4>> const& sFhf_skij,
+                                 math::shm::shared_array<nda::array_view<ComplexType, 5>> const& sSigma_tskij,
+                                 double mu, std::string filename, std::string grp_name, long iter);
+
+    /**
+     * qp_type in {"sc", "sc_newton", "sc_bisection", "linearized"} branch of
+     * compute_qp_on_ibz_kmesh: 
+     * 1. diagonalize F, 
+     * 2. analytically continue the diagonal Sigma_aa(iw) by Pade, 
+     * 3. solve the scalar quasiparticle equation on the real axis band by band 
+     *    (at the quasiparticle energy for the "sc*" variants, by first-order expansion 
+     *     around eps_KS for "linearized").
+     * 
+     * Writes qp_approx/{E_ska, Heff_skij, mu, qp_type}.
+     *
+     * @param FT           - [INPUT] Fourier transform driver on the imaginary axes
+     * @param qp_params    - [INPUT] qp_type, ac_alg, Nfit, eta and tol
+     * @param sFhf_skij    - [INPUT] static one-body matrix (ns, nk, nb, nb) including H0
+     * @param sSigma_tskij - [INPUT] dynamic self-energy (nt, ns, nk, nb, nb) on the tau mesh
+     * @param mu           - [INPUT] chemical potential [Ha]
+     * @param filename     - [INPUT] checkpoint the results are appended to
+     * @param grp_name     - [INPUT] top-level group, "scf" or "embed"
+     * @param iter         - [INPUT] iteration index
+     */
+    void qp_ac_on_ibz_kmesh_impl(imag_axes_ft::IAFT const& FT, qp_params_t const& qp_params,
+                                 math::shm::shared_array<nda::array_view<ComplexType, 4>> const& sFhf_skij,
+                                 math::shm::shared_array<nda::array_view<ComplexType, 5>> const& sSigma_tskij,
+                                 double mu, std::string filename, std::string grp_name, long iter);
+
     template<nda::ArrayOfRank<4> local_Array_4D_t, typename communicator_t>
     void read_scf_dataset(std::string dataset,
                           memory::darray_t<local_Array_4D_t, communicator_t> &A_tski);

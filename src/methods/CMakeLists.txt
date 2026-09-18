@@ -30,6 +30,6 @@ endif()
 endif()
 
 add_library(methods_lib ${SRCS})
-target_link_libraries(methods_lib PUBLIC meanfield methods_tools_lib eri_lib hf_lib scr_coulomb_lib gw_lib gf2_lib scf_lib embed_lib pproc_lib)
+target_link_libraries(methods_lib PUBLIC meanfield methods_tools_lib eri_lib hf_lib scr_coulomb_lib gw_lib gf2_lib qp_lib scf_lib embed_lib pproc_lib)
 install(TARGETS methods_lib
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})

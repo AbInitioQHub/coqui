@@ -54,6 +54,29 @@ namespace methods {
       }
   }
 
+  void MBState::dump_qpscf(long iter, double mu) {
+    utils::check(sDm_skij.has_value() and sHeff_skij.has_value() and
+                 sMO_skia.has_value() and sE_ska.has_value(),
+                 "mb_state.cpp::dump_qpscf: incomplete QP-SCF state; Dm_skij, Heff_skij, MO_skia "
+                 "and E_ska are all required.");
+    chkpt::dump_scf(mpi->comm, iter, sDm_skij.value(), sHeff_skij.value(), sMO_skia.value(),
+                    sE_ska.value(), mu, coqui_prefix);
+    // Optional contents, written by whichever QP-SCF mode produced them.
+    if (sZqp_ska.has_value()) {
+      if (mpi->comm.root()) {
+        h5::file file(coqui_prefix + ".mbpt.h5", 'a');
+        auto iter_grp = h5::group(file).open_group("scf/iter" + std::to_string(iter));
+        auto grp = iter_grp.has_subgroup("lqsscf") ? iter_grp.open_group("lqsscf")
+                                                   : iter_grp.create_group("lqsscf");
+        auto Zloc = sZqp_ska.value().local();
+        nda::array<double, 3> Z(Zloc.shape());
+        Z = nda::real(Zloc);
+        nda::h5_write(grp, "Z_ska", Z, false);
+      }
+      mpi->comm.barrier();
+    }
+  }
+
   void MBState::set_zero_local_polarizabilities() {
     using math::shm::make_shared_array;
 

@@ -32,7 +32,7 @@
 #include "numerics/iter_scf/iter_scf_t.hpp"
 
 #include "utilities/mpi_context.h"
-#include "methods/SCF/qp_params_t.h"
+#include "methods/SCF/qp/qp_params_t.h"
 #include "methods/SCF/scf_common.hpp"
 #include "methods/SCF/mb_solver_t.h"
 #include "methods/mb_state/mb_state.hpp"

@@ -295,13 +295,16 @@ double qp_scf_loop(
   utils::check(qp_params.qp_type=="sc" or qp_params.qp_type=="sc_newton" or
                qp_params.qp_type=="sc_bisection" or qp_params.qp_type=="linearized" or qp_params.qp_type=="spectral",
                "qp_scf_loop: unknown qp_type {}: sc or linearized.", qp_params.qp_type);
+  utils::check(qp_params.qp_scf_mode == "qpscf" or qp_params.qp_scf_mode == "evscf" or
+               qp_params.qp_scf_mode == "lqsscf",
+               "qp_scf_loop: unknown qp_scf_mode {}: qpscf, evscf or lqsscf.", qp_params.qp_scf_mode);
   // http://patorjk.com/software/taag/#p=display&f=Calvin%20S&t=COQUI%20qp-scf
   app_log(1, "\n"
              "╔═╗╔═╗╔═╗ ╦ ╦╦  ┌─┐ ┌─┐   ┌─┐┌─┐┌─┐\n"
              "║  ║ ║║═╬╗║ ║║  │─┼┐├─┘───└─┐│  ├┤ \n"
              "╚═╝╚═╝╚═╝╚╚═╝╩  └─┘└┴     └─┘└─┘└  \n");
   app_log(1, "  Maximum iteration number    = {}", niter);
-  app_log(1, "  Eigenvalue scf only         = {}", qp_params.qp_scf_mode == "evscf");
+  app_log(1, "  QP-SCF mode                 = {}", qp_params.qp_scf_mode);
   app_log(1, "  Keep screened Coulomb fixed = {}", qp_params.keep_scr_coulomb_fixed);
   app_log(1, "  Convergence tolerance       = {}", conv_tol);
   app_log(1, "  Checkpoint HDF5             = {}", mb_state.coqui_prefix+".mbpt.h5");
@@ -345,7 +348,7 @@ double qp_scf_loop(
   Timer.start("WRITE");
   if (!restart) {
     chkpt::write_metadata(mpi->comm, *mf, FT, sH0_skij, sS_skij, mb_state.coqui_prefix);
-    chkpt::dump_scf(mpi->comm, 0, sDm_skij, sHeff_skij, sMO_skia, sE_ska, mu, mb_state.coqui_prefix);
+    mb_state.dump_qpscf(0, mu);
   }
   Timer.stop("WRITE");
 
@@ -393,8 +396,13 @@ double qp_scf_loop(
         // 2. sHeff_skij with the updated QP energies while keeping sMO_skia the same.
         add_evscf_vcorr(mb_state, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_params, qp_params.keep_scr_coulomb_fixed);
       } else {
-        // add_qpscf_vcorr only updates sHeff_skij. MO_skia and E_ska are updated later. 
-        add_qpscf_vcorr(mb_state, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_params);
+        if (qp_params.qp_scf_mode == "lqsscf") {
+          // add_lqsscf_vcorr replaces sHeff_skij by C^-dag (H_QP + mu) C^-1 and stores the pole weights
+          add_lqsscf_vcorr(mb_state, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_params);
+        } else {
+          // add_qpscf_vcorr only updates sHeff_skij. MO_skia and E_ska are updated later. 
+          add_qpscf_vcorr(mb_state, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_params);
+        }
       }
     }
     Timer.stop("MBPT_SOLVERS");
@@ -428,7 +436,7 @@ double qp_scf_loop(
     app_log(1, "abs max diff of QP Hamiltonian:    {} a.u.\n", Heff_conv);
 
     Timer.start("WRITE");
-    chkpt::dump_scf(mpi->comm, it, sDm_skij, sHeff_skij, sMO_skia, sE_ska, mu, mb_state.coqui_prefix);
+    mb_state.dump_qpscf(it, mu);
     Timer.stop("WRITE");
 
     it++;

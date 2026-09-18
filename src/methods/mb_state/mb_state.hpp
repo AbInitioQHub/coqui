@@ -93,6 +93,13 @@ public:
 
   // TODO Function to read MBPT data
 
+  /**
+   * Write the QP-SCF state of iteration `iter` to CoQui checkpoint
+   * @param iter - [INPUT] iteration number of the QP-SCF solution
+   * @param mu   - [INPUT] chemical potential [Ha] of this iteration
+   */
+  void dump_qpscf(long iter, double mu);
+
   void set_zero_local_polarizabilities();
   bool read_local_polarizabilities(long weiss_b_iter=-1);
   void set_local_polarizabilities(std::map<std::string, nda::array<ComplexType, 5>> local_polarizabilities);
@@ -139,6 +146,8 @@ public:
   std::optional<sArray_t<nda::array_view<ComplexType, 4> > > sMO_skia;
   // QP energies
   std::optional<sArray_t<nda::array_view<ComplexType, 3> > > sE_ska;
+  // LQSGW pole weights <v|Z|v> of the current iteration 
+  std::optional<sArray_t<nda::array_view<ComplexType, 3> > > sZqp_ska;
 
   
   /** local quantities in MLWF basis for quantum embedding */

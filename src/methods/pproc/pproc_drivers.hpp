@@ -157,11 +157,26 @@ namespace methods {
       if (!heff_exists) {
         // Compute QP energies from dynamic self-energy on IBZ 
         qp_params_t qp_params;
-        qp_params.ac_alg  = io::get_value_with_default<std::string>(pt,"ac_alg","pade");
+        // qp_type selects the scheme; its own controls live in a block named after it:
+        //   [...band_interpolation.qp]   ac_alg, Nfit, eta, tol  (Pade + scalar QP equation:
+        //                                qp_type = "sc", "sc_newton", "sc_bisection", "linearized")
+        //   [...band_interpolation.lqp]  n_fit, fit_order, fit_resid_tol
+        //                                (matrix linearization of Sigma(iw): qp_type = "lqp")
+        // Each block configures only its own family: "qp" does not feed the lqp kernel.
+        // The flat ac_alg / qp_* keys are still read and act as the defaults of their nested
+        // counterparts, so existing input files keep working.
+        auto ac_alg_flat = io::get_value_with_default<std::string>(pt, "ac_alg", "pade");
+        auto eta_flat    = io::get_value_with_default<double>(pt, "qp_eta", M_PI/beta);
+        auto Nfit_flat   = io::get_value_with_default<int>(pt, "qp_Nfit", 18);
+        auto tol_flat    = io::get_value_with_default<double>(pt, "qp_tol", 1e-8);
         qp_params.qp_type = io::get_value_with_default<std::string>(pt, "qp_type", "sc");
-        qp_params.eta     = io::get_value_with_default<double>(pt, "qp_eta", M_PI/beta);
-        qp_params.Nfit    = io::get_value_with_default<int>(pt, "qp_Nfit", 18);
-        qp_params.tol     = io::get_value_with_default<double>(pt, "qp_tol", 1e-8);
+        qp_params.ac_alg  = io::get_value_with_default<std::string>(pt, "qp.ac_alg", ac_alg_flat);
+        qp_params.eta     = io::get_value_with_default<double>(pt, "qp.eta", eta_flat);
+        qp_params.Nfit    = io::get_value_with_default<int>(pt, "qp.Nfit", Nfit_flat);
+        qp_params.tol     = io::get_value_with_default<double>(pt, "qp.tol", tol_flat);
+        qp_params.lqp_n_fit           = io::get_value_with_default<int>(pt, "lqp.n_fit", 6);
+        qp_params.lqp_fit_order       = io::get_value_with_default<int>(pt, "lqp.fit_order", -1);
+        qp_params.lqp_fit_resid_tol = io::get_value_with_default<double>(pt, "lqp.fit_resid_tol", 1e-8);
 
         pp.compute_qp_on_ibz_kmesh(*mf, qp_params, grp_name, iteration); 
       }
