@@ -37,6 +37,7 @@
 #include "mean_field/mf_utils.hpp"
 #include "methods/ERI/mb_eri_context.h"
 #include "methods/mb_state/mb_state.hpp"
+#include "methods/SCF/qp/qp_params_utils.hpp"
 #include "methods/SCF/dca_dyson.h"
 #include "methods/SCF/simple_dyson.h"
 #include "methods/embedding/embed_t.h"
@@ -317,15 +318,20 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
 
   } else if (solver_type == "evgw") {
 
-    auto keep_scr_coulomb_fixed = io::get_value_with_default<bool>(pt,"keep_scr_coulomb_fixed", false);
-    auto qp_type = io::get_value_with_default<std::string>(pt,"qp_type","sc");
-    auto ac_alg  = io::get_value_with_default<std::string>(pt,"ac_alg","pade");
-    auto eta     = io::get_value_with_default<double>(pt,"eta", M_PI/ft.beta());
-    auto Nfit    = io::get_value_with_default<int>(pt,"Nfit",18);
-    io::tolower(ac_alg);
-    io::tolower(qp_type);
-    qp_params_t qp_params(qp_type, ac_alg, Nfit, eta, conv_thr, "evscf", keep_scr_coulomb_fixed,
-                          "fermi", mu_tol, mu_update_alg);
+    qp_params_t qp_params;
+    qp_params.qp_scf_mode = "evscf";
+    qp_params.keep_scr_coulomb_fixed =
+        io::get_value_with_default<bool>(pt,"keep_scr_coulomb_fixed", false);
+    qp_params.mu_tolerance = mu_tol; qp_params.mu_update_alg = mu_update_alg;
+    // Flat keys of the older input act as the defaults of the [evgw.qp_eqn] block.
+    qp_params.qp_eqn.ac_alg  = io::get_value_with_default<std::string>(pt,"ac_alg","pade");
+    qp_params.qp_eqn.eta  = io::get_value_with_default<double>(pt,"eta", M_PI/ft.beta());
+    qp_params.qp_eqn.ac_nfit = io::get_value_with_default<int>(pt,"Nfit",18);
+    qp_params.qp_eqn.tol  = conv_thr;
+    read_qp_block(pt, qp_params);
+    utils::check(qp_params.qp_approx == "qp_eqn",
+                 "mbpt: solver_type = evgw requires qp_approx = qp_eqn; qp_approx = lqp is only "
+                 "implemented for qp_scf_mode = qpscf (solver_type = lqsgw).");
     if (io::get_value_with_default<bool>(pt,"iter_alg.enable", true)) {
       iter_solver = std::make_unique<iter_scf::iter_scf_t>(iter_scf::make_iter_scf(pt, 0.7, true));
     } else {
@@ -339,16 +345,20 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
 
   } else if (solver_type == "qpgw") {
 
-    auto ac_alg  = io::get_value_with_default<std::string>(pt,"ac_alg","pade");
-    auto eta     = io::get_value_with_default<double>(pt,"eta", M_PI/ft.beta());
-    auto Nfit    = io::get_value_with_default<int>(pt,"Nfit",18);
-    auto off_diag_mode = io::get_value_with_default<std::string>(pt,"off_diag_mode","fermi");
-    io::tolower(ac_alg);
-    io::tolower(off_diag_mode);
-    utils::check(off_diag_mode=="fermi" or off_diag_mode=="qp_energy",
-                 "unknown off_diag_mode: {}. Valid options are \"fermi\" and \"qp_energy\"");
-    qp_params_t qp_params("sc", ac_alg, Nfit, eta, 1e-8, "qpscf", false, off_diag_mode,
-                          mu_tol, mu_update_alg);
+    qp_params_t qp_params;
+    qp_params.qp_scf_mode = "qpscf";
+    qp_params.mu_tolerance = mu_tol; qp_params.mu_update_alg = mu_update_alg;
+    // Flat keys of the older input act as the defaults of the [qpgw.qp_eqn] block.
+    qp_params.qp_eqn.ac_alg        = io::get_value_with_default<std::string>(pt,"ac_alg","pade");
+    qp_params.qp_eqn.eta           = io::get_value_with_default<double>(pt,"eta", M_PI/ft.beta());
+    qp_params.qp_eqn.ac_nfit       = io::get_value_with_default<int>(pt,"Nfit",18);
+    qp_params.qp_eqn.off_diag_mode = io::get_value_with_default<std::string>(pt,"off_diag_mode","fermi");
+    read_qp_block(pt, qp_params);
+    utils::check(qp_params.qp_approx == "qp_eqn",
+                 "mbpt: \"qpgw\" requires qp_approx = qp_eqn.");
+    utils::check(qp_params.qp_eqn.off_diag_mode=="fermi" or qp_params.qp_eqn.off_diag_mode=="qp_energy",
+                 "unknown qp_eqn.off_diag_mode: {}. Valid options are \"fermi\" and \"qp_energy\"",
+                 qp_params.qp_eqn.off_diag_mode);
     if (io::get_value_with_default<bool>(pt,"iter_alg.enable", true)) {
       iter_solver = std::make_unique<iter_scf::iter_scf_t>(iter_scf::make_iter_scf(pt));
     } else {
@@ -362,15 +372,15 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
 
   } else if (solver_type == "lqsgw") {
 
-    // Linearized QP self-consistent GW (Kutepov et al. 2017): 
+    // Linearized QP self-consistent GW (Kutepov et al. 2017):
     qp_params_t qp_params;
-    qp_params.qp_scf_mode = "lqsscf";
+    qp_params.qp_scf_mode = "qpscf";
+    qp_params.qp_approx = "lqp";
     qp_params.mu_tolerance = mu_tol; qp_params.mu_update_alg = mu_update_alg;
-    
-    // Controls of the linearized fit. 
-    qp_params.lqp_n_fit = io::get_value_with_default<int>(pt, "lqp.n_fit", 6); 
-    qp_params.lqp_fit_order = io::get_value_with_default<int>(pt, "lqp.fit_order", -1);
-    qp_params.lqp_fit_resid_tol = io::get_value_with_default<double>(pt, "lqp.fit_resid_tol", 1e-8);
+    read_qp_block(pt, qp_params);
+    utils::check(qp_params.qp_approx == "lqp",
+                 "mbpt: lqsgw fixes qp_approx = lqp; remove qp_approx = {} or use "
+                 "solver_type = qpgw.", qp_params.qp_approx);
     
     if (io::get_value_with_default<bool>(pt,"iter_alg.enable", true)) {
       iter_solver = std::make_unique<iter_scf::iter_scf_t>(iter_scf::make_iter_scf(pt));
@@ -491,16 +501,20 @@ void downfolding_1e(std::shared_ptr<mf::MF> mf, ptree const& pt) {
   MBState mb_state(ft, outdir+"/"+prefix, mf, wannier_file, trans_home_cell, false);
 
   if (qp_selfenergy) {
-    auto ac_alg  = io::get_value_with_default<std::string>(pt,"ac_alg","pade");
-    auto off_diag_mode = io::get_value_with_default<std::string>(pt,"off_diag_mode","qp_energy");
-    io::tolower(ac_alg);
-    io::tolower(off_diag_mode);
-    utils::check(off_diag_mode=="fermi" or off_diag_mode=="qp_energy",
-                 "unknown off_diag_mode: {}. Valid options are \"fermi\" and \"qp_energy\"");
-    qp_params_t qp_params("sc", ac_alg,
-                io::get_value_with_default<int>(pt,"Nfit",30),
-                io::get_value_with_default<double>(pt,"eta", M_PI/ft.beta()),
-                1e-8, "qpscf", false, off_diag_mode);
+    // Flat keys of the older input act as the defaults of the [<block>.qp_eqn] block.
+    qp_params_t qp_params;
+    qp_params.qp_eqn.ac_alg           = io::get_value_with_default<std::string>(pt,"ac_alg","pade");
+    qp_params.qp_eqn.ac_nfit          = io::get_value_with_default<int>(pt,"Nfit",30);
+    qp_params.qp_eqn.eta           = io::get_value_with_default<double>(pt,"eta", M_PI/ft.beta());
+    qp_params.qp_eqn.off_diag_mode = io::get_value_with_default<std::string>(pt,"off_diag_mode",
+                                                                        "qp_energy");
+    read_qp_block(pt, qp_params);
+    utils::check(qp_params.qp_approx == "qp_eqn",
+                 "mbpt: the quasiparticle embedding scheme requires qp_approx = qp_eqn; "
+                 "qp_approx = lqp is not implemented for downfolding.");
+    utils::check(qp_params.qp_eqn.off_diag_mode=="fermi" or qp_params.qp_eqn.off_diag_mode=="qp_energy",
+                 "unknown qp_eqn.off_diag_mode: {}. Valid options are \"fermi\" and \"qp_energy\"",
+                 qp_params.qp_eqn.off_diag_mode);
     embed.downfolding(mb_state, pt, &qp_params);
   } else {
     embed.downfolding(mb_state, pt);
@@ -817,17 +831,20 @@ void gw_downfold(eri_t &eri, ptree &pt) {
                              io::get_value_with_default<double>(pt, "thresh", 1e-6));
 
   // one body hamiltonian
-  auto ac_alg  = io::get_value_with_default<std::string>(pt,"ac_alg","pade");
-  auto off_diag_mode = io::get_value_with_default<std::string>(pt,"off_diag_mode","qp_energy");
-  io::tolower(ac_alg);
-  io::tolower(off_diag_mode);
-  utils::check(off_diag_mode=="fermi" or off_diag_mode=="qp_energy",
-               "unknown off_diag_mode: {}. Valid options are \"fermi\" and \"qp_energy\"");
-  qp_params_t qp_params(
-      "sc", ac_alg,
-      io::get_value_with_default<int>(pt,"Nfit",30),
-      io::get_value_with_default<double>(pt,"eta", M_PI/ft.beta()),
-      1e-8, "qpscf", false, off_diag_mode);
+  // Flat keys of the older input act as the defaults of the [<block>.qp_eqn] block.
+  qp_params_t qp_params;
+  qp_params.qp_eqn.ac_alg           = io::get_value_with_default<std::string>(pt,"ac_alg","pade");
+  qp_params.qp_eqn.ac_nfit          = io::get_value_with_default<int>(pt,"Nfit",30);
+  qp_params.qp_eqn.eta           = io::get_value_with_default<double>(pt,"eta", M_PI/ft.beta());
+  qp_params.qp_eqn.off_diag_mode = io::get_value_with_default<std::string>(pt,"off_diag_mode",
+                                                                      "qp_energy");
+  read_qp_block(pt, qp_params);
+  utils::check(qp_params.qp_approx == "qp_eqn",
+               "mbpt: the quasiparticle embedding scheme requires qp_approx = qp_eqn; "
+               "qp_approx = lqp is not implemented for downfolding.");
+  utils::check(qp_params.qp_eqn.off_diag_mode=="fermi" or qp_params.qp_eqn.off_diag_mode=="qp_energy",
+               "unknown qp_eqn.off_diag_mode: {}. Valid options are \"fermi\" and \"qp_energy\"",
+               qp_params.qp_eqn.off_diag_mode);
   embed_t embed(*mf, wannier_file, trans_home_cell);
   pt.put("update_dc", true);
   pt.put("dc_type", "gw");

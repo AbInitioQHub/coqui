@@ -119,9 +119,36 @@ def test_g0w0_thc(mpi):
             "prec": "medium",
             "basis": "dlr"
         },
-        "qp_type": "sc", 
+        "qp_eqn": {
+            "solver": "sc"
+        },
         "eta": 1e-6, 
     }
     coqui.run_evgw(gw_params, h_int=thc)
     mpi.barrier()
 
+
+def test_lqsgw_thc(mpi):
+    mf = construct_qe_mf(mpi, "qe_lih222_sym")
+    thc = coqui.make_thc_coulomb(mf, {"storage": "incore", "thresh": 1e-4,
+                                      "ecut": mf.ecutrho(), "chol_block_size": 1, "init": True})
+    params = {
+        "restart": False, 
+        "output": "lqsgw", 
+        "niter": 2, 
+        "beta": 100,
+        "iaft": {"prec": "medium", "basis": "dlr"},
+        "lqp": {"n_fit": 4},
+        "iter_alg": {"alg": "damping", "mixing": 0.7}
+    }
+    coqui.run_lqsgw(params, h_int=thc)
+    mpi.barrier()
+    if mpi.root():
+        from h5 import HDFArchive
+        import numpy as np
+        with HDFArchive("lqsgw.mbpt.h5", "r") as ar:
+            it = ar["scf"]["final_iter"]
+            Z = np.asarray(ar["scf"][f"iter{it}"]["Z_ska"])
+        assert Z.min() > 0.0 and Z.max() <= 1.0 + 1e-10
+        os.remove("lqsgw.mbpt.h5")
+    mpi.barrier()

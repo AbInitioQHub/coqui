@@ -9,3 +9,7 @@ else()
 endif()
 install(TARGETS pproc_lib
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
+if (BUILD_UNIT_TESTS)
+    add_subdirectory(tests)
+endif()

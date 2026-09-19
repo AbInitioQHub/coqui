@@ -38,8 +38,13 @@ gw_params = {
     "iaft": {
         "prec": "medium"
     },
-    "Nfit": -1, 
-    "off_diag_mode": "fermi" # "fermi" or "qp_energy"
+    # qpgw solves the quasiparticle equation on the real axis 
+    "qp_eqn": {
+        "solver": "sc",   # "sc"/"sc_bisection", "sc_newton", "spectral", "linearized"
+        "ac_alg": "pade", # the analytic continuation that feeds the equation
+        "ac_nfit": -1,    # Matsubara points it fits; -1 = all available
+        "off_diag_mode": "fermi", # "fermi" or "qp_energy"
+    },
 }
 coqui.run_qpgw(params=gw_params, h_int=svo_thc)
 

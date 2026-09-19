@@ -292,12 +292,22 @@ double qp_scf_loop(
   for( auto& v: {"SCF_TOTAL", "CANONICALIZATION", "MBPT_SOLVERS", "ITERATIVE", "WRITE"} ) {
     Timer.add(v);
   }
-  utils::check(qp_params.qp_type=="sc" or qp_params.qp_type=="sc_newton" or
-               qp_params.qp_type=="sc_bisection" or qp_params.qp_type=="linearized" or qp_params.qp_type=="spectral",
-               "qp_scf_loop: unknown qp_type {}: sc or linearized.", qp_params.qp_type);
-  utils::check(qp_params.qp_scf_mode == "qpscf" or qp_params.qp_scf_mode == "evscf" or
-               qp_params.qp_scf_mode == "lqsscf",
-               "qp_scf_loop: unknown qp_scf_mode {}: qpscf, evscf or lqsscf.", qp_params.qp_scf_mode);
+  // Two independent axes: qp_approx says how Sigma(iw) is reduced to a static QP Hamiltonian,
+  // qp_scf_mode says what the loop updates with it.
+  utils::check(qp_params.qp_approx == "qp_eqn" or qp_params.qp_approx == "lqp",
+               "qp_scf_loop: unknown qp_approx {}: qp_eqn or lqp.", qp_params.qp_approx);
+  utils::check(qp_params.qp_scf_mode == "qpscf" or qp_params.qp_scf_mode == "evscf",
+               "qp_scf_loop: unknown qp_scf_mode {}: qpscf or evscf.", qp_params.qp_scf_mode);
+  utils::check(not (qp_params.qp_scf_mode == "evscf" and qp_params.qp_approx == "lqp"),
+               "qp_scf_loop: qp_scf_mode = evscf with qp_approx = lqp is not implemented. "
+               "Use qp_scf_mode = qpscf (solver_type = lqsgw) for the linearized scheme.");
+  if (qp_params.qp_approx == "qp_eqn") {
+    auto const& sol = qp_params.qp_eqn.solver;
+    utils::check(sol=="sc" or sol=="sc_newton" or sol=="sc_bisection" or
+                 sol=="linearized" or sol=="spectral",
+                 "qp_scf_loop: unknown qp_eqn.solver {}: sc, sc_bisection, sc_newton, spectral "
+                 "or linearized.", sol);
+  }
   // http://patorjk.com/software/taag/#p=display&f=Calvin%20S&t=COQUI%20qp-scf
   app_log(1, "\n"
              "╔═╗╔═╗╔═╗ ╦ ╦╦  ┌─┐ ┌─┐   ┌─┐┌─┐┌─┐\n"
@@ -305,6 +315,7 @@ double qp_scf_loop(
              "╚═╝╚═╝╚═╝╚╚═╝╩  └─┘└┴     └─┘└─┘└  \n");
   app_log(1, "  Maximum iteration number    = {}", niter);
   app_log(1, "  QP-SCF mode                 = {}", qp_params.qp_scf_mode);
+  app_log(1, "  QP approximation            = {}", qp_params.qp_approx);
   app_log(1, "  Keep screened Coulomb fixed = {}", qp_params.keep_scr_coulomb_fixed);
   app_log(1, "  Convergence tolerance       = {}", conv_tol);
   app_log(1, "  Checkpoint HDF5             = {}", mb_state.coqui_prefix+".mbpt.h5");
@@ -396,9 +407,9 @@ double qp_scf_loop(
         // 2. sHeff_skij with the updated QP energies while keeping sMO_skia the same.
         add_evscf_vcorr(mb_state, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_params, qp_params.keep_scr_coulomb_fixed);
       } else {
-        if (qp_params.qp_scf_mode == "lqsscf") {
-          // add_lqsscf_vcorr replaces sHeff_skij by C^-dag (H_QP + mu) C^-1 and stores the pole weights
-          add_lqsscf_vcorr(mb_state, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_params);
+        if (qp_params.qp_approx == "lqp") {
+          // add_lqp_vcorr replaces sHeff_skij by C^-dag (H_QP + mu) C^-1 and stores the pole weights
+          add_lqp_vcorr(mb_state, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_params);
         } else {
           // add_qpscf_vcorr only updates sHeff_skij. MO_skia and E_ska are updated later. 
           add_qpscf_vcorr(mb_state, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_params);

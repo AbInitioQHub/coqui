@@ -52,6 +52,7 @@ namespace methods {
    * A proxy for different post-processing steps after a mbpt calculation.
    * The mbpt solution is given by reading the bdft h5 output file: outdir/prefix.mbpt.h5
    */
+  
   class pproc_t {
   public:
     pproc_t(utils::mpi_context_t<mpi3::communicator> &context, std::string prefix, std::string outdir):
@@ -104,21 +105,72 @@ namespace methods {
     void compute_qp_on_ibz_kmesh(mf::MF &mf, const qp_params_t &qp_params, 
                                 std::string grp_name="scf", long iter=-1);
 
+    /**
+     * Post-processing entry point of the linearized quasiparticle approximation on arrays the
+     * caller already holds -- no checkpoint, no MPI distribution. It is the same kernel and the
+     * same driver as the LQSGW loop and the checkpoint post-processing (methods::lqp), run
+     * serially -- no MPI is required to be initialized -- with on_failure_e::report: a point that fails the residual gate or the causality
+     * check is left zero and flagged in result_t::status_sk instead of aborting, because in an
+     * analysis over many k-points one bad point must not hide the rest.
+     *
+     * The Python API (coqui.post_proc.linearized_qp) is built on this; it also uses it on
+     * Wannier-window quantities, which have no checkpoint layout of their own.
+     *
+     * @param F_skab      - [INPUT] static one-body matrix (ns, nk, n, n), **including H0**
+     * @param Sigma_tskab - [INPUT] dynamic self-energy (nt, ns, nk, n, n) on ft's fermionic tau mesh
+     * @param mu          - [INPUT] chemical potential [Ha]
+     * @param ft          - [INPUT] imaginary-axis transform driver Sigma was sampled with
+     * @param p           - [INPUT] fit controls
+     * @return methods::lqp::result_t for every (s,k); consult status_sk before trusting a point
+     */
+    static lqp::result_t linearized_qp(nda::array_const_view<ComplexType, 4> F_skab,
+                                       nda::array_const_view<ComplexType, 5> Sigma_tskab,
+                                       double mu, imag_axes_ft::IAFT const& ft,
+                                       lqp::fit_params_t const& p);
+
+    /**
+     * Same, with the IAFT built from its defining parameters, for a caller that has none to pass:
+     * the Python binding, whose IAFT for basis = "ir" is a sparse_ir object with no C++
+     * counterpart. Sigma_tskab must then be sampled on the tau mesh this IAFT generates. For
+     * "ir" that means the sparse_ir mesh must equal the C++ tables', which is pinned by the unit
+     * test src/python/utils/imag_axes_ft/tests/test_iaft.py (1e-12) rather than checked here.
+     * @param beta, wmax, basis, prec - [INPUT] the IAFT constructor arguments
+     */
+    static lqp::result_t linearized_qp(nda::array_const_view<ComplexType, 4> F_skab,
+                                       nda::array_const_view<ComplexType, 5> Sigma_tskab,
+                                       double mu, double beta, double wmax,
+                                       std::string const& basis, std::string const& prec,
+                                       lqp::fit_params_t const& p);
+
+    /**
+     * The convergence rule on arrays (lqp::linearized_qp_ladder), serial and reporting, with the
+     * IAFT built from its parameters like linearized_qp() above: climb the exactly-determined
+     * ladder n_fit = 2, 3, ... until the residual gate fires or the sampling mesh ends, return the
+     * last accepted rung with its truncation-error estimate. What the Python API runs by default.
+     * @param n_fit_max - [INPUT] highest rung to try (capped at the mesh)
+     * @param p         - [INPUT] fit controls; fit_resid_tol is the gate, symmetric_window is used
+     */
+    static lqp::ladder_result_t linearized_qp_ladder(nda::array_const_view<ComplexType, 4> F_skab,
+                                                     nda::array_const_view<ComplexType, 5> Sigma_tskab,
+                                                     double mu, double beta, double wmax,
+                                                     std::string const& basis, std::string const& prec,
+                                                     lqp::fit_params_t const& p, int n_fit_max);
+
   private:
     /**
-     * qp_type == "lqp" branch of compute_qp_on_ibz_kmesh: matrix linearization of Sigma(iw)
+     * qp_approx == "lqp" branch of compute_qp_on_ibz_kmesh: matrix linearization of Sigma(iw)
      * around w = 0 in the KS basis:
      *  1. K = F + Sigma(0) - mu,
      *  2. Z = (1 - dSigma/d(iw))^-1
      *  3. H_QP = Z^1/2 K Z^1/2, 
      * solved independently at every (s,k).
      * 
-     * Writes to qp_approx/{E_ska, Heff_skij, Z_ska, mu, qp_type} and
+     * Writes to qp_approx/{E_ska, Heff_skij, Z_ska, mu, scheme} and
      * qp_approx/lqp/{min_eig_sk, fit_resid_sk, n_fit, fit_order, cond}.
      *
      * @param FT           - [INPUT] Fourier transform driver on the imaginary axes, as read from
      *                       the checkpoint; supplies the tau and Matsubara meshes and beta
-     * @param qp_params    - [INPUT] only the lqp_* fields are used; see methods::lqp::fit_params_t
+     * @param qp_params    - [INPUT] only the lqp member is used; see methods::lqp::fit_params_t
      * @param sFhf_skij    - [INPUT] static one-body matrix (ns, nk, nb, nb) in the KS basis,
      *                       **including H0** (the caller adds system/H0_skij to F_skij)
      * @param sSigma_tskij - [INPUT] dynamic self-energy (nt, ns, nk, nb, nb) on FT's fermionic
@@ -134,7 +186,7 @@ namespace methods {
                                  double mu, std::string filename, std::string grp_name, long iter);
 
     /**
-     * qp_type in {"sc", "sc_newton", "sc_bisection", "linearized"} branch of
+     * qp_approx == "qp_eqn" branch (qp_eqn.solver in {"sc", "sc_bisection", "sc_newton", "linearized"}) of
      * compute_qp_on_ibz_kmesh: 
      * 1. diagonalize F, 
      * 2. analytically continue the diagonal Sigma_aa(iw) by Pade, 
@@ -142,10 +194,10 @@ namespace methods {
      *    (at the quasiparticle energy for the "sc*" variants, by first-order expansion 
      *     around eps_KS for "linearized").
      * 
-     * Writes qp_approx/{E_ska, Heff_skij, mu, qp_type}.
+     * Writes qp_approx/{E_ska, Heff_skij, mu, scheme, ac_solver}.
      *
      * @param FT           - [INPUT] Fourier transform driver on the imaginary axes
-     * @param qp_params    - [INPUT] qp_type, ac_alg, Nfit, eta and tol
+     * @param qp_params    - [INPUT] only the ac member is used; see qp_eqn_params_t
      * @param sFhf_skij    - [INPUT] static one-body matrix (ns, nk, nb, nb) including H0
      * @param sSigma_tskij - [INPUT] dynamic self-energy (nt, ns, nk, nb, nb) on the tau mesh
      * @param mu           - [INPUT] chemical potential [Ha]

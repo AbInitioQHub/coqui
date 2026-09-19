@@ -18,8 +18,13 @@ limitations under the License.
 ==========================================================================
 
 Unit tests for the linearized quasiparticle approximation and band-resolved
-pole weights (post_proc.linearized_qp: matsubara_low_freq_coefficients,
-linearized_qp_from_arrays, linearized_qp_from_checkpoint).
+pole weights (post_proc.linearized_qp: linearized_qp_from_arrays,
+linearized_qp_from_checkpoint), which run on the CoQui C++ kernel and return its
+result structs (LinearizedQPResult = methods::lqp::result_t, LinearizedQPLadder =
+methods::lqp::ladder_result_t) with the C++ member names.
+
+The independent NumPy implementation and the tests that compare the two live with
+the note, in implementation_notes/quasiparticle_Z_at_arbitrary_k/.
 
 Analytic reference: Sigma(z) = sum_p V_p / (z - e_p) with Hermitian V_p has
     A = Sigma(0)          = -sum_p V_p / e_p
@@ -39,12 +44,11 @@ from h5 import HDFArchive
 
 from coqui import IAFT
 from coqui.post_proc import (
-    matsubara_low_freq_coefficients,
     linearized_qp_from_arrays,
     linearized_qp_from_checkpoint,
     LinearizedQPResult,
+    LinearizedQPLadder,
 )
-from coqui.post_proc.linearized_qp import _linearized_qp_matrix, _project_blockwise
 
 
 # ---------------------------------------------------------------------------
@@ -107,103 +111,21 @@ def _causal_B(n, seed, scale=0.3):
     return -scale * (M @ M.conj().T) / n
 
 
+def _K(res):
+    """Static matrix K = F + A - mu = Z^-1/2 H_QP Z^-1/2 per (s, k), from the stored Z and H_QP."""
+    w, U = np.linalg.eigh(res.Z_skab)
+    Zmh = np.einsum("skal,skl,skbl->skab", U, 1.0 / np.sqrt(w), U.conj())
+    return Zmh @ res.Hqp_skab @ Zmh
+
+
+def _B(res):
+    """Zero-frequency slope B = I - Z^-1 per (s, k)."""
+    return np.eye(res.Z_skab.shape[-1]) - np.linalg.inv(res.Z_skab)
+
+
 def _Z_scalar(coeffs):
     """Z from the slope of a stack of 1x1 'matrices', shape coeffs[1][..., 0, 0]."""
     return 1.0 / (1.0 - coeffs[1][..., 0, 0].real)
-
-
-# ---------------------------------------------------------------------------
-# the fit kernel on scalar / diagonal input (ported from the earlier scalar API)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("eps, g", [(10.0, 3.0), (-8.0, 2.0), (12.0, 5.0)])
-def test_single_pole_high_order_is_exact(eps, g):
-    iaft = _iaft()
-    S = _single_pole(iaft, eps, g)[:, None, None]
-    c, d = matsubara_low_freq_coefficients(S, iaft, n_fit=6, fit_order=5)
-    assert float(_Z_scalar(c)) == pytest.approx(_Z_exact(eps, g), rel=1e-6)
-    assert d["exact"] is False and d["resid"] < 1e-6
-
-
-def test_fit_order_convergence():
-    iaft = _iaft(beta=50.0, wmax=30.0)
-    S = _single_pole(iaft, 8.0, 2.0)[:, None, None]
-    Zx = _Z_exact(8.0, 2.0)
-    err1 = abs(float(_Z_scalar(matsubara_low_freq_coefficients(S, iaft, n_fit=6, fit_order=1)[0])) - Zx)
-    err3 = abs(float(_Z_scalar(matsubara_low_freq_coefficients(S, iaft, n_fit=6, fit_order=3)[0])) - Zx)
-    assert err3 < err1 and err3 < 1e-4
-
-
-def test_zero_self_energy_gives_unit_Z():
-    iaft = _iaft(beta=50.0, wmax=30.0)
-    S = np.zeros((len(iaft.wn_mesh("fermion")), 1, 1), dtype=np.complex128)
-    assert float(_Z_scalar(matsubara_low_freq_coefficients(S, iaft)[0])) == pytest.approx(1.0, abs=1e-12)
-
-
-def test_trailing_axes_are_independent():
-    iaft = _iaft()
-    params = [(10.0, 3.0), (-8.0, 2.0), (12.0, 5.0)]
-    S = np.stack([_single_pole(iaft, e, g) for e, g in params], axis=-1)[..., None, None]
-    Z = _Z_scalar(matsubara_low_freq_coefficients(S, iaft, n_fit=6, fit_order=5)[0])
-    np.testing.assert_allclose(Z, [_Z_exact(e, g) for e, g in params], rtol=1e-6)
-    for i, (e, g) in enumerate(params):
-        Zi = _Z_scalar(matsubara_low_freq_coefficients(S[:, i], iaft, n_fit=6, fit_order=5)[0])
-        assert float(Zi) == pytest.approx(Z[i], rel=1e-12)
-
-
-@pytest.mark.parametrize("kwargs", [{"fit_order": 0}, {"n_fit": 1, "fit_order": 5}])
-def test_invalid_fit_parameters_raise(kwargs):
-    iaft = _iaft(beta=50.0, wmax=30.0)
-    S = _single_pole(iaft, 8.0, 2.0)[:, None, None]
-    with pytest.raises(ValueError):
-        matsubara_low_freq_coefficients(S, iaft, **kwargs)
-
-
-# ---------------------------------------------------------------------------
-# the fit kernel on matrices
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("seed", [0, 1, 2])
-def test_matrix_pole_A_and_B(seed):
-    iaft = _iaft()
-    e, V = _hermitian_poles(4, 3, seed)
-    c, _ = matsubara_low_freq_coefficients(_sigma_w(iaft, e, V), iaft, n_fit=8, fit_order=5)
-    A_ex, B_ex = _exact_AB(e, V)
-    assert np.abs(c[0] - A_ex).max() < 1e-6 * np.abs(A_ex).max()
-    assert np.abs(c[1] - B_ex).max() < 1e-5 * np.abs(B_ex).max()
-
-
-def test_exact_A_is_hermitian_and_complex_offdiagonal():
-    e, V = _hermitian_poles(4, 3, 0)
-    A_ex, _ = _exact_AB(e, V)
-    assert np.abs(A_ex - A_ex.conj().T).max() < 1e-12
-    assert np.abs((A_ex - np.diag(np.diag(A_ex))).imag).max() > 0.1
-
-
-def test_symmetric_window_makes_coefficients_hermitian():
-    iaft = _iaft()
-    e, V = _hermitian_poles(4, 3, 3)
-    S = _sigma_w(iaft, e, V)
-    _, d_sym = matsubara_low_freq_coefficients(S, iaft, n_fit=6, fit_order=3, symmetric_window=True)
-    _, d_pos = matsubara_low_freq_coefficients(S, iaft, n_fit=6, fit_order=3, symmetric_window=False)
-    assert d_sym["anti_herm"][0] < 1e-12 * d_sym["scale"][0]
-    assert d_pos["anti_herm"][0] > 1e3 * d_sym["anti_herm"][0]
-
-
-def test_re_im_split_would_be_wrong_off_diagonal():
-    iaft = _iaft()
-    e, V = _hermitian_poles(3, 3, 5)
-    S = _sigma_w(iaft, e, V)
-    A_ex, _ = _exact_AB(e, V)
-    n_pos = np.arange(1, 13, 2)
-    Slow = iaft.w_interpolate(S, n_pos, "fermion")
-    w = n_pos * np.pi / iaft.beta
-    design = w[:, None] ** np.array([0, 2, 4])[None, :]
-    c, *_ = np.linalg.lstsq(design, Slow.real.reshape(len(w), -1), rcond=None)
-    A_wrong = c[0].reshape(A_ex.shape).astype(complex)
-    assert np.abs(np.diag(A_wrong) - np.diag(A_ex)).max() < 1e-5 * np.abs(A_ex).max()
-    off = (A_wrong - A_ex) - np.diag(np.diag(A_wrong - A_ex))
-    assert np.abs(off).max() > 0.05 * np.abs(A_ex).max()
 
 
 def _poles_near_window(iaft, seed=7):
@@ -218,85 +140,24 @@ def _poles_near_window(iaft, seed=7):
     return _sigma_w(iaft, [0.6, -7.0, 9.0], V)
 
 
-def test_exact_interpolation_flags_loss_of_conditioning():
-    iaft = _iaft()
-    S = _poles_near_window(iaft)
-    with pytest.warns(RuntimeWarning):
-        matsubara_low_freq_coefficients(S, iaft, n_fit=30, exact_resid_tol=1e-8)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")                    # far below the wall: no warning
-        matsubara_low_freq_coefficients(S, iaft, n_fit=10, exact_resid_tol=1e-8)
 
-
-# ---------------------------------------------------------------------------
-# the linearized QP problem at one k (private, but the algebra must be right)
-# ---------------------------------------------------------------------------
-
-def test_generalized_eigenproblem_is_solved():
-    n = 6
-    K = _random_hermitian(n, 1); B = _causal_B(n, 2)
-    r = _linearized_qp_matrix(K, B, 1e-8)
-    eye = np.eye(n)
-    w, U = np.linalg.eigh(eye - B); Zhalf = (U * (1 / np.sqrt(w))) @ U.conj().T
-    for l in range(n):
-        psi = Zhalf @ r["V"][:, l]
-        assert np.linalg.norm(K @ psi - r["E"][l] * (eye - B) @ psi) < 1e-11 * np.linalg.norm(K)
-    np.testing.assert_allclose(r["V"].conj().T @ r["V"], eye, atol=1e-12)
-
-
-def test_sum_rule_and_range():
-    n = 7
-    r = _linearized_qp_matrix(_random_hermitian(n, 5), _causal_B(n, 6), 1e-8)
-    assert abs(r["sumrule"]) < 1e-12
-    assert np.all(r["Zqp"] > 0) and np.all(r["Zqp"] <= 1.0 + 1e-12)
-
-
-def test_scalar_B_makes_Z_uniform_and_scales_energies():
-    n = 5
-    K = _random_hermitian(n, 7); b = -0.4
-    r = _linearized_qp_matrix(K, b * np.eye(n), 1e-8)
-    np.testing.assert_allclose(r["Zqp"], 1.0 / (1.0 - b), atol=1e-12)
-    np.testing.assert_allclose(r["E"], np.linalg.eigvalsh(K) / (1.0 - b), atol=1e-12)
-
-
-def test_not_positive_definite_raises():
-    with pytest.raises(ValueError):
-        _linearized_qp_matrix(_random_hermitian(4, 12), np.diag([-0.3, -0.2, 1.5, -0.1]).astype(complex), 1e-8)
-
-
-def test_gauge_invariance_nondegenerate():
-    n = 5
-    K = _random_hermitian(n, 13); B = _causal_B(n, 14); U = _random_unitary(n, 15)
-    r0 = _linearized_qp_matrix(K, B, 1e-8)
-    r1 = _linearized_qp_matrix(U.conj().T @ K @ U, U.conj().T @ B @ U, 1e-8)
-    np.testing.assert_allclose(r1["E"], r0["E"], atol=1e-11)
-    np.testing.assert_allclose(r1["Zqp"], r0["Zqp"], atol=1e-11)
-
-
-def test_gauge_invariance_with_degenerate_Hqp_block():
-    """Build backwards so H_QP has an exact triplet while Z is not proportional to
-    the identity on it: raw diagonals are basis dependent, block values are not."""
-    n = 5
-    Zmat = _random_hermitian(n, 16, 0.05) + np.eye(n)
-    w, U = np.linalg.eigh(Zmat); assert w.min() > 0
-    Zinv = (U * (1 / w)) @ U.conj().T; Zmhalf = (U * (1 / np.sqrt(w))) @ U.conj().T
-    Hqp = np.diag([0.0, 0.0, 0.0, 1.0, 2.0]).astype(complex)
-    K = Zmhalf @ Hqp @ Zmhalf; B = np.eye(n) - Zinv
-    r0 = _linearized_qp_matrix(K, B, 1e-8)
-    assert np.all(r0["count"][:3] == 3) and r0["spread"][:3].max() > 1e-3
-    G = _random_unitary(n, 17)
-    r1 = _linearized_qp_matrix(G.conj().T @ K @ G, G.conj().T @ B @ G, 1e-8)
-    np.testing.assert_allclose(np.sort(r1["Zqp"]), np.sort(r0["Zqp"]), atol=1e-10)
-    assert np.abs(np.sort(np.diag(r1["Zqp_mat"]).real[:3]) - np.sort(np.diag(r0["Zqp_mat"]).real[:3])).max() > 1e-6
-
-
-def test_project_blockwise_reduces_to_diagonal_when_nondegenerate():
-    n = 4
-    c = _random_unitary(n, 18); M = _random_hermitian(n, 19)
-    d, spread, count, Mqp = _project_blockwise(np.arange(n, dtype=float), c, M, 1e-8)
-    np.testing.assert_allclose(d, np.diag(Mqp).real, atol=1e-12)
-    assert np.all(count == 1) and np.all(spread == 0.0)
-
+def test_scalar_pole_gives_analytic_Z_and_energies():
+    """A single pole with a scalar residue, Sigma(iw) = g I / (iw - e), has A = -(g/e) I and
+    B = -(g/e^2) I, so the whole construction collapses to scalars: Z = (1 + g/e^2)^-1 on every
+    level and H_QP = K / (1 + g/e^2). Checks the kernel against the closed form rather than
+    against another implementation."""
+    iaft = _iaft(); n = 4
+    e, g = 7.0, 3.0
+    V = [g * np.eye(n, dtype=np.complex128)]
+    St = _sigma_tau(iaft, [e], V)
+    F = _random_hermitian(n, 17); mu = 0.3
+    res = linearized_qp_from_arrays(F[None, None], St[:, None, None], mu, iaft,
+                                    converge=False, n_fit=8)
+    z = 1.0 / (1.0 + g / e**2)
+    np.testing.assert_allclose(res.Zqp_ska[0, 0], np.full(n, z), atol=1e-10)
+    eigF = np.linalg.eigvalsh(F)
+    np.testing.assert_allclose(np.sort(res.E_ska[0, 0]), np.sort((eigF - g / e - mu) * z), atol=1e-9)
+    np.testing.assert_allclose(res.Z_skab[0, 0], z * np.eye(n), atol=1e-10)
 
 # ---------------------------------------------------------------------------
 # linearized_qp_from_arrays: basis covariance, projection (non-)commutation, ladder
@@ -306,18 +167,23 @@ def _sigma_tau(iaft, e, V):
     return iaft.w_to_tau(_sigma_w(iaft, e, V), "fermion")
 
 
-def test_from_arrays_single_fit_matches_matrix_solver():
+def test_from_arrays_single_fit_returns_a_consistent_result():
     iaft = _iaft(); n = 5
     e, Vp = _hermitian_poles(n, 3, 21); St = _sigma_tau(iaft, e, Vp)
     F = _random_hermitian(n, 22); mu = 0.1
     res = linearized_qp_from_arrays(F[None, None], St[:, None, None], mu, iaft, converge=False, n_fit=8)
-    assert isinstance(res, LinearizedQPResult)
-    c, _ = matsubara_low_freq_coefficients(iaft.tau_to_w(St, "fermion"), iaft, n_fit=8)
-    r = _linearized_qp_matrix(F + c[0] - mu * np.eye(n), c[1], 1e-8)
-    np.testing.assert_allclose(res.E_qp[0, 0], r["E"], atol=1e-12)
-    np.testing.assert_allclose(res.Z_qp[0, 0], r["Zqp"], atol=1e-12)
-    np.testing.assert_allclose(res.Z[0, 0], r["Zmat"], atol=1e-12)
-    assert res.err_fit is None and res.err_basis is not None
+    assert isinstance(res, LinearizedQPResult) and not isinstance(res, LinearizedQPLadder)
+    assert res.E_ska.shape == (1, 1, n) and res.Z_skab.shape == (1, 1, n, n)
+    assert res.n_fit == 8 and res.fit_order == 15 and res.status_sk[0, 0] == 0
+    # Zqp <= 1 is not asserted here: _hermitian_poles draws Hermitian residues that are not
+    # positive semidefinite, so this Sigma is not causal and B is not negative semidefinite.
+    assert np.all(res.Zqp_ska > 0.0)
+    # pole weights are the diagonal of Z in the H_QP eigenbasis, so they sum to Tr Z
+    assert abs(res.Zqp_ska[0, 0].sum() - np.trace(res.Z_skab[0, 0]).real) < 1e-10
+    assert abs(res.sumrule_sk[0, 0]) < 1e-10
+    # H_QP is stored with its eigendecomposition
+    Hqp = res.V_skab[0, 0] @ np.diag(res.E_ska[0, 0]) @ res.V_skab[0, 0].conj().T
+    np.testing.assert_allclose(Hqp, res.Hqp_skab[0, 0], atol=1e-11)
 
 
 def test_from_arrays_is_basis_covariant():
@@ -328,9 +194,9 @@ def test_from_arrays_is_basis_covariant():
     r1 = linearized_qp_from_arrays((U.conj().T @ F @ U)[None, None],
                                    np.einsum("ab,tbc,cd->tad", U.conj().T, St, U)[:, None, None],
                                    0.0, iaft, converge=False, n_fit=6)
-    np.testing.assert_allclose(r1.E_qp, r0.E_qp, atol=1e-11)
-    np.testing.assert_allclose(r1.Z_qp, r0.Z_qp, atol=1e-11)
-    np.testing.assert_allclose(r1.Z[0, 0], U.conj().T @ r0.Z[0, 0] @ U, atol=1e-11)
+    np.testing.assert_allclose(r1.E_ska, r0.E_ska, atol=1e-11)
+    np.testing.assert_allclose(r1.Zqp_ska, r0.Zqp_ska, atol=1e-11)
+    np.testing.assert_allclose(r1.Z_skab[0, 0], U.conj().T @ r0.Z_skab[0, 0] @ U, atol=1e-11)
 
 
 def test_projection_commutes_with_K_and_B_but_not_with_Z():
@@ -343,10 +209,10 @@ def test_projection_commutes_with_K_and_B_but_not_with_Z():
     full = linearized_qp_from_arrays(F[None, None], St[:, None, None], 0.0, iaft, converge=False, n_fit=8)
     St_W = np.array([proj(St[t]) for t in range(St.shape[0])])
     sub = linearized_qp_from_arrays(proj(F)[None, None], St_W[:, None, None], 0.0, iaft, converge=False, n_fit=8)
-    np.testing.assert_allclose(sub.K[0, 0], proj(full.K[0, 0]), atol=1e-11)
-    np.testing.assert_allclose(sub.B[0, 0], proj(full.B[0, 0]), atol=1e-11)
-    assert np.abs(sub.Z[0, 0] - proj(full.Z[0, 0])).max() > 1e-3
-    assert min(np.abs(full.E_qp[0, 0][:, None] - sub.E_qp[0, 0][None, :]).min(axis=0)) > 1e-4
+    np.testing.assert_allclose(_K(sub)[0, 0], proj(_K(full)[0, 0]), atol=1e-11)
+    np.testing.assert_allclose(_B(sub)[0, 0], proj(_B(full)[0, 0]), atol=1e-11)
+    assert np.abs(sub.Z_skab[0, 0] - proj(full.Z_skab[0, 0])).max() > 1e-3
+    assert min(np.abs(full.E_ska[0, 0][:, None] - sub.E_ska[0, 0][None, :]).min(axis=0)) > 1e-4
 
 
 def test_ladder_converges_and_reports_uncertainties():
@@ -354,25 +220,57 @@ def test_ladder_converges_and_reports_uncertainties():
     e, Vp = _hermitian_poles(n, 3, 31); St = _sigma_tau(iaft, e, Vp)
     F = _random_hermitian(n, 32)
     res = linearized_qp_from_arrays(F[None, None], St[:, None, None], 0.0, iaft, converge=True, n_fit_max=10)
-    assert res.diagnostics["converged"] and len(res.ladder) >= 3
-    # rungs approach the analytic Z = <v|(I-B)^-1|v> built from the exact B
-    A_ex, B_ex = _exact_AB(e, Vp)
-    r_ex = _linearized_qp_matrix(F + A_ex, B_ex, 1e-8)
-    assert np.abs(np.sort(res.Z_qp[0, 0]) - np.sort(r_ex["Zqp"])).max() < 1e-5
-    assert res.err_fit.shape == res.Z_qp.shape and np.all(res.err_fit >= 0) and res.err_fit.max() < 1e-4
-    assert res.err_basis.shape == res.Z_qp.shape and np.all(np.isfinite(res.err_basis))
-    assert abs(res.diagnostics["sumrule_violation"]) < 1e-12
+    assert isinstance(res, LinearizedQPLadder) and res.n_accepted >= 3
+    assert isinstance(res.last, LinearizedQPResult) and res.last.n_fit == res.n_fit_history[-1]
+    assert res.Zqp_history.shape == (res.n_accepted,) + res.last.Zqp_ska.shape
+    np.testing.assert_allclose(res.Zqp_history[-1], res.last.Zqp_ska)
+    # the exact-Z comparison needs the analytic A, B and lives with the NumPy reference
+    # (implementation_notes/quasiparticle_Z_at_arbitrary_k/test_linearized_qp_numpy.py)
+    # err_fit is one number per (s,k): a unitary invariant of the last change of Z
+    sk = res.last.Zqp_ska.shape[:2]
+    assert res.err_fit_sk.shape == sk and np.all(res.err_fit_sk >= 0) and res.err_fit_sk.max() < 1e-4
+    assert res.dHqp_sk.shape == sk and np.all(res.dHqp_sk >= 0)
+    assert np.abs(res.last.sumrule_sk).max() < 1e-12
 
 
-def test_ladder_stops_at_conditioning_wall():
+def test_ladder_is_capped_by_the_sampling_mesh():
+    """The kernel selects Sigma(i omega) off the sampling mesh rather than interpolating onto
+    arbitrary Matsubara indices, so the ladder cannot climb past the contiguous run of low odd
+    frequencies (12 for DLR here). It must stop there and say so, not walk off the mesh."""
     iaft = _iaft(); n = 3
     St = iaft.w_to_tau(_poles_near_window(iaft, seed=33), "fermion")
-    res = linearized_qp_from_arrays(_random_hermitian(n, 34)[None, None], St[:, None, None], 0.0, iaft,
-                                    converge=True, n_fit_max=60, exact_resid_tol=1e-9)
-    stopped = res.diagnostics["ladder_stopped"]
-    assert stopped is not None and 15 <= stopped[0] <= 25          # the wall, not n_fit_max
-    assert res.diagnostics["n_fit"] == stopped[0] - 1
-    assert res.diagnostics["fit_resid"] <= 1e-9 and res.diagnostics["converged"]
+    res = linearized_qp_from_arrays(_random_hermitian(n, 34)[None, None], St[:, None, None], 0.0,
+                                    iaft, converge=True, n_fit_max=60, fit_resid_tol=1e-9)
+    nf_mesh = res.n_fit_mesh_max
+    assert nf_mesh == 12                                  # DLR, beta=100, wmax=40, prec="high"
+    assert res.mesh_limited and res.stopped_n_fit == 0    # ended at the mesh, not at the gate
+    assert res.last.n_fit == nf_mesh and res.n_accepted >= 2
+
+
+def test_single_fit_beyond_the_mesh_raises():
+    iaft = _iaft(); n = 3
+    e, Vp = _hermitian_poles(n, 2, 3); St = _sigma_tau(iaft, e, Vp)
+    with pytest.raises(ValueError, match="out of reach"):
+        linearized_qp_from_arrays(_random_hermitian(n, 4)[None, None], St[:, None, None], 0.0,
+                                  iaft, converge=False, n_fit=40)
+
+
+def test_exact_degeneracy_with_scalar_Z_is_unambiguous():
+    """Two exactly degenerate H_QP levels with a scalar residue: Z is proportional to I, so the
+    per-level <v|Z|v> do not depend on which basis of the degenerate pair the eigensolver
+    returned (Schur). No blocking is attempted by the kernel; this pins that the common
+    symmetric case needs none."""
+    iaft = _iaft(); n = 4
+    e, g = 7.0, 3.0
+    St = _sigma_tau(iaft, [e], [g * np.eye(n, dtype=np.complex128)])
+    U = _random_unitary(n, 41)
+    F = U @ np.diag([-1.0, 0.5, 0.5, 2.0]) @ U.conj().T                # exact degeneracy
+    F = 0.5 * (F + F.conj().T)
+    res = linearized_qp_from_arrays(F[None, None], St[:, None, None], 0.0, iaft,
+                                    converge=False, n_fit=8)
+    z = 1.0 / (1.0 + g / e**2)
+    np.testing.assert_allclose(res.Zqp_ska[0, 0], np.full(n, z), atol=1e-10)
+    assert abs(res.sumrule_sk[0, 0]) < 1e-12
 
 
 # ---------------------------------------------------------------------------
@@ -401,14 +299,54 @@ def test_checkpoint_roundtrip_mesh():
             ar["system"] = {"H0_skij": H0}
             ar["scf"] = {"final_iter": 0, "iter0": {"Sigma_tskij": Sigma_t, "F_skij": Fst, "mu": 0.2}}
         res = linearized_qp_from_checkpoint(chkpt, source="mesh", converge=False, n_fit=6, fit_order=5)
-    assert res.basis == "KS" and res.Z_qp.shape == (ns, nk, norb)
-    np.testing.assert_allclose(np.sort(res.Z_qp[0, 0]), np.sort(Z_expected), rtol=1e-5)
-    np.testing.assert_allclose(np.diag(res.Z[0, 0]).real, Z_expected, rtol=1e-5)
+    assert isinstance(res, LinearizedQPResult) and res.Zqp_ska.shape == (ns, nk, norb)
+    assert res.mu == 0.2 and res.n_fit == 6 and res.fit_order == 5
+    np.testing.assert_allclose(np.sort(res.Zqp_ska[0, 0]), np.sort(Z_expected), rtol=1e-5)
+    np.testing.assert_allclose(np.diag(res.Z_skab[0, 0]).real, Z_expected, rtol=1e-5)
     # K includes H0: static levels are H0 + F + A - mu
     A_ex = np.diag([-g**2 / eps for eps, g in params])
-    np.testing.assert_allclose(res.K[0, 0], H0[0, 0] + Fst[0, 0] + A_ex - 0.2 * np.eye(norb), atol=1e-5)
+    np.testing.assert_allclose(_K(res)[0, 0], H0[0, 0] + Fst[0, 0] + A_ex - 0.2 * np.eye(norb), atol=1e-5)
 
 
 def test_checkpoint_bad_source_raises():
     with pytest.raises((ValueError, KeyError, FileNotFoundError, RuntimeError, OSError)):
         linearized_qp_from_checkpoint("/nonexistent.h5", source="mesh")
+
+
+# ---------------------------------------------------------------------------
+# failure reporting
+# ---------------------------------------------------------------------------
+
+def test_residual_gate_is_reported_in_status():
+    """An exactly-determined fit whose residual exceeds fit_resid_tol is not a solution: the kernel
+    leaves the point zero with status_sk == 1 and the Python layer warns. A zero tolerance
+    trips the gate on any data (the residual is ~1e-15, never exactly 0)."""
+    iaft = _iaft(); n = 3
+    e, Vp = _hermitian_poles(n, 2, 51); St = _sigma_tau(iaft, e, Vp)
+    F = _random_hermitian(n, 52)
+    with pytest.warns(RuntimeWarning, match="residual gate"):
+        res = linearized_qp_from_arrays(F[None, None], St[:, None, None], 0.0, iaft,
+                                        converge=False, n_fit=4, fit_resid_tol=0.0)
+    assert res.status_sk[0, 0] == 1 and (res.Zqp_ska == 0.0).all()
+    assert 0.0 < res.resid_sk[0, 0] < 1e-12         # the diagnostics of the fit are still filled
+    ok = linearized_qp_from_arrays(F[None, None], St[:, None, None], 0.0, iaft,
+                                   converge=False, n_fit=4)
+    assert ok.status_sk[0, 0] == 0 and ok.resid_sk[0, 0] == res.resid_sk[0, 0]
+
+
+def test_non_positive_definite_is_reported_in_status():
+    # a non-causal (positive) slope makes I - B indefinite: status_sk == 2, zero entries, a warning
+    iaft = _iaft(); n = 2
+    iw = _iw(iaft)
+    S = np.zeros((len(iw), n, n), dtype=np.complex128)
+    S[:, 0, 0] = -27.0 / (iw - 4.0)   # weight -27 at e = 4: B = -V/e^2 = +27/16 > 1 -> 1 - B < 0
+    St = iaft.w_to_tau(S, "fermion")
+    F = np.zeros((n, n), dtype=np.complex128)
+    with pytest.warns(RuntimeWarning, match="not positive definite"):
+        b = linearized_qp_from_arrays(F[None, None], St[:, None, None], 0.0, iaft,
+                                      converge=False, n_fit=4)
+    assert b.status_sk[0, 0] == 2 and np.count_nonzero(b.status_sk == 2) == 1
+    assert b.min_eig_sk[0, 0] < 0.0
+    assert (b.Zqp_ska == 0.0).all() and (b.Z_skab == 0.0).all() and (b.E_ska == 0.0).all()
+
+

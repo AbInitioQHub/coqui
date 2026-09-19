@@ -18,6 +18,6 @@ limitations under the License.
 ==========================================================================
 """
 
-from .mbpt_driver import run_hf, run_gw, run_evgw, run_qpgw
+from .mbpt_driver import run_hf, run_gw, run_evgw, run_qpgw, run_lqsgw
 
-__all__ = ["run_hf", "run_gw", "run_evgw", "run_qpgw"]
+__all__ = ["run_hf", "run_gw", "run_evgw", "run_qpgw", "run_lqsgw"]

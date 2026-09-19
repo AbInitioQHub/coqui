@@ -344,7 +344,7 @@ void add_qpscf_vcorr(MBState &mb_state,
                      qp_params_t &qp_params);
 
 /**
- * Linearized quasiparticle update of the QP Hamiltonian (qp_scf_mode == "lqsscf"):
+ * Linearized quasiparticle update of the QP Hamiltonian (qp_scf_mode == "qpscf", qp_approx == "lqp"):
  * 1. G0 from (MO_skia, E_ska, mu); W; dynamic Sigma(tau) in the primary basis
  * 2. per (s,k): rotate F = Heff (H0 + V_HF) and Sigma(tau) to the MO basis, fit A = Sigma(0),
  *    B = Sigma'(0), Z = (1 - B)^-1, H_QP = Z^1/2 (F + A - mu) Z^1/2 
@@ -367,7 +367,7 @@ void add_qpscf_vcorr(MBState &mb_state,
  * @param qp_params - [INPUT] quasi-particle fitting parameters.
  */
 template<typename eri_t, typename corr_solver_t>
-void add_lqsscf_vcorr(MBState &mb_state, double mu, solvers::mb_solver_t<corr_solver_t> &mb_solver,
+void add_lqp_vcorr(MBState &mb_state, double mu, solvers::mb_solver_t<corr_solver_t> &mb_solver,
                       eri_t &eri, const imag_axes_ft::IAFT &FT, qp_params_t &qp_params);
 
 template<typename function_t>

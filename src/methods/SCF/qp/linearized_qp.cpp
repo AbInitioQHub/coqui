@@ -19,6 +19,7 @@
  */
 
 #include <cmath>
+#include <set>
 #include <algorithm>
 #include <functional>
 #include <limits>
@@ -27,6 +28,7 @@
 #include "nda/lapack.hpp"
 #include "utilities/check.hpp"
 #include "IO/app_loggers.h"
+#include <memory>
 #include "methods/SCF/qp/linearized_qp.hpp"
 
 namespace methods::lqp {
@@ -48,34 +50,6 @@ namespace {
     return (scale > 0.0) ? anti / scale : 0.0;
   }
 
-  // Diagonal of Hermitian M in the eigenbasis C (columns), eigenvalues of the sub-block
-  // inside degenerate groups of eps (ascending). Returns (values, ndeg_max).
-  std::pair<nda::array<double, 1>, int>
-  project_blockwise(nda::array<double, 1> const& eps, nda::array<ComplexType, 2> const& C,
-                    nda::array<ComplexType, 2> const& M, double deg_tol) {
-    long n = eps.shape(0);
-    nda::array<ComplexType, 2> tmp(n, n), Mqp(n, n);
-    nda::blas::gemm(M, C, tmp);
-    nda::blas::gemm(nda::dagger(C), tmp, Mqp);
-    hermitize(Mqp());
-    nda::array<double, 1> d(n);
-    int ndeg_max = 1;
-    long i = 0;
-    while (i < n) {
-      long j = i + 1;
-      while (j < n and (eps(j) - eps(j - 1)) <= deg_tol) ++j;
-      if (j - i == 1) {
-        d(i) = Mqp(i, i).real();
-      } else {
-        nda::array<ComplexType, 2> blk(Mqp(nda::range(i, j), nda::range(i, j)));
-        auto ev = nda::linalg::eigenvalues(blk);
-        for (long l = i; l < j; ++l) d(l) = ev(l - i);
-        ndeg_max = std::max<int>(ndeg_max, int(j - i));
-      }
-      i = j;
-    }
-    return {d, ndeg_max};
-  }
 } // anonymous namespace
 
 nda::array<long, 1> fit_window(int n_fit, bool symmetric_window) {
@@ -225,7 +199,7 @@ low_freq_coefficients(nda::array_const_view<ComplexType, 3> Sigma_wab,
 }
 
 qp_matrix_t linearized_qp_matrix(nda::array_const_view<ComplexType, 2> K_in,
-                                 nda::array_const_view<ComplexType, 2> B_in, double deg_tol) {
+                                 nda::array_const_view<ComplexType, 2> B_in) {
   long n = K_in.shape(0);
   utils::check(K_in.shape(1) == n and B_in.shape(0) == n and B_in.shape(1) == n,
                "linearized_qp.cpp::linearized_qp_matrix: K and B must be square and of equal size");
@@ -246,22 +220,27 @@ qp_matrix_t linearized_qp_matrix(nda::array_const_view<ComplexType, 2> K_in,
     Uw (nda::range::all, l) = U(nda::range::all, l) * (1.0 / w(l));
     Uwh(nda::range::all, l) = U(nda::range::all, l) * (1.0 / std::sqrt(w(l)));
   }
-  r.Z = nda::array<ComplexType, 2>(n, n); r.Zhalf = nda::array<ComplexType, 2>(n, n);
+  nda::array<ComplexType, 2> Zhalf(n, n);            // construction intermediate, not kept
+  r.Z = nda::array<ComplexType, 2>(n, n);
   nda::blas::gemm(Uw,  nda::dagger(U), r.Z);
-  nda::blas::gemm(Uwh, nda::dagger(U), r.Zhalf);
-  hermitize(r.Z()); hermitize(r.Zhalf());
+  nda::blas::gemm(Uwh, nda::dagger(U), Zhalf);
+  hermitize(r.Z()); hermitize(Zhalf());
 
   // H_QP = Z^1/2 K Z^1/2
   nda::array<ComplexType, 2> tmp(n, n);
   r.Hqp = nda::array<ComplexType, 2>(n, n);
-  nda::blas::gemm(K, r.Zhalf, tmp);
-  nda::blas::gemm(r.Zhalf, tmp, r.Hqp);
+  nda::blas::gemm(K, Zhalf, tmp);
+  nda::blas::gemm(Zhalf, tmp, r.Hqp);
   hermitize(r.Hqp());
   auto [E, V] = nda::linalg::eigenelements(r.Hqp);
   r.E = E; r.V = V;
 
-  auto [Zqp, ndeg] = project_blockwise(r.E, r.V, r.Z, deg_tol);
-  r.Zqp = Zqp; r.ndeg_max = ndeg;
+  // Pole weights: the diagonal of Z in the H_QP eigenbasis, <v_l|Z|v_l>.
+  nda::array<ComplexType, 2> ZV(n, n), Zqp_mat(n, n);
+  nda::blas::gemm(r.Z, r.V, ZV);
+  nda::blas::gemm(nda::dagger(r.V), ZV, Zqp_mat);
+  r.Zqp = nda::array<double, 1>(n);
+  for (long l = 0; l < n; ++l) r.Zqp(l) = Zqp_mat(l, l).real();
   double trZ = 0.0;
   for (long a = 0; a < n; ++a) trZ += r.Z(a, a).real();
   r.sumrule = nda::sum(r.Zqp) - trZ;
@@ -323,50 +302,176 @@ point_result_t solve_point(nda::array_const_view<ComplexType, 2> F_ab,
   return r;
 }
 
-result_t linearized_qp_solve(boost::mpi3::communicator& comm,
-                             nda::array_const_view<ComplexType, 4> F_skab,
-                             nda::array_const_view<ComplexType, 5> Sigma_tskab,
-                             double mu, imag_axes_ft::IAFT const& ft, fit_params_t const& p) {
+// The one loop behind both public overloads. comm == nullptr means serial: every point on
+// this process and no reduction, which also keeps the array path free of any MPI requirement
+// (the Python binding may be called in a process that never initialized MPI).
+static result_t solve_impl(boost::mpi3::communicator* comm,
+                           nda::array_const_view<ComplexType, 4> F_skab,
+                           nda::array_const_view<ComplexType, 5> Sigma_tskab,
+                           double mu, imag_axes_ft::IAFT const& ft, fit_params_t const& p,
+                           on_failure_e on_failure) {
   long ns = F_skab.shape(0), nk = F_skab.shape(1), n = F_skab.shape(2);
-  utils::check(Sigma_tskab.shape(1) == ns and Sigma_tskab.shape(2) == nk and
-               Sigma_tskab.shape(3) == n and Sigma_tskab.shape(4) == n,
-               "linearized_qp.cpp::linearized_qp_solve: F_skab and Sigma_tskab shapes are inconsistent");
+  long rank = comm ? comm->rank() : 0, size = comm ? comm->size() : 1;
+  utils::check(F_skab.shape(3) == n,
+               "linearized_qp.cpp::linearized_qp_solve: F_skab must be square in its last two "
+               "indices, got ({}, {}).", n, F_skab.shape(3));
+  utils::check(Sigma_tskab.shape(0) == ft.nt_f() and Sigma_tskab.shape(1) == ns and
+               Sigma_tskab.shape(2) == nk and Sigma_tskab.shape(3) == n and Sigma_tskab.shape(4) == n,
+               "linearized_qp.cpp::linearized_qp_solve: Sigma_tskab shape is inconsistent with "
+               "F_skab and the IAFT tau mesh ({} points).", ft.nt_f());
   auto op = make_fit_operator(ft, p);
 
   result_t res;
   res.mu = mu; res.n_fit = p.n_fit; res.fit_order = op.fit_order; res.cond = op.cond;
-  for (auto* X : {&res.K_skab, &res.B_skab, &res.Z_skab, &res.Zhalf_skab, &res.Hqp_skab, &res.V_skab}) {
-    *X = nda::array<ComplexType, 4>(ns, nk, n, n); (*X)() = 0.0;
-  }
-  res.E_ska = nda::array<double, 3>(ns, nk, n);   res.E_ska() = 0.0;
-  res.Zqp_ska = nda::array<double, 3>(ns, nk, n); res.Zqp_ska() = 0.0;
-  res.min_eig_sk = nda::array<double, 2>(ns, nk); res.min_eig_sk() = 0.0;
-  res.resid_sk = nda::array<double, 2>(ns, nk);   res.resid_sk() = 0.0;
+  for (auto* X : {&res.Z_skab, &res.Hqp_skab, &res.V_skab})
+    *X = nda::array<ComplexType, 4>::zeros({ns, nk, n, n});
+  res.E_ska   = nda::array<double, 3>::zeros({ns, nk, n});
+  res.Zqp_ska = nda::array<double, 3>::zeros({ns, nk, n});
+  for (auto* X : {&res.min_eig_sk, &res.resid_sk, &res.anti_herm_A_sk, &res.anti_herm_B_sk,
+                  &res.herm_data_sk, &res.sumrule_sk})
+    *X = nda::array<double, 2>::zeros({ns, nk});
+  res.status_sk   = nda::array<long, 2>::zeros({ns, nk});
 
-  for (long sk = comm.rank(); sk < ns * nk; sk += comm.size()) {
+  for (long sk = rank; sk < ns * nk; sk += size) {
     long is = sk / nk, ik = sk % nk;
-    // slice at (is, ik) with range::all on t is NOT contiguous -> make_regular before reshaping
+    // the (t, is, ik, ...) slice of a 5-D array is not contiguous once ns*nk > 1
     auto Sigma_tab = nda::make_regular(Sigma_tskab(nda::range::all, is, ik, nda::ellipsis{}));
-    auto r = solve_point(F_skab(is, ik, nda::ellipsis{}), Sigma_tab, mu, ft, op, p);
-    res.K_skab(is, ik, nda::ellipsis{})     = F_skab(is, ik, nda::ellipsis{}) + r.A;
-    for (long a = 0; a < n; ++a) res.K_skab(is, ik, a, a) -= mu;
-    res.B_skab(is, ik, nda::ellipsis{})     = r.B;
+    int status = 0;
+    auto r = try_solve_point(F_skab(is, ik, nda::ellipsis{}), Sigma_tab, mu, ft, op, p, status);
+    if (on_failure == on_failure_e::abort) {
+      utils::check(status != 1,
+                   "linearized_qp.cpp::linearized_qp_solve: at (s={}, k={}) the exactly-determined "
+                   "fit (n_fit={}, fit_order={}) no longer interpolates the data: relative residual "
+                   "{:.2e} > {:.0e} (cond {:.2e}). Lower n_fit.", is, ik, p.n_fit, op.fit_order,
+                   r.diagnostics.resid, p.fit_resid_tol, op.cond);
+      utils::check(status != 2,
+                   "linearized_qp.cpp::linearized_qp_solve: at (s={}, k={}) 1 - B is not positive "
+                   "definite (min eigenvalue {:.3e}); Sigma(iw) is not causal there or the fit "
+                   "failed.", is, ik, r.qp.min_eig);
+    }
+    res.status_sk(is, ik) = status;
+    res.resid_sk(is, ik)       = r.diagnostics.resid;
+    res.anti_herm_A_sk(is, ik) = r.diagnostics.anti_herm_A;
+    res.anti_herm_B_sk(is, ik) = r.diagnostics.anti_herm_B;
+    res.herm_data_sk(is, ik)   = r.diagnostics.herm_data;
+    if (status == 1) continue;                    // qp was not computed
+    res.min_eig_sk(is, ik) = r.qp.min_eig;
+    if (status == 2) continue;                    // only min_eig is meaningful
     res.Z_skab(is, ik, nda::ellipsis{})     = r.qp.Z;
-    res.Zhalf_skab(is, ik, nda::ellipsis{}) = r.qp.Zhalf;
     res.Hqp_skab(is, ik, nda::ellipsis{})   = r.qp.Hqp;
     res.V_skab(is, ik, nda::ellipsis{})     = r.qp.V;
     res.E_ska(is, ik, nda::range::all)      = r.qp.E;
     res.Zqp_ska(is, ik, nda::range::all)    = r.qp.Zqp;
-    res.min_eig_sk(is, ik) = r.qp.min_eig;
-    res.resid_sk(is, ik)   = r.diagnostics.resid;
+    res.sumrule_sk(is, ik)                  = r.qp.sumrule;
   }
-  for (auto* X : {&res.K_skab, &res.B_skab, &res.Z_skab, &res.Zhalf_skab, &res.Hqp_skab, &res.V_skab})
-    comm.all_reduce_in_place_n(X->data(), X->size(), std::plus<>{});
-  comm.all_reduce_in_place_n(res.E_ska.data(), res.E_ska.size(), std::plus<>{});
-  comm.all_reduce_in_place_n(res.Zqp_ska.data(), res.Zqp_ska.size(), std::plus<>{});
-  comm.all_reduce_in_place_n(res.min_eig_sk.data(), res.min_eig_sk.size(), std::plus<>{});
-  comm.all_reduce_in_place_n(res.resid_sk.data(), res.resid_sk.size(), std::plus<>{});
+  if (comm) {
+    for (auto* X : {&res.Z_skab, &res.Hqp_skab, &res.V_skab})
+      comm->all_reduce_in_place_n(X->data(), X->size(), std::plus<>{});
+    for (auto* X : {&res.E_ska, &res.Zqp_ska})
+      comm->all_reduce_in_place_n(X->data(), X->size(), std::plus<>{});
+    for (auto* X : {&res.min_eig_sk, &res.resid_sk, &res.anti_herm_A_sk, &res.anti_herm_B_sk,
+                    &res.herm_data_sk, &res.sumrule_sk})
+      comm->all_reduce_in_place_n(X->data(), X->size(), std::plus<>{});
+    comm->all_reduce_in_place_n(res.status_sk.data(), res.status_sk.size(), std::plus<>{});
+  }
   return res;
+}
+
+result_t linearized_qp_solve(boost::mpi3::communicator& comm,
+                             nda::array_const_view<ComplexType, 4> F_skab,
+                             nda::array_const_view<ComplexType, 5> Sigma_tskab,
+                             double mu, imag_axes_ft::IAFT const& ft, fit_params_t const& p,
+                             on_failure_e on_failure) {
+  return solve_impl(std::addressof(comm), F_skab, Sigma_tskab, mu, ft, p, on_failure);  // mpi3 overloads operator&
+}
+
+result_t linearized_qp_solve(nda::array_const_view<ComplexType, 4> F_skab,
+                             nda::array_const_view<ComplexType, 5> Sigma_tskab,
+                             double mu, imag_axes_ft::IAFT const& ft, fit_params_t const& p,
+                             on_failure_e on_failure) {
+  return solve_impl(nullptr, F_skab, Sigma_tskab, mu, ft, p, on_failure);
+}
+
+
+int max_n_fit_on_mesh(imag_axes_ft::IAFT const& ft, bool symmetric_window) {
+  auto wn = ft.wn_mesh_f();
+  std::set<long> on_mesh(wn.begin(), wn.end());
+  int nf = 0;
+  while (true) {
+    long n = 2 * (nf + 1) - 1;
+    if (not on_mesh.count(n) or (symmetric_window and not on_mesh.count(-n))) return nf;
+    ++nf;
+  }
+}
+
+static ladder_result_t ladder_impl(boost::mpi3::communicator* comm,
+                                   nda::array_const_view<ComplexType, 4> F_skab,
+                                   nda::array_const_view<ComplexType, 5> Sigma_tskab,
+                                   double mu, imag_axes_ft::IAFT const& ft, fit_params_t const& p,
+                                   int n_fit_max, on_failure_e on_failure) {
+  long ns = F_skab.shape(0), nk = F_skab.shape(1), n = F_skab.shape(2);
+  ladder_result_t lad;
+  lad.n_fit_mesh_max = max_n_fit_on_mesh(ft, p.symmetric_window);
+  lad.mesh_limited = lad.n_fit_mesh_max < n_fit_max;
+  int top = std::min(n_fit_max, lad.n_fit_mesh_max);
+  lad.err_fit_sk = nda::array<double, 2>::zeros({ns, nk});
+  lad.dHqp_sk    = nda::array<double, 2>::zeros({ns, nk});
+
+  std::vector<long> nf_hist; std::vector<double> resid_hist;
+  std::vector<nda::array<double, 3>> zqp_hist;
+  for (int nf = 2; nf <= top; ++nf) {
+    fit_params_t q = p;
+    q.n_fit = nf; q.fit_order = -1;                     // exactly determined: the rung interpolates
+    q.fit_resid_tol = std::numeric_limits<double>::infinity();   // the gate is applied here
+    auto cand = solve_impl(comm, F_skab, Sigma_tskab, mu, ft, q, on_failure);
+    double resid_max = nda::max_element(cand.resid_sk);
+    if (resid_max > p.fit_resid_tol) {
+      lad.stopped_n_fit = nf; lad.stopped_resid = resid_max; lad.stopped_cond = cand.cond;
+      break;
+    }
+    if (lad.n_accepted > 0) {
+      // truncation-error estimate: ||Z(N) - Z(N-1)||_2 per point, and the change of H_QP
+      nda::array<ComplexType, 2> dZ(n, n);
+      for (long is = 0; is < ns; ++is)
+        for (long ik = 0; ik < nk; ++ik) {
+          dZ = cand.Z_skab(is, ik, nda::ellipsis{}) - lad.last.Z_skab(is, ik, nda::ellipsis{});
+          hermitize(dZ());
+          auto ev = nda::linalg::eigenvalues(dZ);
+          lad.err_fit_sk(is, ik) = std::max(std::abs(ev(0)), std::abs(ev(n - 1)));
+          double dh = 0.0;
+          for (long a = 0; a < n; ++a)
+            for (long b = 0; b < n; ++b)
+              dh = std::max(dh, std::abs(cand.Hqp_skab(is, ik, a, b) - lad.last.Hqp_skab(is, ik, a, b)));
+          lad.dHqp_sk(is, ik) = dh;
+        }
+    }
+    nf_hist.push_back(nf); resid_hist.push_back(resid_max); zqp_hist.push_back(cand.Zqp_ska);
+    lad.last = std::move(cand);
+    ++lad.n_accepted;
+  }
+  lad.n_fit_history = nda::array<long, 1>(lad.n_accepted);
+  lad.resid_history = nda::array<double, 1>(lad.n_accepted);
+  lad.Zqp_history   = nda::array<double, 4>(lad.n_accepted, ns, nk, n);
+  for (int i = 0; i < lad.n_accepted; ++i) {
+    lad.n_fit_history(i) = nf_hist[i]; lad.resid_history(i) = resid_hist[i];
+    lad.Zqp_history(i, nda::ellipsis{}) = zqp_hist[i];
+  }
+  return lad;
+}
+
+ladder_result_t linearized_qp_ladder(boost::mpi3::communicator& comm,
+                                     nda::array_const_view<ComplexType, 4> F_skab,
+                                     nda::array_const_view<ComplexType, 5> Sigma_tskab,
+                                     double mu, imag_axes_ft::IAFT const& ft, fit_params_t const& p,
+                                     int n_fit_max, on_failure_e on_failure) {
+  return ladder_impl(std::addressof(comm), F_skab, Sigma_tskab, mu, ft, p, n_fit_max, on_failure);
+}
+
+ladder_result_t linearized_qp_ladder(nda::array_const_view<ComplexType, 4> F_skab,
+                                     nda::array_const_view<ComplexType, 5> Sigma_tskab,
+                                     double mu, imag_axes_ft::IAFT const& ft, fit_params_t const& p,
+                                     int n_fit_max, on_failure_e on_failure) {
+  return ladder_impl(nullptr, F_skab, Sigma_tskab, mu, ft, p, n_fit_max, on_failure);
 }
 
 } // namespace methods::lqp

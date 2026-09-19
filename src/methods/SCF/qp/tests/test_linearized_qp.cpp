@@ -22,7 +22,11 @@
 
 #include <cmath>
 #include <random>
+#include <set>
+#include <sstream>
 #include <vector>
+
+#include <boost/property_tree/json_parser.hpp>
 
 #include "catch2/catch.hpp"
 #include "configuration.hpp"
@@ -34,6 +38,7 @@
 #include "nda/linalg.hpp"
 #include "numerics/imag_axes_ft/IAFT.hpp"
 #include "methods/SCF/qp/linearized_qp.hpp"
+#include "methods/SCF/qp/qp_params_utils.hpp"
 
 namespace bdft_tests {
 
@@ -232,19 +237,23 @@ namespace bdft_tests {
     CHECK(r.min_eig >= 1.0 - 1e-12);                   // 1 - B >= 1 for causal B
     CHECK(std::abs(r.sumrule) < 1e-12);                 // sum Zqp == Tr Z
     for (long l = 0; l < n; ++l) { CHECK(r.Zqp(l) > 0.0); CHECK(r.Zqp(l) <= 1.0 + 1e-12); }
-    // psi = Z^1/2 v solves K psi = eps (1 - B) psi
-    nda::array<ComplexType, 2> Psi(n, n), lhs(n, n), rhs(n, n), ImB(n, n);
-    nda::blas::gemm(r.Zhalf, r.V, Psi);
-    ImB = -B;
-    for (long a = 0; a < n; ++a) ImB(a, a) += 1.0;
+    // Z (1 - B) == 1: Z really is the inverse the kernel claims
+    nda::array<ComplexType, 2> ImB(n, n), ZImB(n, n), eye(n, n);
+    ImB = -B; eye() = 0.0;
+    for (long a = 0; a < n; ++a) { ImB(a, a) += 1.0; eye(a, a) = 1.0; }
+    nda::blas::gemm(r.Z, ImB, ZImB);
+    ARRAY_EQUAL(ZImB, eye, 1e-12);
+    // psi = Z^1/2 v solves K psi = eps (1 - B) psi. The kernel no longer keeps Z^1/2, so build
+    // it here from Z's eigendecomposition.
+    auto [w, U] = nda::linalg::eigenelements(r.Z);
+    nda::array<ComplexType, 2> Uw(n, n), Zhalf(n, n), Psi(n, n), lhs(n, n), rhs(n, n);
+    for (long l = 0; l < n; ++l) Uw(nda::range::all, l) = U(nda::range::all, l) * std::sqrt(w(l));
+    nda::blas::gemm(Uw, nda::dagger(U), Zhalf);
+    nda::blas::gemm(Zhalf, r.V, Psi);
     nda::blas::gemm(K, Psi, lhs);
     nda::blas::gemm(ImB, Psi, rhs);
     for (long l = 0; l < n; ++l) rhs(nda::range::all, l) *= r.E(l);
     ARRAY_EQUAL(lhs, rhs, 1e-11);
-    // Zhalf Zhalf == Z
-    nda::array<ComplexType, 2> ZZ(n, n);
-    nda::blas::gemm(r.Zhalf, r.Zhalf, ZZ);
-    ARRAY_EQUAL(ZZ, r.Z, 1e-12);
   }
 
   TEST_CASE("lqp_matrix_scalar_B_scales_energies", "[methods_qp]") {
@@ -273,15 +282,19 @@ namespace bdft_tests {
     ARRAY_EQUAL(r0.Zqp, r1.Zqp, 1e-11);
   }
 
-  TEST_CASE("lqp_matrix_degenerate_block_is_basis_independent", "[methods_qp]") {
-    // K = 0 makes H_QP = 0 (fully degenerate); Zqp must be the eigenvalues of Z, any basis
+  TEST_CASE("lqp_matrix_degenerate_levels_keep_the_sum_rule", "[methods_qp]") {
+    // K = 0 makes H_QP = 0, fully degenerate: the eigensolver returns an arbitrary orthonormal
+    // basis and the individual <v|Z|v> are basis-dependent by construction (no blocking is
+    // attempted). What must hold regardless: the sum rule, and every weight lying between the
+    // extreme eigenvalues of Z (the diagonal of a Hermitian matrix is majorized by its spectrum).
     long n = 3;
     nda::array<ComplexType, 2> K(n, n); K() = 0.0;
-    auto B = causal_B(n, 7);
+    auto B = causal_B(n, 8);
     auto r = lqp::linearized_qp_matrix(K, B);
-    CHECK(r.ndeg_max == 3);
-    auto zev = nda::linalg::eigenvalues(r.Z);          // ascending
-    ARRAY_EQUAL(r.Zqp, zev, 1e-12);
+    REQUIRE(r.valid);
+    CHECK(std::abs(r.sumrule) < 1e-12);
+    auto zev = nda::linalg::eigenvalues(r.Z);
+    for (long l = 0; l < n; ++l) { CHECK(r.Zqp(l) >= zev(0) - 1e-12); CHECK(r.Zqp(l) <= zev(n - 1) + 1e-12); }
   }
 
   TEST_CASE("lqp_matrix_flags_non_positive_definite", "[methods_qp]") {
@@ -337,10 +350,137 @@ namespace bdft_tests {
       ARRAY_EQUAL(res.E_ska(0, k, nda::range::all),  r.qp.E,   1e-12);
       ARRAY_EQUAL(res.Zqp_ska(0, k, nda::range::all), r.qp.Zqp, 1e-12);
       ARRAY_EQUAL(res.Z_skab(0, k, nda::ellipsis{}), r.qp.Z,   1e-12);
+      ARRAY_EQUAL(res.Hqp_skab(0, k, nda::ellipsis{}), r.qp.Hqp, 1e-12);
       auto [A, B] = exact_AB(models[k]);
-      ARRAY_EQUAL(res.B_skab(0, k, nda::ellipsis{}), B, 1e-6);
+      ARRAY_EQUAL(r.B, B, 1e-6);                       // the fit itself, per point
     }
     CHECK(res.n_fit == 6); CHECK(res.fit_order == 11);
+  }
+
+  /*
+   * read_qp_block: the two-axis input (qp_approx + the ac/lqp blocks) and the deprecated
+   * qp_type, which used to select the family and the AC solver with one string.
+   */
+  TEST_CASE("lqp_max_n_fit_on_mesh_is_the_contiguous_odd_run", "[methods_qp]") {
+    imag_axes_ft::IAFT ft(100.0, 40.0, imag_axes_ft::dlr_basis);
+    int nf = lqp::max_n_fit_on_mesh(ft, true);
+    auto wn = ft.wn_mesh_f();
+    std::set<long> on(wn.begin(), wn.end());
+    REQUIRE(nf >= 2);
+    for (int k = 1; k <= nf; ++k) { CHECK(on.count(2 * k - 1)); CHECK(on.count(-(2 * k - 1))); }
+    CHECK(not (on.count(2 * (nf + 1) - 1) and on.count(-(2 * (nf + 1) - 1))));
+    // one step beyond the ceiling is exactly where make_fit_operator refuses
+    lqp::fit_params_t p; p.n_fit = nf;
+    CHECK_NOTHROW(lqp::make_fit_operator(ft, p));
+  }
+
+  TEST_CASE("lqp_ladder_converges_to_the_analytic_Z", "[methods_qp]") {
+    auto& mpi_context = utils::make_unit_test_mpi_context();
+    imag_axes_ft::IAFT ft(100.0, 40.0, imag_axes_ft::dlr_basis);
+    long ns = 1, nk = 2, n = 3, nt = ft.nt_f();
+    nda::array<ComplexType, 4> F(ns, nk, n, n);
+    nda::array<ComplexType, 5> S(nt, ns, nk, n, n);
+    std::vector<pole_model_t> models;
+    for (long k = 0; k < nk; ++k) {
+      models.push_back(make_pole_model(n, 3, 40 + k));
+      F(0, k, nda::ellipsis{}) = random_hermitian(n, 50 + k, 0.5);
+      auto St = sigma_tau(models.back(), ft);
+      for (long it = 0; it < nt; ++it) S(it, 0, k, nda::ellipsis{}) = St(it, nda::ellipsis{});
+    }
+    double mu = 0.1;
+    lqp::fit_params_t p;                                 // fit_resid_tol = 1e-8 is the gate
+    auto lad = lqp::linearized_qp_ladder(mpi_context->comm, F, S, mu, ft, p, 10);
+    REQUIRE(lad.n_accepted >= 3);
+    CHECK(lad.n_fit_history(0) == 2);
+    CHECK(lad.n_fit_history(lad.n_accepted - 1) == lad.last.n_fit);
+    CHECK(lad.Zqp_history.shape(0) == lad.n_accepted);
+    // the last rung IS a plain solve at that n_fit
+    lqp::fit_params_t q = p; q.n_fit = lad.last.n_fit; q.fit_order = -1;
+    auto single = lqp::linearized_qp_solve(mpi_context->comm, F, S, mu, ft, q);
+    ARRAY_EQUAL(lad.last.E_ska, single.E_ska, 1e-12);
+    ARRAY_EQUAL(lad.last.Zqp_ska, single.Zqp_ska, 1e-12);
+    // and it reproduces the closed form built from the exact A, B
+    for (long k = 0; k < nk; ++k) {
+      auto [A, B] = exact_AB(models[k]);
+      nda::array<ComplexType, 2> K(F(0, k, nda::ellipsis{}) + A);
+      for (long a = 0; a < n; ++a) K(a, a) -= mu;
+      auto ex = lqp::linearized_qp_matrix(K, B);
+      for (long a = 0; a < n; ++a) VALUE_EQUAL(lad.last.Zqp_ska(0, k, a), ex.Zqp(a), 1e-5, 1e-5);
+      CHECK(lad.err_fit_sk(0, k) >= 0.0); CHECK(lad.err_fit_sk(0, k) < 1e-4);
+      CHECK(lad.dHqp_sk(0, k) >= 0.0);
+    }
+    CHECK(lad.stopped_n_fit == 0);                       // the gate never fired at n_fit <= 10
+    // whether the mesh or n_fit_max ended the climb depends on the IAFT's precision preset
+    CHECK(lad.mesh_limited == (lad.n_fit_mesh_max < 10));
+    CHECK(lad.last.n_fit == std::min(10, lad.n_fit_mesh_max));
+  }
+
+  TEST_CASE("lqp_ladder_is_capped_by_the_sampling_mesh", "[methods_qp]") {
+    auto& mpi_context = utils::make_unit_test_mpi_context();
+    imag_axes_ft::IAFT ft(100.0, 40.0, imag_axes_ft::dlr_basis);
+    long ns = 1, nk = 1, n = 3, nt = ft.nt_f();
+    nda::array<ComplexType, 4> F(ns, nk, n, n);
+    nda::array<ComplexType, 5> S(nt, ns, nk, n, n);
+    auto m = make_pole_model(n, 3, 61);
+    F(0, 0, nda::ellipsis{}) = random_hermitian(n, 62, 0.5);
+    auto St = sigma_tau(m, ft);
+    for (long it = 0; it < nt; ++it) S(it, 0, 0, nda::ellipsis{}) = St(it, nda::ellipsis{});
+    lqp::fit_params_t p;
+    auto lad = lqp::linearized_qp_ladder(mpi_context->comm, F, S, 0.0, ft, p, 60);
+    int nf_mesh = lqp::max_n_fit_on_mesh(ft, true);
+    CHECK(lad.mesh_limited);
+    CHECK(lad.n_fit_mesh_max == nf_mesh);
+    REQUIRE(lad.n_accepted > 0);
+    CHECK(lad.last.n_fit <= nf_mesh);                    // never walked off the mesh
+    CHECK(lad.n_fit_history(lad.n_accepted - 1) <= nf_mesh);
+  }
+
+  TEST_CASE("qp_input_blocks", "[methods_qp]") {
+    auto parse = [](std::string const& json) {
+      std::istringstream in(json);
+      ptree pt;
+      boost::property_tree::read_json(in, pt);
+      qp_params_t p;
+      read_qp_block(pt, p);
+      return p;
+    };
+
+    SECTION("defaults are untouched by an empty block") {
+      auto p = parse("{}");
+      CHECK(p.qp_approx == "qp_eqn");
+      CHECK(p.qp_eqn.solver == "sc");
+      CHECK(p.lqp.n_fit == 6);
+    }
+    SECTION("nested blocks") {
+      auto p = parse(R"({"qp_eqn": {"solver": "sc_newton", "ac_nfit": "30", "eta": "0.01"}, "lqp": {"n_fit": "4"}})");
+      CHECK(p.qp_approx == "qp_eqn");
+      CHECK(p.qp_eqn.solver == "sc_newton");
+      CHECK(p.qp_eqn.ac_nfit == 30);
+      CHECK(p.qp_eqn.eta == Approx(0.01));
+      CHECK(p.lqp.n_fit == 4);          // parsed even though qp_eqn is the selected family
+    }
+    SECTION("qp_approx selects the family, the blocks stay independent") {
+      auto p = parse(R"({"qp_approx": "lqp", "lqp": {"n_fit": "8", "fit_order": "5"}})");
+      CHECK(p.qp_approx == "lqp");
+      CHECK(p.lqp.n_fit == 8);
+      CHECK(p.lqp.fit_order == 5);
+      CHECK(p.qp_eqn.solver == "sc");       // untouched default
+    }
+    SECTION("deprecated qp_type maps onto (qp_approx, qp_eqn.solver)") {
+      auto p = parse(R"({"qp_type": "sc_newton"})");
+      CHECK(p.qp_approx == "qp_eqn");
+      CHECK(p.qp_eqn.solver == "sc_newton");
+      auto q = parse(R"({"qp_type": "linearized"})");
+      CHECK(q.qp_approx == "qp_eqn");
+      CHECK(q.qp_eqn.solver == "linearized");
+      auto r = parse(R"({"qp_type": "lqp"})");
+      CHECK(r.qp_approx == "lqp");
+    }
+    SECTION("the new keys win over the deprecated one") {
+      auto p = parse(R"({"qp_type": "lqp", "qp_approx": "qp_eqn", "qp_eqn": {"solver": "sc_bisection"}})");
+      CHECK(p.qp_approx == "qp_eqn");
+      CHECK(p.qp_eqn.solver == "sc_bisection");
+    }
   }
 
 } // bdft_tests

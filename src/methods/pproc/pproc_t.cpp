@@ -704,14 +704,11 @@ namespace methods {
     long nk  = mf.nkpts_ibz();
     long nb  = mf.nbnd();
     long nts = FT.nt_f();
-    long nw  = FT.nw_f();
 
     app_log(1, "Computing quasiparticle energies from dynamic self-energy");
     app_log(1, "---------------------------------------------------------");
-    app_log(1, "  QP solver              = {}", qp_params.qp_type);
-    app_log(1, "  AC algorithm           = {}", qp_params.ac_alg);
-    app_log(1, "  Nfit                   = {}", qp_params.Nfit);
-    app_log(1, "  eta                    = {}", qp_params.eta);
+    app_log(1, "  QP approximation       = {}{}", qp_params.qp_approx,
+            (qp_params.qp_approx == "qp_eqn")? " (solver = " + qp_params.qp_eqn.solver + ")" : "");
     app_log(1, "  Number of spins        = {}", ns);
     app_log(1, "  Number of IBZ k-points = {}", nk);
     app_log(1, "  Number of bands        = {}\n", nb);
@@ -741,6 +738,37 @@ namespace methods {
       nda::h5_read(iter_grp, "Sigma_tskij", Sigma_loc);
     }
     _context.node_comm.broadcast_n(&mu, 1, 0);
+
+    if (qp_params.qp_approx == "lqp") {
+      // matrix linearization of Sigma(iw) around w = 0 (methods::lqp)
+      lqp_on_ibz_kmesh_impl(FT, qp_params, sFhf_skij, sSigma_tskij, mu, filename, grp_name, iter);
+    } else {
+      // "sc", "sc_newton", "sc_bisection" and "linearized": analytic continuation of the diagonal
+      // Sigma_aa(iw) followed by a scalar quasiparticle equation on the real axis. A different
+      // approximation from "lqp", unchanged by its addition.
+      qp_ac_on_ibz_kmesh_impl(FT, qp_params, sFhf_skij, sSigma_tskij, mu, filename, grp_name, iter);
+    }
+  }
+
+  void pproc_t::qp_ac_on_ibz_kmesh_impl(imag_axes_ft::IAFT const& FT, qp_params_t const& qp_params,
+                                        math::shm::shared_array<nda::array_view<ComplexType, 4>> const& sFhf_skij,
+                                        math::shm::shared_array<nda::array_view<ComplexType, 5>> const& sSigma_tskij,
+                                        double mu, std::string filename, std::string grp_name, long iter) {
+    using math::shm::make_shared_array;
+    using Array_view_4D_t = nda::array_view<ComplexType, 4>;
+    auto [ns, nk, nb, nb2] = sFhf_skij.shape();
+    long nts = FT.nt_f();
+    long nw  = FT.nw_f();
+    app_log(1, "  AC algorithm           = {}", qp_params.qp_eqn.ac_alg);
+    app_log(1, "  Nfit                   = {}", qp_params.qp_eqn.ac_nfit);
+    app_log(1, "  eta                    = {}\n", qp_params.qp_eqn.eta);
+    // Checked here rather than left to the dispatch below, which would otherwise fall through
+    // to bisection and report a scheme the user did not ask for.
+    auto const& sol = qp_params.qp_eqn.solver;
+    utils::check(sol == "sc" or sol == "sc_bisection" or sol == "sc_newton" or sol == "linearized",
+                 "pproc_t::compute_qp_on_ibz_kmesh: unsupported qp_eqn.solver {}. Supported here: "
+                 "sc, sc_bisection, sc_newton, linearized{}", sol,
+                 (sol == "spectral")? " (spectral is only available in the QP-SCF loop)." : ".");
 
     // --- Combined round-robin: diagonalize F, rotate Sigma to MO diagonal, FT, AC+QP, reconstruct H_QP ---
     // Each (s,k) is handled end-to-end so Sigma_tska never needs a global all-reduce.
@@ -786,21 +814,21 @@ namespace methods {
       FT.tau_to_w(Sigma_ta, Sigma_wa, imag_axes_ft::fermion);
 
       // D: AC + QP equation for each band
-      analyt_cont::AC_t AC(qp_params.ac_alg);
-      AC.init(iw_mesh, Sigma_wa, qp_params.Nfit);
+      analyt_cont::AC_t AC(qp_params.qp_eqn.ac_alg);
+      AC.init(iw_mesh, Sigma_wa, qp_params.qp_eqn.ac_nfit);
 
       for (long ia = 0; ia < nb; ++ia) {
         double eps = E_ska(is, ik, ia);
         double E_qp;
-        if (qp_params.qp_type == "linearized") {
-          E_qp = qp_eqn_linearized(eps, AC, ia, mu, eps, qp_params.eta);
-        } else if (qp_params.qp_type == "sc_newton") {
-          auto [E_qp_v, res, conv] = qp_eqn_secant(eps, AC, ia, mu, eps, 400, qp_params.tol, qp_params.eta);
+        if (qp_params.qp_eqn.solver == "linearized") {
+          E_qp = qp_eqn_linearized(eps, AC, ia, mu, eps, qp_params.qp_eqn.eta);
+        } else if (qp_params.qp_eqn.solver == "sc_newton") {
+          auto [E_qp_v, res, conv] = qp_eqn_secant(eps, AC, ia, mu, eps, 400, qp_params.qp_eqn.tol, qp_params.qp_eqn.eta);
           if (!conv)
             app_warning("pproc_t::compute_qp_on_ibz_kmesh: secant fails at (s={},k={},a={}); res={}", is, ik, ia, res);
           E_qp = E_qp_v;
-        } else {
-          auto [E_qp_v, res] = qp_eqn_bisection(eps, AC, ia, mu, eps, qp_params.tol, qp_params.eta);
+        } else {   // "sc" / "sc_bisection", the default
+          auto [E_qp_v, res] = qp_eqn_bisection(eps, AC, ia, mu, eps, qp_params.qp_eqn.tol, qp_params.qp_eqn.eta);
           E_qp = E_qp_v;
         }
         E_qp_ska(is, ik, ia) = E_qp;
@@ -829,9 +857,61 @@ namespace methods {
       nda::h5_write(qp_grp, "E_ska",    E_qp_ska,           false);
       nda::h5_write(qp_grp, "Heff_skij", sHeff_skij.local(), false);
       h5::h5_write(qp_grp, "mu", mu);
+      h5::h5_write(qp_grp, "scheme", qp_params.qp_approx);
+      h5::h5_write(qp_grp, "ac_solver", qp_params.qp_eqn.solver);
     }
     _context.comm.barrier();
     app_log(1, "####### QP energies on IBZ k-mesh done #######\n");
+  }
+
+
+  void pproc_t::lqp_on_ibz_kmesh_impl(imag_axes_ft::IAFT const& FT, qp_params_t const& qp_params,
+                                        math::shm::shared_array<nda::array_view<ComplexType, 4>> const& sFhf_skij,
+                                        math::shm::shared_array<nda::array_view<ComplexType, 5>> const& sSigma_tskij,
+                                        double mu, std::string filename, std::string grp_name, long iter) {
+    auto [ns, nk, nb, nb2] = sFhf_skij.shape();
+    auto const& p = qp_params.lqp;
+    auto op = lqp::make_fit_operator(FT, p);
+    app_log(1, "  Linearized QP kernel in the KS basis:\n"
+               "    n_fit = {}, fit_order = {}, exact = {}, cond(design) = {:.2e}",
+            p.n_fit, op.fit_order, op.exact, op.cond);
+
+    // One call to the kernel's full-array driver (round-robin over the communicator, all-reduced);
+    // the checkpoint wants absolute energies and Heff, so mu is added back here.
+    auto res = lqp::linearized_qp_solve(_context.comm, sFhf_skij.local(), sSigma_tskij.local(), mu, FT, p);
+    nda::array<double, 3> E_ska(res.E_ska);
+    E_ska += mu;
+    auto const& Z_ska = res.Zqp_ska;
+    auto const& min_eig_sk = res.min_eig_sk;
+    auto const& resid_sk = res.resid_sk;
+    nda::array<ComplexType, 4> Heff_skij(res.Hqp_skab);
+    for (long is = 0; is < ns; ++is)
+      for (long ik = 0; ik < nk; ++ik)
+        for (long a = 0; a < nb; ++a) Heff_skij(is, ik, a, a) += mu;
+
+    app_log(1, "    min eig(1 - B) = {:.4f}, max fit residual = {:.1e}, Z_qp in [{:.4f}, {:.4f}]",
+            nda::min_element(min_eig_sk), nda::max_element(resid_sk),
+            nda::min_element(Z_ska), nda::max_element(Z_ska));
+
+    if (_context.comm.root()) {
+      h5::file file(filename, 'a');
+      auto iter_grp = h5::group(file).open_group(grp_name + "/iter" + std::to_string(iter));
+      auto qp_grp = iter_grp.has_subgroup("qp_approx") ?
+                    iter_grp.open_group("qp_approx") : iter_grp.create_group("qp_approx");
+      nda::h5_write(qp_grp, "E_ska", E_ska, false);
+      nda::h5_write(qp_grp, "Heff_skij", Heff_skij, false);
+      nda::h5_write(qp_grp, "Z_ska", Z_ska, false);
+      h5::h5_write(qp_grp, "mu", mu);
+      h5::h5_write(qp_grp, "scheme", std::string("lqp"));
+      auto lg = qp_grp.has_subgroup("lqp") ? qp_grp.open_group("lqp") : qp_grp.create_group("lqp");
+      nda::h5_write(lg, "min_eig_sk", min_eig_sk, false);
+      nda::h5_write(lg, "fit_resid_sk", resid_sk, false);
+      h5::h5_write(lg, "n_fit", p.n_fit);
+      h5::h5_write(lg, "fit_order", op.fit_order);
+      h5::h5_write(lg, "cond", op.cond);
+    }
+    _context.comm.barrier();
+    app_log(1, "####### Linearized QP energies on IBZ k-mesh done #######\n");
   }
 
   void pproc_t::spectral_interpolation(mf::MF &mf, ptree const& pt,
@@ -1091,5 +1171,33 @@ namespace methods {
       math::nda::redistribute(buffer2_diag, GS_diag);
       return GS_diag;
    }
+
+  lqp::result_t pproc_t::linearized_qp(nda::array_const_view<ComplexType, 4> F_skab,
+                                       nda::array_const_view<ComplexType, 5> Sigma_tskab,
+                                       double mu, imag_axes_ft::IAFT const& ft,
+                                       lqp::fit_params_t const& p) {
+    // Serial (this may run in a process that never initialized MPI), and every failure is
+    // reported through status_sk rather than aborting.
+    return lqp::linearized_qp_solve(F_skab, Sigma_tskab, mu, ft, p, lqp::on_failure_e::report);
+  }
+
+  lqp::result_t pproc_t::linearized_qp(nda::array_const_view<ComplexType, 4> F_skab,
+                                       nda::array_const_view<ComplexType, 5> Sigma_tskab,
+                                       double mu, double beta, double wmax,
+                                       std::string const& basis, std::string const& prec,
+                                       lqp::fit_params_t const& p) {
+    imag_axes_ft::IAFT ft(beta, wmax, imag_axes_ft::string_to_basis_enum(basis), prec, false);
+    return linearized_qp(F_skab, Sigma_tskab, mu, ft, p);
+  }
+
+  lqp::ladder_result_t pproc_t::linearized_qp_ladder(nda::array_const_view<ComplexType, 4> F_skab,
+                                                     nda::array_const_view<ComplexType, 5> Sigma_tskab,
+                                                     double mu, double beta, double wmax,
+                                                     std::string const& basis, std::string const& prec,
+                                                     lqp::fit_params_t const& p, int n_fit_max) {
+    imag_axes_ft::IAFT ft(beta, wmax, imag_axes_ft::string_to_basis_enum(basis), prec, false);
+    return lqp::linearized_qp_ladder(F_skab, Sigma_tskab, mu, ft, p, n_fit_max,
+                                     lqp::on_failure_e::report);
+  }
 
 } // methods

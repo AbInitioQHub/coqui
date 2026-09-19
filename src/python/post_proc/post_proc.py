@@ -62,6 +62,41 @@ def band_interpolation(mf, params):
           in the checkpoint (``"scf"`` for standard MBPT, ``"embed"`` for embedding).
         - ``translate_home_cell`` *(bool, optional, default ``False``)* — if ``True``,
           translates Wannier centres to the home unit cell.
+        - ``qp_approx`` *(str, optional, default ``"qp_eqn"``)* — how quasiparticle energies
+          are obtained from a Dyson checkpoint when ``Heff_skij`` is absent. Two families,
+          which are different approximations and not two accuracies of one:
+
+          * ``"qp_eqn"`` — the scalar quasiparticle equation solved on the real axis, fed
+            by an analytic continuation of the *diagonal* ``Σ_aa(iω)`` (Padé). Controlled
+            by the ``qp_eqn`` block below.
+          * ``"lqp"`` — matrix linearization ``Z^1/2 (F + Σ(0) - μ) Z^1/2`` of the full
+            ``Σ(iω)`` around ``ω = 0`` on the Matsubara axis, in the KS basis; also writes
+            the pole weights ``qp_approx/Z_ska``. Controlled by the ``lqp`` block below.
+            This is the one-shot form of what ``run_lqsgw`` iterates.
+
+          The deprecated ``qp_type`` is still read and mapped onto ``qp_approx`` plus
+          ``qp_eqn.solver`` (``"lqp"`` selects the second family, anything else the first).
+
+        - ``qp_eqn`` *(dict, optional)* — controls of the quasiparticle-equation schemes
+          (these do not affect ``qp_approx="lqp"``, which reads the ``lqp`` block):
+
+          * ``solver`` *(str, default ``"sc"``)* — ``"sc"``/``"sc_bisection"``
+            (bisection), ``"sc_newton"`` (secant), or ``"linearized"``, the first-order
+            Taylor expansion of the quasiparticle equation around the KS energy.
+          * ``ac_alg`` *(str, default ``"pade"``)*, ``ac_nfit`` *(int, default ``18``)* —
+            the continuation that feeds the equation and how many Matsubara points it
+            fits. ``ac_nfit`` is unrelated to ``lqp.n_fit``.
+          * ``eta`` *(float, default ``π/β``, Hartree)*, ``tol`` *(float, default
+            ``1e-8``)* — broadening and root-finder tolerance.
+
+        - ``lqp`` *(dict, optional)* — controls of the matrix linearization:
+
+          * ``n_fit`` *(int, default ``6``)* — number of lowest positive fermionic
+            Matsubara frequencies in the fit window (``2*n_fit`` symmetric nodes).
+          * ``fit_order`` *(int, default ``2*n_fit - 1``)* — highest power of ``iω``;
+            the default is the exactly-determined (interpolating) fit.
+          * ``fit_resid_tol`` *(float, default ``1e-8``)* — an exactly-determined fit
+            whose relative residual exceeds this has lost conditioning and aborts.
 
         The following keys are only used in **Mf-only mode** (no existing checkpoint):
 
@@ -140,7 +175,9 @@ def spectral_interpolation(mf, params):
 
         Quasiparticle energy options (computed on the IBZ k-mesh, then Wannier-interpolated):
 
-        - ``qp_type`` *(str, optional, default ``"sc"``)* — QP equation solver.
+        - ``qp_approx`` *(str, optional, default ``"qp_eqn"``)* — ``"qp_eqn"`` (Padé +
+          scalar QP equation, see the ``qp_eqn`` block) or ``"lqp"`` (matrix linearization).
+        - ``qp_eqn.solver`` *(str, optional, default ``"sc"``)* — QP equation solver.
           ``"sc"`` (bisection), ``"sc_newton"`` (secant), or ``"linearized"``.
         - ``qp_eta`` *(float, optional, default ``0.0001``, units: Hartree)* — broadening
           on the real axis used when evaluating the self-energy in the QP equation.

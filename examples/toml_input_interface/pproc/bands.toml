@@ -21,13 +21,31 @@ iaft_prec = "high"
 niter     = 1
 output    = "g0w0"
 div_treatment = "gygi"
-qp_type   = "sc"
-ac_alg    = "pade"
-eta       = 1e-6
-Nfit      = 26
+[evgw0.qp_eqn]
+solver    = "sc"          # "sc"/"sc_bisection", "sc_newton", "spectral", "linearized"
+ac_alg    = "pade"        # the analytic continuation that feeds the equation
+eta       = 1e-6          # broadening at which the continued Sigma is evaluated
+ac_nfit   = 26            # Matsubara points it fits; -1 = all available
 
 [band_interpolation]             # Wannier interpolation for a givne G0W0 electronic structure
 mean_field   = "mf_qe"           # tag for the input [mean_field] instance
 outdir       = "./"              # directory where the coqui G0W0 HDF5 output is
 prefix       = "g0w0"            # prefix for the input/output coqui G0W0 h5 archive
 wannier_file = "wan.h5"          # input h5 which defines the targeted correlated subspace
+
+# Quasiparticle energies are computed here only when the checkpoint has no Heff_skij
+# (i.e. the source is a Dyson SCF such as [gw], not a QP-SCF such as [qpgw]/[lqsgw]).
+# qp_approx picks the approximation, and each family reads the block named after it.
+qp_approx    = "qp_eqn"              # "qp_eqn" (default) or "lqp"
+
+[band_interpolation.qp_eqn]      # analytic continuation + a scalar QP equation on the real axis
+solver       = "sc"              # "sc"/"sc_bisection", "sc_newton" or "linearized". default = "sc"
+ac_alg       = "pade"            # analytic continuation algorithm. default = "pade"
+ac_nfit      = 18                # Matsubara points fed to the continuation. default = 18
+eta          = 1e-6              # infinitesimal shift above the real axis. default = pi/beta
+tol          = 1e-8              # convergence tolerance of the root finder. default = 1e-8
+
+[band_interpolation.lqp]         # matrix linearization Sigma(iw) ~ A + iw B on the Matsubara axis
+n_fit        = 6                 # lowest positive fermionic frequencies in the fit window
+fit_order    = -1                # highest power of (iw); -1 = exactly-determined interpolation
+fit_resid_tol = 1e-8             # residual gate of that exactly-determined fit

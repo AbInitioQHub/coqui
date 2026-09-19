@@ -38,8 +38,13 @@ gw_params = {
     "iaft": {
         "prec": "medium"
     },
-    "Nfit": -1, 
-    "keep_scr_coulomb_fixed": False # True for evgw0, False for evgw
+    "keep_scr_coulomb_fixed": False, # True for evgw0, False for evgw
+    # evgw solves the quasiparticle equation on the real axis.
+    "qp_eqn": {
+        "solver": "sc",   # "sc"/"sc_bisection", "sc_newton", "spectral", "linearized"
+        "ac_alg": "pade", # the analytic continuation that feeds the equation
+        "ac_nfit": -1,    # Matsubara points it fits; -1 = all available
+    },
 }
 coqui.run_evgw(params=gw_params, h_int=svo_thc)
 

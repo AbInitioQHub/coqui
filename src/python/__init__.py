@@ -46,7 +46,7 @@ from .version import *
 from .utils import set_verbosity, MpiHandler, IAFT, app_log, app_debug, app_warning, app_error
 from .mean_field import make_mf
 from .interaction import make_thc_coulomb, make_chol_coulomb, run_isdf
-from .mbpt import run_hf, run_gw, run_evgw, run_qpgw
+from .mbpt import run_hf, run_gw, run_evgw, run_qpgw, run_lqsgw
 from .embed import read_proj_info, downfold_1e, downfold_2e, downfold_local_gf, downfold_coulomb, dmft_embed
 from .wannier import wannier90, coqui2wannier90, append_wannier90_win, mlwf_h5_from_wannier90_output
 

@@ -21,6 +21,9 @@
 
 #undef NDEBUG
 
+#include <cstdio>
+#include <cmath>
+
 #include "catch2/catch.hpp"
 
 #include "configuration.hpp"
@@ -232,5 +235,53 @@ namespace bdft_tests {
   }
 
 
+
+  TEST_CASE("lqsgw_lih222", "[methods_scf][lqp]") {
+    auto& mpi_context = utils::make_unit_test_mpi_context();
+    imag_axes_ft::IAFT ft(100.0, 7.0, imag_axes_ft::dlr_basis);
+    auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi_context, "qe_lih222"));
+
+    auto run_lqsgw = [&](iter_scf::iter_scf_t &iter_sol, const std::string &output, int niter)
+        -> std::tuple<double, nda::array<double, 3>> {
+      solvers::hf_t hf;
+      solvers::gw_t gw(&ft, "ignore_g0", output);
+      solvers::scr_coulomb_t scr_eri(&ft, "rpa", "ignore_g0");
+      thc_reader_t thc(mf, make_thc_reader_ptree(mf->nbnd()*8, "", "incore", "", output,
+                                                 1e-8, mf->ecutrho(), 1, 512));
+      auto eri = mb_eri_t(thc, thc);
+      qp_params_t qp;
+      qp.qp_scf_mode = "qpscf"; qp.qp_approx = "lqp"; qp.lqp.n_fit = 4;
+      MBState mb_state(mpi_context, ft, output);
+      double e_tot = qp_scf_loop(mb_state, eri, ft, qp, solvers::mb_solver_t(&hf, &gw, &scr_eri),
+                                 &iter_sol, niter, false, 1e-6);
+      mpi_context->comm.barrier();
+      nda::array<double, 3> Z;
+      if (mpi_context->comm.root()) {
+        h5::file file(output + ".mbpt.h5", 'r');
+        long it; h5::h5_read(h5::group(file).open_group("scf"), "final_iter", it);
+        nda::h5_read(h5::group(file).open_group("scf/iter" + std::to_string(it)), "Z_ska", Z);
+      }
+      mpi_context->comm.barrier();
+      if (mpi_context->comm.root()) std::remove((output + ".mbpt.h5").c_str());
+      mpi_context->comm.barrier();
+      return {e_tot, Z};
+    };
+
+    iter_scf::iter_scf_t damp_sol(iter_scf::damp_t(0.7));
+    auto [e_damp, Z] = run_lqsgw(damp_sol, "lqsgw_lih222_damping_test", 3);
+    if (mpi_context->comm.root()) {
+      REQUIRE(Z.size() > 0);
+      for (auto z : Z) { CHECK(z > 0.0); CHECK(z <= 1.0 + 1e-10); CHECK(z < 1.0 - 1e-6); }
+      std::printf("lqsgw_lih222: e_tot(damping, 3 iterations) = %.16f\n", e_damp);
+    }
+    // Regression reference from the first damping run (16 ranks: -4.2355209995661243,
+    // 4 ranks: -4.2355209995661252); DIIS must reproduce it. Both start from the same HF Heff.
+    constexpr double e_ref = -4.2355209995661243;
+    iter_scf::iter_scf_t diis_sol(iter_scf::diis_t(0.7, 6, 2));
+    auto [e_diis, Z2] = run_lqsgw(diis_sol, "lqsgw_lih222_diis_test", 3);
+    VALUE_EQUAL(e_damp, e_ref, 1e-6, 1e-6);
+    VALUE_EQUAL(e_diis, e_ref, 1e-6, 1e-6);
+    CHECK(std::isfinite(e_damp));
+  }
 
 } // bdft_tests

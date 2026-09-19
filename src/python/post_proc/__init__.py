@@ -32,10 +32,10 @@ from .post_proc import (
   minipole,
 )
 from .linearized_qp import (
-  matsubara_low_freq_coefficients,
   linearized_qp_from_arrays,
   linearized_qp_from_checkpoint,
   LinearizedQPResult,
+  LinearizedQPLadder,
 )
 from .plot_utils import band_plot, spectral_plot
 
@@ -69,8 +69,8 @@ __all__ = [
   "band_interpolation", "spectral_interpolation",
   "local_dos", "unfold_bz", "dump_vxc", "dump_hartree",
   "pade", "aaa_adapol_on_mesh", "aaa_adapol", "aaa_adapol_imag", "minipole",
-  "matsubara_low_freq_coefficients", "linearized_qp_from_arrays",
-  "linearized_qp_from_checkpoint", "LinearizedQPResult",
+  "linearized_qp_from_arrays",
+  "linearized_qp_from_checkpoint", "LinearizedQPResult", "LinearizedQPLadder",
   "band_plot", "spectral_plot",
 ]
 
