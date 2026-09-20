@@ -112,10 +112,12 @@ def _causal_B(n, seed, scale=0.3):
 
 
 def _K(res):
-    """Static matrix K = F + A - mu = Z^-1/2 H_QP Z^-1/2 per (s, k), from the stored Z and H_QP."""
+    """Static matrix K = F + A - mu = Z^-1/2 (H_QP - mu) Z^-1/2 per (s, k), from the stored Z, H_QP
+    and mu (H_QP is absolute; the linearization sits inside the sandwich at z = mu)."""
     w, U = np.linalg.eigh(res.Z_skab)
     Zmh = np.einsum("skal,skl,skbl->skab", U, 1.0 / np.sqrt(w), U.conj())
-    return Zmh @ res.Hqp_skab @ Zmh
+    Hrel = res.Hqp_skab - res.mu * np.eye(res.Hqp_skab.shape[-1])
+    return Zmh @ Hrel @ Zmh
 
 
 def _B(res):
@@ -156,7 +158,8 @@ def test_scalar_pole_gives_analytic_Z_and_energies():
     z = 1.0 / (1.0 + g / e**2)
     np.testing.assert_allclose(res.Zqp_ska[0, 0], np.full(n, z), atol=1e-10)
     eigF = np.linalg.eigvalsh(F)
-    np.testing.assert_allclose(np.sort(res.E_ska[0, 0]), np.sort((eigF - g / e - mu) * z), atol=1e-9)
+    # absolute energies: E = Z (F + A - mu) + mu
+    np.testing.assert_allclose(np.sort(res.E_ska[0, 0]), np.sort((eigF - g / e - mu) * z + mu), atol=1e-9)
     np.testing.assert_allclose(res.Z_skab[0, 0], z * np.eye(n), atol=1e-10)
 
 # ---------------------------------------------------------------------------

@@ -869,25 +869,20 @@ namespace methods {
                                         math::shm::shared_array<nda::array_view<ComplexType, 4>> const& sFhf_skij,
                                         math::shm::shared_array<nda::array_view<ComplexType, 5>> const& sSigma_tskij,
                                         double mu, std::string filename, std::string grp_name, long iter) {
-    auto [ns, nk, nb, nb2] = sFhf_skij.shape();
     auto const& p = qp_params.lqp;
     auto op = lqp::make_fit_operator(FT, p);
     app_log(1, "  Linearized QP kernel in the KS basis:\n"
                "    n_fit = {}, fit_order = {}, exact = {}, cond(design) = {:.2e}",
             p.n_fit, op.fit_order, op.exact, op.cond);
 
-    // One call to the kernel's full-array driver (round-robin over the communicator, all-reduced);
-    // the checkpoint wants absolute energies and Heff, so mu is added back here.
+    // One call to the kernel's full-array driver (round-robin over the communicator, all-reduced).
+    // E_ska and Hqp_skab come back in absolute energies, the checkpoint's convention.
     auto res = lqp::linearized_qp_solve(_context.comm, sFhf_skij.local(), sSigma_tskij.local(), mu, FT, p);
-    nda::array<double, 3> E_ska(res.E_ska);
-    E_ska += mu;
+    auto const& E_ska = res.E_ska;
     auto const& Z_ska = res.Zqp_ska;
     auto const& min_eig_sk = res.min_eig_sk;
     auto const& resid_sk = res.resid_sk;
-    nda::array<ComplexType, 4> Heff_skij(res.Hqp_skab);
-    for (long is = 0; is < ns; ++is)
-      for (long ik = 0; ik < nk; ++ik)
-        for (long a = 0; a < nb; ++a) Heff_skij(is, ik, a, a) += mu;
+    auto const& Heff_skij = res.Hqp_skab;
 
     app_log(1, "    min eig(1 - B) = {:.4f}, max fit residual = {:.1e}, Z_qp in [{:.4f}, {:.4f}]",
             nda::min_element(min_eig_sk), nda::max_element(resid_sk),

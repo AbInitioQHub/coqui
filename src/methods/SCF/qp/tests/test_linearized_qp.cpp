@@ -320,8 +320,8 @@ namespace bdft_tests {
     VALUE_EQUAL(r.qp.Zqp(0), 1.0 / (1.0 + 9.0 / 100.0), 1e-6, 1e-6);
     VALUE_EQUAL(r.A(0, 0).real(), -9.0 / 10.0, 1e-6, 1e-6);
     VALUE_EQUAL(r.B(0, 0).real(), -9.0 / 100.0, 1e-6, 1e-6);
-    // E = Z (F + A - mu)
-    VALUE_EQUAL(r.qp.E(0), r.qp.Zqp(0) * (0.3 - 0.9 - 0.2), 1e-6, 1e-6);
+    // E = Z (F + A - mu) + mu: absolute, like every other CoQui energy
+    VALUE_EQUAL(r.qp.E(0), r.qp.Zqp(0) * (0.3 - 0.9 - 0.2) + 0.2, 1e-6, 1e-6);
     CHECK(r.diagnostics.resid < 1e-8);
   }
 

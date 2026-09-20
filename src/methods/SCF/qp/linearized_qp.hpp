@@ -45,7 +45,8 @@
  * axis. Here the full matrix Sigma(iw) is expanded around w = 0 on the Matsubara axis.
  *
  * Units and conventions throughout: Hartree, beta in Ha^-1, CoQui Matsubara index n
- * (odd for fermions, w_n = n pi / beta), and quasiparticle energies measured from mu.
+ * (odd for fermions, w_n = n pi / beta), and absolute quasiparticle energies (mu added back
+ * after the linearization about z = mu; see try_solve_point).
  *
  * Typical use at fixed (spin, k), with F including H0:
  *   auto op = make_fit_operator(ft, p);              // once per (ft, p)
@@ -125,7 +126,9 @@ struct fit_diagnostics_t {
  * projection of Z and carries no information about the basis or the ladder step.
  */
 struct qp_matrix_t {
-  // Eigenvalues of H_QP, ascending, measured from mu [Ha]: the quasiparticle energies.
+  // Eigenvalues of H_QP, ascending [Ha]: the quasiparticle energies. From linearized_qp_matrix()
+  // they are those of Z^1/2 K Z^1/2 (relative to the mu inside K); try_solve_point() shifts
+  // them and Hqp by +mu, so every result a consumer sees is absolute.
   nda::array<double, 1>      E;
   // Eigenvectors of H_QP as columns, in the basis of K and B.
   nda::array<ComplexType, 2> V;
@@ -184,7 +187,7 @@ struct point_result_t {
 struct result_t {
   // Z = (1 - B)^-1, H_QP = Z^1/2 K Z^1/2 and the H_QP eigenvectors per point, (ns, nk, n, n).
   nda::array<ComplexType, 4> Z_skab, Hqp_skab, V_skab;
-  // Quasiparticle energies measured from mu [Ha] and pole weights <v|Z|v>, (ns, nk, n).
+  // Absolute quasiparticle energies [Ha] and pole weights <v|Z|v>, (ns, nk, n).
   nda::array<double, 3>      E_ska, Zqp_ska;
   // Per-point diagnostics, (ns, nk): smallest eigenvalue of 1 - B, the four members of
   // fit_diagnostics_t, and the sum rule sum(Zqp) - Tr Z (an exact identity, so ~0).
@@ -193,7 +196,8 @@ struct result_t {
   // Per-point outcome, (ns, nk): 0 ok, 1 the exactly-determined fit failed the residual gate,
   // 2 = 1 - B not positive definite. Identically zero when the driver aborts on failure.
   nda::array<long, 2>        status_sk;
-  // The chemical potential that was subtracted from K = F + A - mu [Ha]; E_ska is measured from it.
+  // The chemical potential the linearization was made about (K = F + A - mu) [Ha]; subtract it
+  // from E_ska for energies relative to the Fermi level.
   double mu = 0.0;
   // The window actually used: number of positive nodes and the polynomial order.
   int    n_fit = 0, fit_order = 0;

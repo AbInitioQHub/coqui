@@ -645,12 +645,11 @@ void add_lqp_vcorr(MBState &mb_state, double mu, solvers::mb_solver_t<corr_solve
       nda::blas::gemm(nda::dagger(C), tmp, Sigma_MO(it, nda::ellipsis{}));
     }
     auto r = lqp::solve_point(F_MO, Sigma_MO, mu, FT, op, p);
-    // 3. Heff = C^-dag (H_QP + mu) C^-1  (C^-1 = C^dag S for an orthonormal C, S the overlap)
-    nda::array<ComplexType, 2> Habs(r.qp.Hqp);
-    for (long a = 0; a < nbnd; ++a) Habs(a, a) += mu;
+    // 3. Heff = C^-dag H_QP C^-1  (C^-1 = C^dag S for an orthonormal C, S the overlap); the
+    //    kernel returns H_QP in absolute energies, so no shift is needed here
     nda::matrix<ComplexType> Cm(C);
     Cinv = nda::inverse(Cm);
-    nda::blas::gemm(Habs, Cinv, tmp);
+    nda::blas::gemm(r.qp.Hqp, Cinv, tmp);
     nda::blas::gemm(nda::dagger(Cinv), tmp, sHnew_skij.local()(is, ik, nda::ellipsis{}));
     for (long a = 0; a < nbnd; ++a) sZ_ska.local()(is, ik, a) = r.qp.Zqp(a);
     min_eig_sk(is, ik) = r.qp.min_eig; resid_sk(is, ik) = r.diagnostics.resid;

@@ -91,13 +91,11 @@ namespace bdft_tests {
     for (long s = 0; s < ns; ++s)
       for (long k = 0; k < nk; ++k) {
         for (long a = 0; a < nb; ++a) {
-          VALUE_EQUAL(E_file(s, k, a), res.E_ska(s, k, a) + mu, 1e-10, 1e-10);
+          VALUE_EQUAL(E_file(s, k, a), res.E_ska(s, k, a), 1e-10, 1e-10);   // both absolute
           VALUE_EQUAL(Z_file(s, k, a), res.Zqp_ska(s, k, a), 1e-10, 1e-10);
           CHECK(Z_file(s, k, a) > 0.0); CHECK(Z_file(s, k, a) <= 1.0 + 1e-10);
         }
-        nda::array<ComplexType, 2> H(res.Hqp_skab(s, k, nda::ellipsis{}));
-        for (long a = 0; a < nb; ++a) H(a, a) += mu;
-        ARRAY_EQUAL(Heff_file(s, k, nda::ellipsis{}), H, 1e-10);
+        ARRAY_EQUAL(Heff_file(s, k, nda::ellipsis{}), res.Hqp_skab(s, k, nda::ellipsis{}), 1e-10);
       }
     mpi_context->comm.barrier();
     if (mpi_context->comm.root()) std::remove((output + ".mbpt.h5").c_str());

@@ -281,7 +281,13 @@ point_result_t try_solve_point(nda::array_const_view<ComplexType, 2> F_ab,
   K = F_ab + r.A;
   for (long a = 0; a < n; ++a) K(a, a) -= mu;
   r.qp = linearized_qp_matrix(K, r.B);
-  if (not r.qp.valid) status = 2;
+  if (not r.qp.valid) { status = 2; return r; }
+  // One energy convention everywhere: the linearization is about z = mu (K carries -mu inside
+  // the Z^1/2 sandwich, which is not a constant shift), but the quasiparticle energies and
+  // H_QP are returned absolute, like every other CoQui energy. mu stays in result_t for a
+  // caller who wants them relative to the Fermi level.
+  r.qp.E += mu;
+  for (long a = 0; a < n; ++a) r.qp.Hqp(a, a) += mu;
   return r;
 }
 

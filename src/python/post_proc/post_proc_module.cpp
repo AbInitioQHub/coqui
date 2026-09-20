@@ -72,9 +72,9 @@ namespace coqui_py::post_proc {
 
   /**
    * pproc_t::linearized_qp on arrays: one fit at a fixed window, returned as the kernel's own
-   * methods::lqp::result_t (Python class ResultT). E_ska is measured from mu; status_sk (ns, nk)
-   * is 0 ok, 1 the residual gate failed, 2 = 1 - B not positive definite, and the entries of a
-   * failed point are zero. Sigma_tskab must be on the fermionic tau mesh of
+   * methods::lqp::result_t (Python class ResultT). E_ska is absolute (mu is in the result); 
+   * status_sk (ns, nk) is 0 ok, 1 the residual gate failed, 2 = 1 - B not positive definite, 
+   * and the entries of a failed point are zero. Sigma_tskab must be on the fermionic tau mesh of
    * IAFT(beta, wmax, basis, prec) and F_skab must include H0.
    */
   methods::lqp::result_t

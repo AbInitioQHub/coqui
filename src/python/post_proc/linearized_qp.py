@@ -37,7 +37,7 @@ layout, and the class docstring is the struct's comment. Arrays are views of the
 and the instances take no new attributes. The members, per (spin, k) in the INPUT basis:
 
   LinearizedQPResult   Z_skab, Hqp_skab, V_skab   (ns, nk, n, n)  Z = (I-B)^-1, H_QP, its eigenvectors
-                       E_ska, Zqp_ska             (ns, nk, n)     H_QP eigenvalues from mu [Ha], <v|Z|v>
+                       E_ska, Zqp_ska             (ns, nk, n)     H_QP eigenvalues, absolute [Ha]; <v|Z|v>
                        min_eig_sk, resid_sk, anti_herm_A_sk, anti_herm_B_sk, herm_data_sk,
                        sumrule_sk                 (ns, nk)        diagnostics
                        status_sk                  (ns, nk)        0 ok, 1 residual gate, 2 I-B not > 0
@@ -46,8 +46,10 @@ and the instances take no new attributes. The members, per (spin, k) in the INPU
                        n_accepted, mesh_limited, n_fit_mesh_max, stopped_n_fit/resid/cond
 
 A point with nonzero ``status_sk`` has zero entries; this module warns about such points and
-leaves them as the kernel reports them. Derived matrices (K = Z^-1/2 H_QP Z^-1/2, B = I - Z^-1)
-are one line of NumPy and are not stored; the note's ``linearized_qp_numpy.py`` has them.
+leaves them as the kernel reports them. Energies are absolute, like every CoQui energy; the
+linearization is about z = mu and ``res.mu`` is stored, so ``E_ska - mu`` is the Fermi-relative
+spectrum. Derived matrices (K = Z^-1/2 (H_QP - mu) Z^-1/2, B = I - Z^-1) are one line of NumPy
+and are not stored; the note's ``linearized_qp_numpy.py`` has them.
 
 Everything numerical -- the fit, the matrix problem, the ladder and its error estimate -- is
 the CoQui C++ kernel (methods::lqp through pproc_t::linearized_qp{,_ladder}). This module is
