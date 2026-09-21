@@ -126,6 +126,8 @@ def plot_edmft_convergence(dmft_chkpt, *, impurity_index=0, check_w=True,
       iter_grp = dmft_grp[ik]
       if imp_key not in iter_grp.keys():
         continue
+      if "results" not in iter_grp[imp_key].keys():
+        continue
       res_grp = iter_grp[f"{imp_key}/results"]
 
       if "convergence" not in res_grp.keys():

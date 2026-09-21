@@ -34,9 +34,6 @@
 #include "numerics/distributed_array/ops.hpp"
 #include "numerics/distributed_array/detail/ops_aux.hpp"
 #include "numerics/distributed_array/detail/slate_aux.hpp"
-#if defined(ENABLE_SLATE)
-#include "slate/slate.hh"
-#endif 
 
 namespace math::nda::slate_ops
 {

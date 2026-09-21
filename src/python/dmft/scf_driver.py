@@ -145,8 +145,32 @@ def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: 
                          ``degenerate_blk`` from hybridization when explicit blocks are absent.
                      - ``screen_j`` (bool, default ``False``): include screened Hund's
                          coupling in density-density mapping.
-                     - ``causal_projection`` (dict, default ``None``): options forwarded to
-                         bosonic causal projection utilities.
+                     - ``causal_projection`` (dict, default ``None``): options for bosonic
+                         causal projection. A bath-fitting step is skipped when its
+                         ``nbath_per_orbital_*`` key is absent or set to ``-1``; the
+                         ``w0_treatment_*`` regularizations are applied whenever they are
+                         set, with or without the fit.
+                         Keys:
+
+                         - ``nbath_per_orbital_wloc`` (int, default ``-1``): bath orbitals for
+                           local screened interaction ``Wloc`` fitting.
+                         - ``nbath_per_orbital_u_weiss`` (int, default ``-1``): bath orbitals for
+                           bosonic Weiss field ``U_weiss`` fitting.
+                         - ``nbath_per_orbital_impurity`` (int, default ``-1``): bath orbitals for
+                           impurity ``Pi_iw`` / ``W_iw`` fitting.
+                         - ``n_exclude_low_freq_wloc`` / ``n_exclude_low_freq_u_weiss`` /
+                           ``n_exclude_low_freq_impurity`` (int, default ``0`` = no exclusion):
+                           number of lowest-frequency Matsubara shells to drop from that
+                           target's fit input (the fitted function is still evaluated on the
+                           full mesh). ``1`` excludes only ``w=0``.
+                         - ``w0_treatment_for_pi`` / ``w0_treatment_for_w`` / ``w0_treatment_for_weiss``
+                           (str, optional): regularization applied to ``A(iw=0)`` before the
+                           bath fit, and on its own when that target is not fitted
+                           (``"flatten"`` or ``"extrapolate_order_<n>"``).
+
+                         Example — fit only ``Wloc`` and ``U_weiss`` with 3 poles each::
+
+                             {"nbath_per_orbital_wloc": 3, "nbath_per_orbital_u_weiss": 3}
                      - ``chemical_potential`` (dict, optional): auxiliary impurity chemical-
                          potential solver controls:
                          - ``tolerance`` (float, default ``0.1``)
@@ -513,7 +537,7 @@ def _edmft_loop(mf, h_int, proj_info, dmft_state, solver_chkpt_h5, coqui_chkpt_h
             # mixing impurity and dc solutions to facilitate convergence
             dmft_state.damp_impurity_results(
                 solver_chkpt_h5, mixing=iterative_params.get('mixing', 0.7), impurity_indices=[imp_index],
-                mix_in_first_iter=iterative_params.get('mix_in_first_iter', False)
+                mix_in_first_iter=iterative_params.get('mix_in_first_iter', True)
             )
 
             # save solver results for current impurity
@@ -783,7 +807,7 @@ def _solver_inner_loop(coqui_mpi, h0, delta_iw, u_weiss_iw, h_int,
         if mu_params.get('solver_output_file'):
             dens_solver_params['solver_output_file'] = mu_params.get('solver_output_file')
         if mu_params.get('n_warmup_cycles'):
-            dens_solver_params['n_warmup_cycles'] = mu_params.get('n_warmup_cycles')
+            dens_solver_params['n_warmup_cycles'] = int(mu_params.get('n_warmup_cycles'))
         if mu_params.get('length_cycle'):
             dens_solver_params['length_cycle'] = mu_params.get('length_cycle')
         dens_solver_params['n_cycles'] = mu_params.get('n_cycles', solver_params.get('n_cycles')*0.05)
@@ -932,13 +956,14 @@ def solve_impurities_from_chkpt(coqui_mpi, *, dmft_iteration=-1, imp_indices=Non
     params = convert_gw_edmft_params(params)
     
     imp_params = params.pop('impurity')
+    imp_iaft_params = imp_params.pop('iaft', {})
+
     # Scale Monte-Carlo cycle counts by MPI communicator size.
     solver_params_list = _normalize_solver_params_list(
         imp_params['solver'], coqui_mpi.comm_size()
     )
 
     iaft = IAFT.from_coqui_chkpt(imp_params['chkpt_h5'], verbose=coqui_mpi.root())
-    imp_iaft_params = imp_params.pop('iaft', {})
 
     solver_inputs = coqui_dmft.read_impurity_chkpt(
         imp_params['chkpt_h5'], dmft_iteration, read="inputs", impurity_indices=imp_indices
@@ -999,7 +1024,7 @@ def solve_impurities_from_chkpt(coqui_mpi, *, dmft_iteration=-1, imp_indices=Non
             coqui_dmft.print_degenerate_blks(degenerate_blk, Input['gf_struct'])
             delta_iw   = modest.symmetrize(delta_iw, degenerate_blk)
             h0         = coqui_dmft.symmetrize_h0_op(h0, degenerate_blk, Input['gf_struct'])
-            h_int      = coqui_dmft.symmetrize_h_int_op(h_int, degenerate_blk, Res['gf_struct'])
+            h_int      = coqui_dmft.symmetrize_h_int_op(h_int, degenerate_blk, Input['gf_struct'])
             u_weiss_iw = coqui_dmft.symmetrize_blk2_gf(u_weiss_iw, degenerate_blk, Input['gf_struct'])
 
         # Call impurity solver, and store sigma_imp, vhf_imp, and pi_imp in "Res"
