@@ -74,4 +74,20 @@ namespace bdft_tests {
 
   }
 
+  TEST_CASE("wmax_from_mf_formula", "[methods][mbpt][iaft]") {
+    auto& mpi_context = utils::make_unit_test_mpi_context();
+    auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi_context, "qe_lih222"));
+
+    auto ev = mf->eigval();
+    auto [it_min, it_max] = std::minmax_element(ev.data(), ev.data() + ev.size());
+    double emin = *it_min, emax = *it_max, ef = mf->efermi();
+    double span  = emax - emin;
+    double halfw = std::max(emax - ef, ef - emin);
+
+    // Sized for Sigma = G*W: the whole scale (span + halfw) times a fixed padding.
+    // Asserts arithmetic, not accuracy.
+    REQUIRE(mf::wmax_from_mf(*mf, 1.5) == Approx(1.5 * (span + halfw)));
+    REQUIRE(mf::wmax_from_mf(*mf, 2.0) == Approx(2.0 * (span + halfw)));
+  }
+
 } // bdft_tests

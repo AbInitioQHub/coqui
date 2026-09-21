@@ -1,6 +1,26 @@
 
 # Changelog
 
+## CoQui vX.Y.Z [YYYY-MM-DD]
+
+### Notes
+
+- DLR mesh construction changed in this release: DLR checkpoints written by CoQui v0.4.0 or earlier are no longer compatible and must be regenerated. 
+
+### Added
+
+- Imaginary-time and Matsubara meshes to h5 checkpoint, written by both the C++ and the Python IAFT. (#51)
+- `CPPDLR` CMake variable to configure against a local cppdlr source tree instead of the one fetched by `FetchContent`. (#51)
+
+### Improved
+
+- More stable DLR mesh construction: `cppdlr` pin bumped from `f6bd6ab` to `7a0f60c`. (#51)
+- IAFT mesh compatibility checking when reading a checkpoint. (#51)
+
+### Default Value Updates
+
+- Default imaginary-axis window: `wmax = 1.5 * [(emax - emin) + max(emax - ef, ef - emin)]`, sized for the `Sigma = G*W` convolution, instead of `wmax = 1.5 * max(emax - ef, ef - emin)`. (#56)
+
 ## CoQui v0.4.0 [2026-09-21]
 
 ### Added

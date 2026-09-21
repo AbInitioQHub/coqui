@@ -178,14 +178,26 @@ inline std::string get_mf(const std::shared_ptr<utils::mpi_context_t<comm_t>> &m
 };
 
 /*
- * Computes a suitable value of wmax (in a.u.) from the eigenvalue bandwidth of a MF object.
- * wmax is defined as max(|emax - efermi|, |emin - efermi|), i.e. the half-bandwidth
- * measured from the Fermi energy. An optional padding factor (default 1.5) is applied
- * to provide a small safety margin for the imaginary-axis basis.
+ * Estimates the default imaginary-axis window wmax (in a.u.) from the eigenvalue spectrum
+ * of a MF object.
+ *
+ * Estimation rule: Pi(tau) ~ G(tau)G(beta-tau) and Sigma(tau) ~ G(tau)W(tau) are formed
+ * as a convolution in frequency domain, so we add the spectral ranges of the factors.
+ * With a = ef - emin and b = emax - ef:
+ *   G      :  max(a,b)
+ *   Pi, W  :  a + b
+ *   Sigma  :  (a+b) + max(a,b)
+ * The default window is sized for Sigma, the largest of the three.
+ *
+ * padding_factor accounts for what the eigenvalue spectrum does not capture: thermal and
+ * correlation broadening extend the spectral weight beyond these ranges. f = 1.5 is an
+ * empirical value: on our test systems (five materials, beta 100-1000, one-shot G0W0) it
+ * saturates the accuracy of the imaginary-axis representation, ~1e-11 Ha on well-conditioned
+ * systems. Some systems show a ~1e-9 ceiling that belongs to the DLR grid potentially.
  *
  * Parameters:
- *   mf            : MF object whose eigval() is used to determine the bandwidth.
- *   padding_factor: multiplicative safety factor applied to the raw half-bandwidth (default 1.5).
+ *   mf            : MF object whose eigval() is used.
+ *   padding_factor: multiplier on the Sigma scale (a+b)+max(a,b) (default 1.5).
  *
  * Returns: wmax in Hartree.
  */
@@ -195,11 +207,13 @@ inline double wmax_from_mf(const MF& mf, double padding_factor = 1.5)
   auto [it_min, it_max] = std::minmax_element(ev.data(), ev.data() + ev.size());
   double emin = *it_min, emax = *it_max;
   double ef   = mf.efermi();
-  double wmax = std::max(std::abs(emax - ef), std::abs(emin - ef));
-  if (wmax <= 0.0) {
-    utils::check(false, "Error in wmax_from_mf: non-positive bandwidth detected. Cannot determine wmax from the spectrum of the MF object.");
-  }
-  return padding_factor * wmax;
+
+  double span  = emax - emin;                              // Pi, W scale
+  double halfw = std::max(emax - ef, ef - emin);           // G scale
+  utils::check(span > 0.0 and halfw > 0.0,
+               "mf_utils::wmax_from_mf: non-positive bandwidth detected. "
+               "Cannot determine wmax from the spectrum of the MF object.");
+  return padding_factor * (span + halfw);                  // Sigma = G*W scale, padded
 }
 
 } // mf

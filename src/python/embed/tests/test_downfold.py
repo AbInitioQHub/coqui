@@ -72,9 +72,10 @@ def test_downfold(mpi):
     Gloc_t = coqui.downfold_local_gf(mf, gloc_params)
 
     assert np.allclose(Gloc_t.imag, 0.0, atol=1e-10), "Imaginary part of Gloc(t) is not negligible"
-    assert Gloc_t[-1,0,0,0] == pytest.approx(-0.990216810442369, abs=1e-10)
-    assert Gloc_t[-1,0,1,0] == pytest.approx(-2.0127730737525417e-05, abs=1e-10)
-    assert Gloc_t[-1,0,1,1] == pytest.approx(-0.9671840734138286, abs=1e-10)
+    # Reference values at the default wmax = 1.5*[(a+b)+max(a,b)] (a=ef-emin, b=emax-ef), cppdlr 7a0f60c.
+    assert Gloc_t[-1,0,0,0] == pytest.approx(-0.9963630709696636, abs=1e-10)
+    assert Gloc_t[-1,0,1,0] == pytest.approx(-1.3221571325314023e-05, abs=1e-10)
+    assert Gloc_t[-1,0,1,1] == pytest.approx(-0.968105751370532, abs=1e-10)
 
     # downfold the local screened interaction
     wloc_params = {
@@ -98,20 +99,20 @@ def test_downfold(mpi):
     assert Vloc[1,1,1,1] == pytest.approx(0.5557140951494038, abs=1e-10)
 
     assert np.allclose(Wloc_t.imag, 0.0, atol=1e-12), "Imaginary part of Wloc(t) is not negligible"
-    assert Wloc_t[0,0,0,0,0] == pytest.approx(-0.2206215541852932, abs=1e-10)
-    assert Wloc_t[0,0,0,1,1] == pytest.approx(-0.04908133825297427, abs=1e-10)
-    assert Wloc_t[0,0,1,0,1] == pytest.approx(-6.915384193746768e-06, abs=1e-10)
-    assert Wloc_t[0,1,1,1,1] == pytest.approx(-0.10210426895593258, abs=1e-10)
+    assert Wloc_t[0,0,0,0,0] == pytest.approx(-0.22222249208530617, abs=1e-10)
+    assert Wloc_t[0,0,0,1,1] == pytest.approx(-0.04930356128984211, abs=1e-10)
+    assert Wloc_t[0,0,1,0,1] == pytest.approx(-6.9824334353649176e-06, abs=1e-10)
+    assert Wloc_t[0,1,1,1,1] == pytest.approx(-0.10257980906696554, abs=1e-10)
 
     # downfold the cRPA local screened interaction
     wloc_params["screen_type"] = "crpa"
     Vloc, Uloc_t = coqui.downfold_coulomb(thc, wloc_params, projector_info=proj_info)
 
     assert np.allclose(Uloc_t.imag, 0.0, atol=1e-12), "Imaginary part of Uloc(t) is not negligible"
-    assert Uloc_t[0,0,0,0,0] == pytest.approx(-0.21483386189174042, abs=1e-10)
-    assert Uloc_t[0,0,0,1,1] == pytest.approx(-0.04774705924289125, abs=1e-10)
-    assert Uloc_t[0,0,1,0,1] == pytest.approx(-6.819360600413984e-06, abs=1e-10)
-    assert Uloc_t[0,1,1,1,1] == pytest.approx(-0.09674740361073561, abs=1e-10)
+    assert Uloc_t[0,0,0,0,0] == pytest.approx(-0.2163421944088088, abs=1e-10)
+    assert Uloc_t[0,0,0,1,1] == pytest.approx(-0.04796068264843388, abs=1e-10)
+    assert Uloc_t[0,0,1,0,1] == pytest.approx(-6.884562788515993e-06, abs=1e-10)
+    assert Uloc_t[0,1,1,1,1] == pytest.approx(-0.09718806088268298, abs=1e-10)
 
     if mpi.root():
         os.remove("./gw.mbpt.h5")
@@ -149,16 +150,17 @@ def test_local_coulomb_from_mf(mpi):
     Vloc, Wloc_t = coqui.downfold_coulomb(thc, wloc_params)
 
     assert np.allclose(Vloc.imag, 0.0, atol=1e-12), "Imaginary part of Vloc is not negligible"
+    # Reference values at the default wmax = 1.5*[(a+b)+max(a,b)] (a=ef-emin, b=emax-ef), cppdlr 7a0f60c.
     assert Vloc[0,0,0,0] == pytest.approx(1.4160723518754155, abs=1e-10)
     assert Vloc[0,0,1,1] == pytest.approx(0.25499347676713535, abs=1e-10)
     assert Vloc[0,1,0,1] == pytest.approx(4.286546964169289e-05, abs=1e-10)
     assert Vloc[1,1,1,1] == pytest.approx(0.5557140951494038, abs=1e-10)
 
     assert np.allclose(Wloc_t.imag, 0.0, atol=1e-12), "Imaginary part of Wloc(t) is not negligible"
-    assert Wloc_t[0,0,0,0,0] == pytest.approx(-0.2047780731982674, abs=1e-10)
-    assert Wloc_t[0,0,0,1,1] == pytest.approx(-0.04195005851002771, abs=1e-10)
-    assert Wloc_t[0,0,1,0,1] == pytest.approx(-6.82550064519015e-06, abs=1e-10)
-    assert Wloc_t[0,1,1,1,1] == pytest.approx(-0.08664882474619286, abs=1e-10)
+    assert Wloc_t[0,0,0,0,0] == pytest.approx(-0.2058571183626179, abs=1e-10)
+    assert Wloc_t[0,0,0,1,1] == pytest.approx(-0.042075625942976036, abs=1e-10)
+    assert Wloc_t[0,0,1,0,1] == pytest.approx(-6.875870335978013e-06, abs=1e-10)
+    assert Wloc_t[0,1,1,1,1] == pytest.approx(-0.0869042081461559, abs=1e-10)
 
     if mpi.root():
         os.remove("./crpa.mbpt.h5")
