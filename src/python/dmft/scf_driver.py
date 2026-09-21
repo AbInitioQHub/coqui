@@ -146,8 +146,10 @@ def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: 
                      - ``screen_j`` (bool, default ``False``): include screened Hund's
                          coupling in density-density mapping.
                      - ``causal_projection`` (dict, default ``None``): options for bosonic
-                         causal projection. A fitting step is skipped when its
-                         ``nbath_per_orbital_*`` key is absent or set to ``-1``.
+                         causal projection. A bath-fitting step is skipped when its
+                         ``nbath_per_orbital_*`` key is absent or set to ``-1``; the
+                         ``w0_treatment_*`` regularizations are applied whenever they are
+                         set, with or without the fit.
                          Keys:
 
                          - ``nbath_per_orbital_wloc`` (int, default ``-1``): bath orbitals for
@@ -162,7 +164,8 @@ def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: 
                            target's fit input (the fitted function is still evaluated on the
                            full mesh). ``1`` excludes only ``w=0``.
                          - ``w0_treatment_for_pi`` / ``w0_treatment_for_w`` / ``w0_treatment_for_weiss``
-                           (str, optional): regularization applied to ``A(iw=0)`` before fitting
+                           (str, optional): regularization applied to ``A(iw=0)`` before the
+                           bath fit, and on its own when that target is not fitted
                            (``"flatten"`` or ``"extrapolate_order_<n>"``).
 
                          Example — fit only ``Wloc`` and ``U_weiss`` with 3 poles each::

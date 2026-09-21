@@ -85,7 +85,8 @@ def causal_projection_boson(A_iw, iaft, nbath_per_orbital,
         iaft: Kernel object providing the Matsubara frequency mesh and
                    other transformations.
         nbath_per_orbital (int): Number of bath orbitals for the fit. If <= 0,
-                                 the function returns the input `A_iw` unchanged.
+                                 the bath fit is skipped; any `w0_regularization`
+                                 is still applied.
         ph_symmetry (bool): If True, enforces particle-hole symmetry by
                             setting the imaginary part to zero.
         n_exclude_low_freq (int): Number of lowest-|iw_n| Matsubara frequency
@@ -95,7 +96,8 @@ def causal_projection_boson(A_iw, iaft, nbath_per_orbital,
                             together. The fitted function is still evaluated on the
                             full mesh. On the positive-only (ph_symmetry=True) mesh
                             this is simply the first `n` points.
-        w0_regularization (optional): Regularization to A(iw=0) before causal projection.
+        w0_regularization (optional): Regularization of A(iw=0). Applied whenever it
+                            is not None, independently of `nbath_per_orbital`.
         target_name (str, optional): Name of the target for reporting purposes.
 
     Returns:
@@ -142,7 +144,9 @@ def fit_impurity_results_boson(imp_res, iaft, causal_params):
     if causal_params is None:
         return
     nbath = causal_params.get("nbath_per_orbital_impurity", -1)
-    if nbath == -1:
+    w0_pi = causal_params.get("w0_treatment_for_pi", None)
+    w0_w = causal_params.get("w0_treatment_for_w", None)
+    if nbath == -1 and w0_pi is None and w0_w is None:
         return
 
     n_exclude = causal_params.get("n_exclude_low_freq_impurity", 0)
@@ -152,13 +156,13 @@ def fit_impurity_results_boson(imp_res, iaft, causal_params):
             "Pi_iw_data": causal_projection_boson(
                 imp_res["Pi_iw_data"][0], iaft, nbath,
                 ph_symmetry=True, n_exclude_low_freq=n_exclude,
-                w0_regularization=causal_params.get("w0_treatment_for_pi", None),
+                w0_regularization=w0_pi,
                 target_name="impurity polarizability"
             ),
             "W_iw_data": causal_projection_boson(
                 imp_res["W_iw_data"][0], iaft, nbath,
                 ph_symmetry=True, n_exclude_low_freq=n_exclude,
-                w0_regularization=causal_params.get("w0_treatment_for_w", None),
+                w0_regularization=w0_w,
                 target_name="impurity screened interaction"
             )
         }
@@ -171,7 +175,8 @@ def fit_local_results_boson(local_res, iaft, causal_params):
     if causal_params is None:
         return
     nbath = causal_params.get("nbath_per_orbital_wloc", -1)
-    if nbath == -1:
+    w0_w = causal_params.get("w0_treatment_for_w", None)
+    if nbath == -1 and w0_w is None:
         return
 
     n_exclude = causal_params.get("n_exclude_low_freq_wloc", 0)
@@ -182,7 +187,7 @@ def fit_local_results_boson(local_res, iaft, causal_params):
         wloc_iw_fit = causal_projection_boson(
             wloc_iw.reshape(-1, nbnd*nbnd, nbnd*nbnd), iaft, nbath,
             ph_symmetry=True, n_exclude_low_freq=n_exclude,
-            w0_regularization=causal_params.get("w0_treatment_for_w", None),
+            w0_regularization=w0_w,
             target_name="local screened interaction"
         )
         wloc_t_fit = iaft.w_to_tau_phsym(
@@ -197,7 +202,8 @@ def fit_u_weiss(u_weiss_iw, iaft, causal_params):
     if causal_params is None:
         return u_weiss_iw
     nbath = causal_params.get("nbath_per_orbital_u_weiss", -1)
-    if nbath == -1:
+    w0_weiss = causal_params.get("w0_treatment_for_weiss", None)
+    if nbath == -1 and w0_weiss is None:
         return u_weiss_iw
 
     n_exclude = causal_params.get("n_exclude_low_freq_u_weiss", 0)
@@ -207,7 +213,7 @@ def fit_u_weiss(u_weiss_iw, iaft, causal_params):
         u_iw_fit = causal_projection_boson(
             u_weiss_iw.reshape(-1, nbnd*nbnd, nbnd*nbnd), iaft, nbath,
             ph_symmetry=True, n_exclude_low_freq=n_exclude,
-            w0_regularization=causal_params.get("w0_treatment_for_weiss", None),
+            w0_regularization=w0_weiss,
             target_name="bosonic Weiss field"
         )
         u_iw_fit = u_iw_fit.reshape(-1, nbnd, nbnd, nbnd, nbnd)
@@ -265,8 +271,8 @@ def apply_w0_regularization(A_iw, iw_mesh_b, w0_regularization, target_name):
     """
     Apply regularization to the zero-frequency component of the bosonic Green's function.
 
-    This function modifies the bosonic Green's function `A_iw` at iw = 0 based on the
-    specified `w0_regularization` method. It supports two types of regularization:
+    This function modifies the bosonic Green's function `A_iw` in place at iw = 0 based
+    on the specified `w0_regularization` method. It supports two types of regularization:
     "flatten" and "linear_extrapolate". 
     
     For "flatten", it flattens the value at iw = 0 by setting it equal to the value 
@@ -284,7 +290,7 @@ def apply_w0_regularization(A_iw, iw_mesh_b, w0_regularization, target_name):
     Returns:
         numpy.ndarray: The modified bosonic Green's function with regularized iw = 0 component.
     """
-    app_log(2, f"Applying w=0 regularization for {target_name} before causal projection:")
+    app_log(2, f"Applying w=0 regularization for {target_name}:")
     
     if w0_regularization == "flatten":
         
