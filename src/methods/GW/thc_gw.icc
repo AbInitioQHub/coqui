@@ -1,6 +1,8 @@
 #ifndef COQUI_THC_GW_ICC
 #define COQUI_THC_GW_ICC
 
+#include <chrono>
+
 #include "mpi3/communicator.hpp"
 #include "nda/nda.hpp"
 #include "nda/blas.hpp"
@@ -29,7 +31,19 @@ namespace methods {
                               const nda::MemoryArrayOfRank<1> auto &eps_inv_head) {
       eval_Sigma_all(G_tskij, dW_qtPQ, sSigma_tskij, thc,
                      (thc.MF()->nqpts() == thc.MF()->nqpts_ibz()? "R" : "k"));
+      auto div_start = std::chrono::steady_clock::now();
+      if (_div_treatment == "ignore_g0") {
+        app_log(2, "    - Sigma divergence correction: skipped (ignore_g0)");
+      } else {
+        app_log(2, "    - Sigma divergence correction: started");
+      }
+      app_log_flush();
       Sigma_div_correction(sSigma_tskij, G_tskij, thc, eps_inv_head);
+      double div_elapsed = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - div_start).count();
+      if (_div_treatment != "ignore_g0")
+        app_log(2, "    - Sigma divergence correction: completed in {:.1f} s", div_elapsed);
+      app_log_flush();
     }
 
     template<nda::MemoryArray Array_primary_t, nda::MemoryArray Array_aux_t, typename communicator_t>
@@ -72,6 +86,22 @@ namespace methods {
                                THC_ERI auto &thc,
                                bool minus_t) {
       _Timer.start("EVALUATE_SIGMA_R");
+      char const* tau_branch = minus_t? "negative tau" : "positive tau";
+      auto sigma_start = std::chrono::steady_clock::now();
+      app_log(2, "    - Sigma [{}] R-space branch: started", tau_branch);
+      app_log_flush();
+      auto stage_start = sigma_start;
+      auto start_stage = [&](char const* stage) {
+        app_log(2, "      - Sigma [{}] {}: started", tau_branch, stage);
+        app_log_flush();
+        stage_start = std::chrono::steady_clock::now();
+      };
+      auto finish_stage = [&](char const* stage) {
+        double elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - stage_start).count();
+        app_log(2, "      - Sigma [{}] {}: completed in {:.1f} s", tau_branch, stage, elapsed);
+        app_log_flush();
+      };
       auto MF = thc.MF();
       auto mpi = thc.mpi();
       utils::check(MF->nqpts() == MF->nqpts_ibz() and MF->nqpts() == MF->nkpts(),
@@ -98,6 +128,7 @@ namespace methods {
             mpi->comm, {tpools, 1, qpools, np_P, np_Q}, {nt_half, ns, nkpts, NP, NQ}, {bsize[1], 1, bsize[0], bsize[2], bsize[3]});
         _Timer.stop("SIGMA_ALLOC_R");
 
+        start_stage("primary -> auxiliary");
         _Timer.start("SIGMA_PRIM_TO_AUX");
         if (minus_t) {
           // G_ij(t) -> G_ij(beta-t)
@@ -118,6 +149,7 @@ namespace methods {
                                           MF->kp_to_ibz(), MF->kp_trev());
         }
         _Timer.stop("SIGMA_PRIM_TO_AUX");
+        finish_stage("primary -> auxiliary");
 
         _Timer.start("SIGMA_ALLOC_R");
         auto G_tskPQ = dG_tskPQ.local();
@@ -134,6 +166,7 @@ namespace methods {
       math::shm::shared_array<nda::array_view<ComplexType,2>> sf_Rk(*mpi, {nkpts,nkpts});
 
       if (nkpts != 1) {
+        start_stage("FFT k/q -> R");
         _Timer.start("SIGMA_FT_R");
         auto f_Rk = sf_Rk.local();
         utils::k_to_R_coefficients(mpi->comm, nda::range(nkpts), MF->kpts(), MF->lattv(), MF->kp_grid(), sf_Rk);
@@ -151,11 +184,16 @@ namespace methods {
           WR_2D = R_buffer;
         }
         _Timer.stop("SIGMA_FT_R");
+        finish_stage("FFT k/q -> R");
+      } else {
+        app_log(2, "      - Sigma [{}] FFT k/q -> R: skipped (single k-point)", tau_branch);
+        app_log_flush();
       }
 
       // Sigma_R = G_R * W_R
       auto dSigma_sktPQ = make_distributed_array<local_Array_5D_t>(
           mpi->comm, {1, qpools, tpools, np_P, np_Q}, {ns, nkpts, nt_half, NP, NQ}, {1, bsize[0], bsize[1], bsize[2], bsize[3]});
+      start_stage("Hadamard G * W");
       _Timer.start("SIGMA_HADPROD_R");
       auto had_prod2 = nda::map([](ComplexType x, ComplexType y) { return -1.0 * (x * y) ; });
       auto W_RtPQ = dW_qtPQ.local();
@@ -165,10 +203,12 @@ namespace methods {
         Sigma_RtPQ = had_prod2(G_RtPQ, W_RtPQ);
       }
       _Timer.stop("SIGMA_HADPROD_R");
+      finish_stage("Hadamard G * W");
       dG_sRtPQ.reset();
 
       if (nkpts != 1) {
         // FT back to q-space
+        start_stage("FFT R -> k/q");
         auto f_kR = sf_Rk.local();
         utils::R_to_k_coefficients(mpi->comm, nda::range(nkpts), MF->kpts(), MF->lattv(), MF->kp_grid(), sf_Rk);
 
@@ -187,6 +227,10 @@ namespace methods {
           WR_2D = buffer;
         }
         _Timer.stop("SIGMA_FT_R");
+        finish_stage("FFT R -> k/q");
+      } else {
+        app_log(2, "      - Sigma [{}] FFT R -> k/q: skipped (single k-point)", tau_branch);
+        app_log_flush();
       }
 
       _Timer.start("SIGMA_ALLOC_R");
@@ -207,8 +251,14 @@ namespace methods {
 
       // TODO redistribute over (t, k, P, Q) to minimize MPI along (P, Q)-axes
 
+      start_stage("auxiliary -> primary");
       setup_Sigma_primary(dSigma_tskPQ, sSigma_tskij, thc, MF->ks_to_k(0), minus_t);
+      finish_stage("auxiliary -> primary");
       _Timer.stop("EVALUATE_SIGMA_R");
+      double sigma_elapsed = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - sigma_start).count();
+      app_log(2, "    - Sigma [{}] R-space branch: completed in {:.1f} s", tau_branch, sigma_elapsed);
+      app_log_flush();
     }
 
     template<nda::MemoryArray Array_5D_t, nda::MemoryArray Array_4D_t, typename communicator_t>
@@ -223,6 +273,10 @@ namespace methods {
       decltype(nda::range::all) all;
 
       _Timer.start("EVALUATE_SIGMA_K");
+      char const* tau_branch = minus_t? "negative tau" : "positive tau";
+      auto sigma_start = std::chrono::steady_clock::now();
+      app_log(2, "    - Sigma [{}] k-space branch: started", tau_branch);
+      app_log_flush();
       auto MF = thc.MF();
       long nbnd = MF->nbnd();
       long nkpts = MF->nkpts();
@@ -274,6 +328,12 @@ namespace methods {
       nda::array<ComplexType,2> Tm(nbnd,nbnd);
       _Timer.stop("SIGMA_ALLOC_K");
 
+      size_t nt_loc_count = static_cast<size_t>(nt_loc);
+      size_t report_stride = (nt_loc_count > 0)? (nt_loc_count + 9) / 10 : 1;
+      auto progress_start = std::chrono::steady_clock::now();
+      app_log(2, "      - Sigma [{}] local tau shard: origin {}, {} slice(s)",
+              tau_branch, t_origin, nt_loc_count);
+      app_log_flush();
       sSigma_tskij.win().fence();
       for (size_t it=0; it<nt_loc; it++) {
         long it_global = (minus_t)? nt-(it+t_origin)-1 : it+t_origin;
@@ -320,6 +380,17 @@ namespace methods {
           _Timer.stop("SIGMA_MULTIPLY_DMAT_K");
           sSigma_tskij.node_comm()->barrier();
         } // isym
+        size_t done = it + 1;
+        if (done == 1 or done == nt_loc_count or done % report_stride == 0) {
+          double elapsed = std::chrono::duration<double>(
+              std::chrono::steady_clock::now() - progress_start).count();
+          double eta = elapsed / static_cast<double>(done) * static_cast<double>(nt_loc_count - done);
+          double percent = 100.0 * static_cast<double>(done) / static_cast<double>(nt_loc_count);
+          app_log(2, "      - Sigma [{}] local tau slices: {}/{} ({:.0f}%), "
+                     "elapsed {:.1f} s, ETA {:.1f} s",
+                  tau_branch, done, nt_loc_count, percent, elapsed, eta);
+          app_log_flush();
+        }
       } // it
       // dummy loops to avoid dead blocks in case nt_loc are not consistent in different processors
       if (nt_loc < nt_loc_max) {
@@ -335,6 +406,10 @@ namespace methods {
       } // ( nt_loc < nt_loc_max )
       sSigma_tskij.win().fence();
       _Timer.stop("EVALUATE_SIGMA_K");
+      double sigma_elapsed = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - sigma_start).count();
+      app_log(2, "    - Sigma [{}] k-space branch: completed in {:.1f} s", tau_branch, sigma_elapsed);
+      app_log_flush();
     }
 
     template<nda::MemoryArray Array_4D_t, typename communicator_t>

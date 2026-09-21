@@ -19,6 +19,7 @@
  */
 
 
+#include <chrono>
 #include <unordered_set>
 #include "methods/ERI/thc_reader_t.hpp"
 #include "methods/HF/thc_solver_comm.hpp"
@@ -61,6 +62,9 @@ namespace solvers {
   void scr_coulomb_t::update_w(MBState &mb_state, THC_ERI auto &thc, long h5_iter) {
     using math::nda::make_distributed_array;
     using math::shm::make_shared_array;
+    using progress_clock = std::chrono::steady_clock;
+
+    const auto update_start = progress_clock::now();
 
     // http://patorjk.com/software/taag/#p=display&f=Calvin%20S&t=COQUI%20screened%20coulomb
     app_log(1, "╔═╗╔═╗╔═╗ ╦ ╦╦  ┌─┐┌─┐┬─┐┌─┐┌─┐┌┐┌┌─┐┌┬┐  ┌─┐┌─┐┬ ┬┬  ┌─┐┌┬┐┌┐ \n"
@@ -92,12 +96,17 @@ namespace solvers {
         }
       }
     }
+    const auto pi_start = progress_clock::now();
     auto dPi_tqPQ = eval_Pi_qdep(mb_state, thc);
+    const double pi_seconds = std::chrono::duration<double>(progress_clock::now() - pi_start).count();
 
     // evaluate screened interaction (dW_tqPQ) and reset polarizability (dPi_tqPQ)
     // a) dPi_tqPQ is reset during dyson_W_from_Pi_tau()
     // b) pgrid and bsize of dW_tqPQ are forced to be the same as in dPi_tqPQ
+    const auto dyson_start = progress_clock::now();
     auto dW_tqPQ = dyson_W_from_Pi_tau<false>(dPi_tqPQ, thc, true);
+    const double dyson_seconds = std::chrono::duration<double>(progress_clock::now() - dyson_start).count();
+    const auto head_store_start = progress_clock::now();
     auto [eps_inv_head_q, eps_inv_head] =
         div_utils::eps_inv_head_t(dW_tqPQ, thc, *thc.MF(), _ft, _div_treatment);
     mb_state.eps_inv_head = eps_inv_head;
@@ -129,6 +138,16 @@ namespace solvers {
                         mb_state.coqui_prefix, h5_iter,
                         thc.mpi()->comm, *thc.MF());
     }
+    const double head_store_seconds =
+        std::chrono::duration<double>(progress_clock::now() - head_store_start).count();
+    const double total_seconds = std::chrono::duration<double>(progress_clock::now() - update_start).count();
+    app_log(2, "\n  Screening timing for this update");
+    app_log(2, "  --------------------------------");
+    app_log(2, "    P evaluation:                 {:.3f} sec", pi_seconds);
+    app_log(2, "    tau->omega, W Dyson, omega->tau: {:.3f} sec", dyson_seconds);
+    app_log(2, "    dielectric head and W storage:  {:.3f} sec", head_store_seconds);
+    app_log(2, "    Total update_w:                  {:.3f} sec\n", total_seconds);
+    app_log_flush();
   }
 
   template<bool w_out, nda::MemoryArrayOfRank<4> local_Array_t, typename communicator_t>
@@ -159,6 +178,8 @@ namespace solvers {
       memory::darray_t<Array_4D_t, communicator_t> &dPi_wqPQ,
       THC_ERI auto &thc) {
 
+    using progress_clock = std::chrono::steady_clock;
+    const auto progress_start = progress_clock::now();
     _Timer.start("EVALUATE_W");
     auto [nw, nqpts, NP, NQ] = dPi_wqPQ.global_shape();
     auto [nw_loc, nq_loc, NP_loc, NQ_loc] = dPi_wqPQ.local_shape();
@@ -175,6 +196,9 @@ namespace solvers {
     app_log(2, "  Evaluation of the screened interaction:");
     app_log(2, "    - processor grid for Pi/W: (w, q, P, Q) = ({}, {}, {}, {})", pgrid[0], pgrid[1], pgrid[2], pgrid[3]);
     app_log(2, "    - block size: (w, q, P, Q) = ({}, {}, {}, {})\n", block_size[0], block_size[1], block_size[2], block_size[3]);
+    app_log(2, "    - [W] root shard: q offset {}, {} local q-points x {} local frequencies",
+            q_origin, nq_loc, nw_loc);
+    app_log_flush();
 
     // Setup wq_intra_comm
     mpi3::communicator wq_intra_comm = thc.mpi()->comm.split(w_origin*nqpts + q_origin, thc.mpi()->comm.rank());
@@ -205,6 +229,8 @@ namespace solvers {
     auto Pi_PQ = dPi_PQ.local();
     auto Z_PQ = dZ_PQ.local();
     auto A_PQ = dA_PQ.local();
+    const size_t total_work = size_t(nq_loc) * size_t(nw_loc);
+    const size_t progress_stride = std::max<size_t>(1, (total_work + 9) / 10);
     for (size_t iq_loc = 0; iq_loc < nq_loc; ++iq_loc) {
       long iq = q_origin + iq_loc;
       Z_PQ = thc.Z(iq, P_rng, Q_rng, qpool_id, pgrid[1], q_intra_comm);
@@ -232,6 +258,15 @@ namespace solvers {
         // W = ([I - Z*Pi(w)]^{-1} - I) * Z
         math::nda::slate_ops::multiply(dA_PQ, dZ_PQ, dPi_PQ);
         Pi_wqPQ(n, iq_loc, nda::ellipsis{}) = Pi_PQ;
+
+        const size_t done = iq_loc * size_t(nw_loc) + n + 1;
+        if (done == 1 or done == total_work or done % progress_stride == 0) {
+          const double elapsed = std::chrono::duration<double>(progress_clock::now() - progress_start).count();
+          const double eta = (done < total_work)? elapsed * double(total_work - done) / double(done) : 0.0;
+          app_log(2, "    - [W] root (q,omega) shard {}/{} ({:.0f}%): elapsed {:.1f} s, ETA {:.1f} s",
+                  done, total_work, 100.0 * double(done) / double(total_work), elapsed, eta);
+          app_log_flush();
+        }
       }
     }
     // prevent dead block in thc.Z() in case nq_loc is not the same for all processors
@@ -239,6 +274,9 @@ namespace solvers {
       Z_PQ = thc.Z(0, P_rng, Q_rng, qpool_id, pgrid[1], q_intra_comm);
 
     _Timer.stop("EVALUATE_W");
+    app_log(2, "    - [W] root Dyson shard completed in {:.1f} s\n",
+            std::chrono::duration<double>(progress_clock::now() - progress_start).count());
+    app_log_flush();
 
   }
 
@@ -386,7 +424,9 @@ namespace solvers {
   -> memory::darray_t<local_Array_t, mpi3::communicator>
   {
     using math::nda::make_distributed_array;
+    using progress_clock = std::chrono::steady_clock;
 
+    const auto transform_start = progress_clock::now();
     _Timer.start("IMAG_FT_TtoW");
     auto comm = dPi_tqPQ_pos.communicator();
     long npts = dPi_tqPQ_pos.global_shape()[1];
@@ -394,6 +434,8 @@ namespace solvers {
     long nw_half = (_ft->nw_b()%2==0)? _ft->nw_b()/2 : _ft->nw_b()/2 + 1;
     std::array<long, 4> w_gshape = {nw_half, npts, Np, Np};
     std::array<long, 4> t_gshape = dPi_tqPQ_pos.global_shape();
+    app_log(2, "  [W] tau -> omega transform begin: {} tau points -> {} frequencies", t_gshape[0], w_gshape[0]);
+    app_log_flush();
 
     if (dPi_tqPQ_pos.communicator()->size() == 1) {
       _ft->check_leakage(dPi_tqPQ_pos, imag_axes_ft::boson, "polarizability", true);
@@ -405,6 +447,9 @@ namespace solvers {
       _ft->tau_to_w_PHsym(Pi_ti_loc, Pi_wi_loc);
       if (reset_input) dPi_tqPQ_pos.reset();
       _Timer.stop("IMAG_FT_TtoW");
+      app_log(2, "  [W] tau -> omega transform complete in {:.1f} s\n",
+              std::chrono::duration<double>(progress_clock::now() - transform_start).count());
+      app_log_flush();
       return dPi_wqPQ;
     }
     // redistribute to cover (tau, w)-axes locally -> FT locally -> redistribute back
@@ -420,33 +465,54 @@ namespace solvers {
     }
     auto buffer_ti  = make_distributed_array<local_Array_t>(
         *comm, b_pgrid, t_gshape, dPi_tqPQ_pos.block_size());
+    app_log(2, "    - [W] tau -> omega: redistribute tau data to transform layout");
+    app_log_flush();
+    const auto input_redistribute_start = progress_clock::now();
     _Timer.start("FT_REDISTRIBUTE");
     math::nda::redistribute(dPi_tqPQ_pos, buffer_ti);
     _Timer.stop("FT_REDISTRIBUTE");
+    app_log(2, "    - [W] tau -> omega: input redistribution complete in {:.1f} s",
+            std::chrono::duration<double>(progress_clock::now() - input_redistribute_start).count());
+    app_log_flush();
     if (reset_input) dPi_tqPQ_pos.reset();
     _ft->check_leakage(buffer_ti, imag_axes_ft::boson, "polarizability", true);
     buffer_ti.communicator()->barrier();
 
     auto buffer_wi  = make_distributed_array<local_Array_t>(
         *comm, b_pgrid, w_gshape, buffer_ti.block_size());
+    app_log(2, "    - [W] tau -> omega: local particle-hole-symmetric transform");
+    app_log_flush();
+    const auto local_transform_start = progress_clock::now();
     {
       auto buf_ti_loc = buffer_ti.local();
       auto buf_wi_loc = buffer_wi.local();
       _ft->tau_to_w_PHsym(buf_ti_loc, buf_wi_loc);
     }
+    app_log(2, "    - [W] tau -> omega: local transform complete in {:.1f} s",
+            std::chrono::duration<double>(progress_clock::now() - local_transform_start).count());
+    app_log_flush();
     buffer_ti.reset();
     buffer_wi.communicator()->barrier();
 
     auto dPi_wqPQ = make_distributed_array<local_Array_t>(
         *comm, w_pgrid_out, w_gshape, w_bsize_out);
 
+    app_log(2, "    - [W] tau -> omega: redistribute frequency data to Dyson layout");
+    app_log_flush();
+    const auto output_redistribute_start = progress_clock::now();
     _Timer.start("FT_REDISTRIBUTE");
     math::nda::redistribute(buffer_wi, dPi_wqPQ);
     _Timer.stop("FT_REDISTRIBUTE");
+    app_log(2, "    - [W] tau -> omega: output redistribution complete in {:.1f} s",
+            std::chrono::duration<double>(progress_clock::now() - output_redistribute_start).count());
+    app_log_flush();
     buffer_wi.reset();
     dPi_wqPQ.communicator()->barrier();
 
     _Timer.stop("IMAG_FT_TtoW");
+    app_log(2, "  [W] tau -> omega transform complete in {:.1f} s\n",
+            std::chrono::duration<double>(progress_clock::now() - transform_start).count());
+    app_log_flush();
     return dPi_wqPQ;
   }
 
@@ -458,7 +524,9 @@ namespace solvers {
   -> memory::darray_t<local_Array_t, mpi3::communicator>
   {
     using math::nda::make_distributed_array;
+    using progress_clock = std::chrono::steady_clock;
 
+    const auto transform_start = progress_clock::now();
     _Timer.start("IMAG_FT_WtoT");
     auto comm = dW_wqPQ_pos.communicator();
     long npts = dW_wqPQ_pos.global_shape()[1];
@@ -466,6 +534,8 @@ namespace solvers {
     auto w_gshape = dW_wqPQ_pos.global_shape();
     size_t nt_half = (_ft->nt_b()%2==0)? _ft->nt_b() / 2 : _ft->nt_b() / 2 + 1;
     std::array<long, 4> t_gshape = {nt_half, npts, Np, Np};
+    app_log(2, "  [W] omega -> tau transform begin: {} frequencies -> {} tau points", w_gshape[0], t_gshape[0]);
+    app_log_flush();
 
     if (dW_wqPQ_pos.communicator()->size() == 1) {
       auto dW_tqPQ = make_distributed_array<local_Array_t>(
@@ -477,6 +547,9 @@ namespace solvers {
       if (reset_input) dW_wqPQ_pos.reset();
       _ft->check_leakage(dW_tqPQ, imag_axes_ft::boson, "screened interation", true);
       _Timer.stop("IMAG_FT_WtoT");
+      app_log(2, "  [W] omega -> tau transform complete in {:.1f} s\n",
+              std::chrono::duration<double>(progress_clock::now() - transform_start).count());
+      app_log_flush();
       return dW_tqPQ;
     }
 
@@ -493,30 +566,51 @@ namespace solvers {
     }
     auto buffer_wi  = make_distributed_array<local_Array_t>(
         *comm, b_pgrid, w_gshape, dW_wqPQ_pos.block_size());
+    app_log(2, "    - [W] omega -> tau: redistribute frequency data to transform layout");
+    app_log_flush();
+    const auto input_redistribute_start = progress_clock::now();
     _Timer.start("FT_REDISTRIBUTE");
     math::nda::redistribute(dW_wqPQ_pos, buffer_wi);
     _Timer.stop("FT_REDISTRIBUTE");
+    app_log(2, "    - [W] omega -> tau: input redistribution complete in {:.1f} s",
+            std::chrono::duration<double>(progress_clock::now() - input_redistribute_start).count());
+    app_log_flush();
     if (reset_input) dW_wqPQ_pos.reset();
 
     auto buffer_ti  = make_distributed_array<local_Array_t>(
         *comm, b_pgrid, t_gshape, buffer_wi.block_size());
+    app_log(2, "    - [W] omega -> tau: local particle-hole-symmetric transform");
+    app_log_flush();
+    const auto local_transform_start = progress_clock::now();
     {
       auto buf_ti_loc = buffer_ti.local();
       auto buf_wi_loc = buffer_wi.local();
       _ft->w_to_tau_PHsym(buf_wi_loc, buf_ti_loc);
     }
+    app_log(2, "    - [W] omega -> tau: local transform complete in {:.1f} s",
+            std::chrono::duration<double>(progress_clock::now() - local_transform_start).count());
+    app_log_flush();
     buffer_wi.reset();
     _ft->check_leakage(buffer_ti, imag_axes_ft::boson, "screened interaction", true);
 
     auto dW_tqPQ = make_distributed_array<local_Array_t>(
         *comm, t_pgrid_out, t_gshape, t_bsize_out);
 
+    app_log(2, "    - [W] omega -> tau: redistribute tau data to output layout");
+    app_log_flush();
+    const auto output_redistribute_start = progress_clock::now();
     _Timer.start("FT_REDISTRIBUTE");
     math::nda::redistribute(buffer_ti, dW_tqPQ);
     _Timer.stop("FT_REDISTRIBUTE");
+    app_log(2, "    - [W] omega -> tau: output redistribution complete in {:.1f} s",
+            std::chrono::duration<double>(progress_clock::now() - output_redistribute_start).count());
+    app_log_flush();
     buffer_ti.reset();
 
     _Timer.stop("IMAG_FT_WtoT");
+    app_log(2, "  [W] omega -> tau transform complete in {:.1f} s\n",
+            std::chrono::duration<double>(progress_clock::now() - transform_start).count());
+    app_log_flush();
     return dW_tqPQ;
   }
 
