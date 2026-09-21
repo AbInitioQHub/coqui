@@ -225,7 +225,6 @@ namespace bdft_tests {
     SECTION("dlr_prefers_prec_when_both_and_prec_not_custom") {
       ptree pt;
       pt.put("beta", beta);
-      pt.put("wmax", wmax);
       pt.put("iaft_basis", "dlr");
       pt.put("iaft_prec", "medium");
       pt.put("iaft_eps", 1e-12);
@@ -239,7 +238,6 @@ namespace bdft_tests {
       // in other words, "custom" is redundant when eps is provided, but we allow it for user clarity
       ptree pt;
       pt.put("beta", beta);
-      pt.put("wmax", wmax);
       pt.put("iaft_basis", "dlr");
       pt.put("iaft_prec", "custom");
       pt.put("iaft_eps", 1e-12);
