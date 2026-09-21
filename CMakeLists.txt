@@ -568,10 +568,15 @@ if(ENABLE_DLR)
     set(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT FALSE)
   endif()
 
+  # Allow a user-provided cppdlr source tree
+  if(DEFINED CPPDLR)
+    set(FETCHCONTENT_SOURCE_DIR_CPPDLR ${CPPDLR})
+  endif()
   FetchContent_Declare(
       cppdlr
       GIT_REPOSITORY https://github.com/flatironinstitute/cppdlr.git
-      GIT_TAG        f6bd6ab1823403015486c2c6b3399fd4db4468c1 #main
+      # Pin cppdlr main as of 2026-09-09.
+      GIT_TAG        7a0f60cba2da69d64361971613b6859bb8c078ce
   )
   FetchContent_MakeAvailable(cppdlr)
   # temporary workaround before cppdlr's nda dependency is updated. 

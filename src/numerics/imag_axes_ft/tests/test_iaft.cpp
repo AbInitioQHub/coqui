@@ -285,4 +285,53 @@ namespace bdft_tests {
 
   }
 
+  TEST_CASE("iaft_compare_mesh", "[iaft]") {
+    using imag_axes_ft::compare_mesh;
+    std::string const chkpt = "unit_test.mbpt.h5";
+
+    SECTION("identical_tau_meshes_agree") {
+      nda::array<double, 1> a = {-1.0, -0.5, 0.0, 0.5, 1.0};
+      nda::array<double, 1> b = {-1.0, -0.5, 0.0, 0.5, 1.0};
+      REQUIRE(compare_mesh("tau_mesh (fermion)", chkpt, a, b, 1e-10));
+    }
+
+    SECTION("tau_mesh_size_mismatch_disagrees") {
+      nda::array<double, 1> stored  = {-1.0, 0.0, 1.0};
+      nda::array<double, 1> rebuilt = {-1.0, -0.5, 0.0, 0.5, 1.0};
+      REQUIRE_FALSE(compare_mesh("tau_mesh (fermion)", chkpt, stored, rebuilt, 1e-10));
+    }
+
+    SECTION("tau_mesh_value_mismatch_disagrees") {
+      nda::array<double, 1> stored  = {-1.0, -0.5, 0.0, 0.5, 1.0};
+      nda::array<double, 1> rebuilt = {-1.0, -0.5, 0.0, 0.25, 1.0};
+      REQUIRE_FALSE(compare_mesh("tau_mesh (fermion)", chkpt, stored, rebuilt, 1e-10));
+    }
+
+    SECTION("tau_mesh_difference_within_tolerance_agrees") {
+      nda::array<double, 1> stored  = {-1.0, -0.5, 0.0, 0.5, 1.0};
+      nda::array<double, 1> rebuilt = {-1.0, -0.5, 0.0, 0.5 + 1e-13, 1.0};
+      REQUIRE(compare_mesh("tau_mesh (fermion)", chkpt, stored, rebuilt, 1e-10));
+    }
+
+    SECTION("identical_iwn_meshes_agree") {
+      nda::array<long, 1> a = {-3, -1, 1, 3};
+      nda::array<long, 1> b = {-3, -1, 1, 3};
+      REQUIRE(compare_mesh("iwn_mesh (fermion)", chkpt, a, b));
+    }
+
+    SECTION("iwn_mesh_off_by_one_disagrees") {
+      // integers carry no tolerance: the orientation flip shows up exactly like this
+      nda::array<long, 1> stored  = {-3, -1, 1, 3};
+      nda::array<long, 1> rebuilt = {-3, -1, 1, 5};
+      REQUIRE_FALSE(compare_mesh("iwn_mesh (fermion)", chkpt, stored, rebuilt));
+    }
+
+    SECTION("iwn_mesh_size_mismatch_disagrees") {
+      // the cppdlr symmetrized-rank change surfaces here first
+      nda::array<long, 1> stored  = {-3, -1, 1, 3};
+      nda::array<long, 1> rebuilt = {-5, -3, -1, 1, 3, 5};
+      REQUIRE_FALSE(compare_mesh("iwn_mesh (fermion)", chkpt, stored, rebuilt));
+    }
+  }
+
 } // bdft_tests

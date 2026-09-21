@@ -23,8 +23,10 @@
 #define COQUI_IAFT_UTILS_HPP
 
 #include <string>
+#include <string_view>
 
 #include "configuration.hpp"
+#include "h5/h5.hpp"
 #include "nda/nda.hpp"
 #include "IAFT.hpp"
 
@@ -86,10 +88,55 @@ namespace imag_axes_ft {
   } // namespace test_utils
 
   /**
-   * Reconstruct IAFT object from the metadata in bdft scf output
+   * Reconstruct IAFT object from the metadata in CoQui checkpoint file. 
    * @return IAFT
    */
   IAFT read_iaft(std::string scf_file, bool print_meta_log = true);
+
+  /**
+   * Compare a mesh stored in a checkpoint against the same mesh of a grid rebuilt from
+   * that checkpoint's scalar metadata. 
+   *
+   * @param label    - mesh name to use in the report
+   * @param scf_file - checkpoint path, for the report
+   * @param stored   - mesh read back from the checkpoint
+   * @param rebuilt  - mesh of the freshly constructed IAFT
+   * @param tol      - absolute tolerance on node values
+   * @return true when the meshes agree
+   */
+  bool compare_mesh(std::string_view label, std::string const& scf_file,
+                    nda::array<double, 1> const& stored,
+                    nda::array<double, 1> const& rebuilt,
+                    double tol);
+
+  /**
+   * Overload for the integer Matsubara index meshes
+   *
+   * @param label    - mesh name to use in the report
+   * @param scf_file - checkpoint path, for the report
+   * @param stored   - mesh read back from the checkpoint
+   * @param rebuilt  - mesh of the freshly constructed IAFT
+   * @return true when the meshes agree
+   */
+  bool compare_mesh(std::string_view label, std::string const& scf_file,
+                    nda::array<long, 1> const& stored,
+                    nda::array<long, 1> const& rebuilt);
+
+  /**
+   * Verify that the tau/iwn meshes stored in a checkpoint match those of the IAFT
+   * rebuilt from the same checkpoint's metadata, and abort if they do not.
+   *
+   * A rebuild from (beta, wmax, prec|eps) reproduces the original grid only if the
+   * DLR/IR backend builds it the same way in the writing and reading builds, so this
+   * catches any basis-library change that alters the grid. 
+   *
+   * @param iaft_grp - the checkpoint's "imaginary_fourier_transform" group
+   * @param ft       - IAFT rebuilt from that group's scalar metadata
+   * @param scf_file - checkpoint path, used in the messages
+   */
+  void validate_grid_against_checkpoint(h5::group const& iaft_grp, IAFT const& ft,
+                                        std::string const& scf_file);
+
 
 } // imag_axes_ft
 
