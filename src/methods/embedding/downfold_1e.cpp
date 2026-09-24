@@ -730,9 +730,7 @@ namespace methods {
     mpi->comm.barrier();
 
     // Vhf_skij = Vhf_skij + Vcorr_skij - Vcorr_dc_skij
-    proj.upfold(sVcorr_skij, Vcorr_dc_sIab);
-    if (sVhf_skij.node_comm()->root()) sVhf_skij.local() -= sVcorr_skij.local();
-    mpi->comm.barrier();
+    proj.upfold_add(sVhf_skij, Vcorr_dc_sIab, ComplexType(-1.0));
 
     // If weiss_f_iter==-1, we are in the 1st iteration of embedding and there is
     // no impurity self-energy.

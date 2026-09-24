@@ -107,7 +107,7 @@ namespace iter_scf {
         comFS_residual.initialize(&extrapolated_state, S, H0, FT, mbpt_output);
         // providing non-owning pointers to DIIS kernel as well as the starting state
         d_alg.init(&extrapolated_state, &comFS_residual, &x_vsp, &res_vsp,
-                   max_subsp_size, true, FockSigma(F, Sigma, mu));
+                   max_subsp_size, true, extrapolated_state.get_ref());
         initialized = true;
     }
 
@@ -237,19 +237,22 @@ namespace iter_scf {
             // DO DIIS
             d_alg.extrap = true;
             d_alg.grow_xvsp_only = false;
-            FockSigma fs(F, Sigma, get_mu());
             int is_extrapolated = d_alg.next_step(FockSigma(F, Sigma, get_mu()));
             if(is_extrapolated != 0) {
-                auto Fdiff = nda::make_regular(F - d_alg.get_extrapolated_state().get_fock());
-                auto Sdiff = nda::make_regular(Sigma - d_alg.get_extrapolated_state().get_sigma());
+                const auto& extrapolated = d_alg.get_extrapolated_state();
+                const auto& extrapolated_F = extrapolated.get_fock();
+                const auto& extrapolated_Sigma = extrapolated.get_sigma();
+                auto Fdiff = nda::make_regular(F - extrapolated_F);
                 auto Fmax_iter = max_element(Fdiff.data(), Fdiff.data()+Fdiff.size(),
                                     [](auto a, auto b) { return std::abs(a) < std::abs(b); });
-                auto Smax_iter = max_element(Sdiff.data(), Sdiff.data()+Sdiff.size(),
-                                  [](auto a, auto b) { return std::abs(a) < std::abs(b); });
-                F     = d_alg.get_extrapolated_state().get_fock();
-                Sigma = d_alg.get_extrapolated_state().get_sigma();
+                double Smax_iter = 0.0;
+                nda::for_each(Sigma.shape(), [&](auto... i) {
+                    Smax_iter = std::max(Smax_iter, std::abs(Sigma(i...) - extrapolated_Sigma(i...)));
+                });
+                F     = extrapolated_F;
+                Sigma = extrapolated_Sigma;
 
-                return std::array<double, 2>{std::abs(*Fmax_iter), std::abs(*Smax_iter)};
+                return std::array<double, 2>{std::abs(*Fmax_iter), Smax_iter};
 
             } else {
                 // No DIIS extrapolation has been applied

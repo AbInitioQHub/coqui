@@ -352,6 +352,63 @@ class distributed_array
 };
 
 /*
+ * Owning collection of irregular rank-local rectangular blocks. This type is
+ * deliberately not a DistributedArray: it exposes no synthetic processor grid
+ * or algorithmic block size. It is intended for metadata-driven transfers of
+ * selected slices and other sparse-in-rank block layouts.
+ */
+template<::nda::Array Array_base_t, typename communicator_t>
+class irregular_block_distributed_array {
+public:
+  using Array_t = typename std::decay_t<Array_base_t>::regular_type;
+  static constexpr int rank = ::nda::get_rank<Array_t>;
+  using value_type = typename Array_t::value_type;
+
+  template<::nda::MemoryArray Arr>
+  requires (::nda::get_rank<std::decay_t<Arr>> == rank)
+  irregular_block_distributed_array(communicator_t *comm,
+                                    std::array<long, rank> global_shape,
+                                    std::array<long, rank> origin,
+                                    Arr &&local) :
+      comm_(comm), global_shape_(global_shape), origin_(origin),
+      local_(std::forward<Arr>(local)) {
+    utils::check(comm_ != nullptr, "irregular_block_distributed_array: Null communicator.");
+    for (int dim = 0; dim < rank; ++dim) {
+      utils::check(global_shape_[dim] >= 0 and origin_[dim] >= 0 and
+                       local_.shape()[dim] >= 0 and
+                       origin_[dim] <= global_shape_[dim] - local_.shape()[dim],
+                   "irregular_block_distributed_array: Invalid block on axis {}: origin {}, size {}, global {}.",
+                   dim, origin_[dim], local_.shape()[dim], global_shape_[dim]);
+    }
+#if defined(SYNCHRONIZE_DISTRIBUTED_ARRAY)
+    auto root_shape = global_shape_;
+    comm_->broadcast_n(root_shape.data(), rank, 0);
+    utils::check(root_shape == global_shape_,
+                 "irregular_block_distributed_array: Inconsistent global shape.");
+#endif
+  }
+
+  irregular_block_distributed_array() = default;
+  irregular_block_distributed_array(irregular_block_distributed_array const&) = default;
+  irregular_block_distributed_array(irregular_block_distributed_array&&) = default;
+  irregular_block_distributed_array& operator=(irregular_block_distributed_array const&) = default;
+  irregular_block_distributed_array& operator=(irregular_block_distributed_array&&) = default;
+
+  auto local() { return local_(); }
+  auto local() const { return local_(); }
+  auto const& local_shape() const { return local_.shape(); }
+  auto const& global_shape() const { return global_shape_; }
+  auto const& origin() const { return origin_; }
+  communicator_t *communicator() const { return comm_; }
+
+private:
+  communicator_t *comm_ = nullptr;
+  std::array<long, rank> global_shape_{};
+  std::array<long, rank> origin_{};
+  Array_t local_;
+};
+
+/*
  * Non-owning version of distributed array
  */ 
 
