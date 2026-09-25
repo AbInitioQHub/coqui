@@ -21,9 +21,14 @@ limitations under the License.
 import h5
 import argparse
 
-# Usage: 
+# Usage:
 # python3 read_last_it.py --inp mbpt.gf2.iterative.mbpt.h5  --out mbpt.gf2.last.mbpt.h5 --keep_first_it True
 # Attention: may not work correctly if h5 file is corrupted
+#
+# Note: a "scalar" integer dataset is read as a Python int and rewritten as a C long,
+# so a scalar that originally stored as int32 (e.g. the DLR-mesh 'statistic') is promoted 
+# to int64. The value is unchanged, but a later read may warn "HDF5 type mismatch ... int != long". 
+# Integer arrays still keep their original type. 
 
 parser = argparse.ArgumentParser(description="Script to read the last iteraction")
 parser.add_argument("--inp", type=str, default="mbpt.h5", help="file to be read")
@@ -41,13 +46,15 @@ def recursive_copy(g_in, g_out):
 
 
 def copy_from_key(g_in, g_out, k):
-    # recursively copy subgroups without datasets
+    # recursively copy subgroups (with their "Format" attribute) and datasets
     if g_in.is_group(k):
         g_out.create_group(k)
-        gg_in = g_in.get_raw(k)
-        gg_out = g_out.get_raw(k)
-        recursive_copy(gg_in, gg_out)
-        # copy datasets (do no occur in the current format)
+        # Preserve the "Format" attribute that tags a serialized object so a later
+        # read can still identify and reconstruct it (Gf, BlockGf, List, ...).
+        fmt = g_in._group.read_hdf5_format_from_key(k)
+        if fmt:
+            g_out.get_raw(k).write_attr("Format", fmt)
+        recursive_copy(g_in.get_raw(k), g_out.get_raw(k))
     else:
         if g_in.is_data(k):
             g_out[k] = g_in.get_raw(k)

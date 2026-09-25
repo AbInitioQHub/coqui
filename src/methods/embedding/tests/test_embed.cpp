@@ -403,7 +403,7 @@ TEST_CASE("downfold_1e_mb_qp", "[methods][embed][df_1e]") {
       pt.put("screen_type", "crpa");
       pt.put("div_treatment", "gygi_smallest_q");
       pt.put("beta", 1000.0);
-      pt.put("wmax", 3.0);
+      // wmax is left to the default from mf::wmax_from_mf; the references below depend on it.
       auto [Vloc, Wloc_w] = downfold_coulomb_with_projector_from_h5(thc, pt);
 
       // alpha = 10

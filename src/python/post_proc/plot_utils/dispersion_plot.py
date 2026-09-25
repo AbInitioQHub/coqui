@@ -28,7 +28,7 @@ from coqui import app_log, app_warning
 
 
 def band_plot(ax, coqui_h5, iteration=-1,
-              fontsize=16, label="", verbal=True,
+              fontsize=16, label="", verbal=True, calc_type="mbpt",
               **kwargs):
     """
     Plot quasiparticle band structure from a CoQuí checkpoint onto a Matplotlib axes.
@@ -52,6 +52,8 @@ def band_plot(ax, coqui_h5, iteration=-1,
         Legend label for the plotted bands. Default ``""``.
     verbal : bool, optional
         If ``True`` (default), prints a summary of what was read (k-points, bands, μ).
+    calc_type : str, optional
+        Calculation type. ``"mbpt"`` (default) reads from the ``scf`` group; ``"dmft"`` reads from the ``embed`` group.
     **kwargs
         Additional keyword arguments forwarded to ``ax.plot`` (e.g. ``color``,
         ``linestyle``, ``linewidth``).
@@ -77,14 +79,20 @@ def band_plot(ax, coqui_h5, iteration=-1,
         plt.tight_layout()
         plt.savefig("bands.png")
     """
+    if calc_type not in ["mbpt", "dmft"]:
+        raise ValueError(f"Unknown calc_type = {calc_type}. \n"
+                         "Acceptable options are 'mbpt' for many-body perturbation theory "
+                         "and 'dmft' for dmft embedding results.")
+
+    h5_grp = "scf" if calc_type == "mbpt" else "embed"
     with HDFArchive(coqui_h5, 'r') as ar:
         if iteration == -1:
-            iteration = ar["scf/final_iter"]
+            iteration = ar[f"{h5_grp}/final_iter"]
 
-        if "qp_approx" in ar[f"scf/iter{iteration}"]:
-            qp_grp = ar[f"scf/iter{iteration}/qp_approx"]
+        if "qp_approx" in ar[f"{h5_grp}/iter{iteration}"]:
+            qp_grp = ar[f"{h5_grp}/iter{iteration}/qp_approx"]
         else:
-            qp_grp = ar[f"scf/iter{iteration}"]
+            qp_grp = ar[f"{h5_grp}/iter{iteration}"]
 
         mu = qp_grp["mu"] * Hartree_eV
         E_ska = qp_grp["wannier_inter/E_ska"] * Hartree_eV

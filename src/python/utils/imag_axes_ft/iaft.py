@@ -20,6 +20,7 @@ limitations under the License.
 import os
 import numpy as np
 
+from coqui._lib.utils_module import app_log
 from .iaft_sparse_ir import _IAFTIRAdapter
 
 try:
@@ -236,6 +237,14 @@ class _IAFTCppAdapter(object):
         h5_grp['imaginary_fourier_transform']['prec'] = self.prec
         h5_grp['imaginary_fourier_transform']['eps'] = self.eps
         h5_grp['imaginary_fourier_transform']['basis'] = self.basis
+
+        iaft_grp = h5_grp['imaginary_fourier_transform']
+        iaft_grp.create_group('tau_mesh')
+        iaft_grp['tau_mesh']['fermion'] = self.tau_mesh('f', rel_notation=True)
+        iaft_grp['tau_mesh']['boson'] = self.tau_mesh('b', rel_notation=True)
+        iaft_grp.create_group('iwn_mesh')
+        iaft_grp['iwn_mesh']['fermion'] = self.wn_mesh('f')
+        iaft_grp['iwn_mesh']['boson'] = self.wn_mesh('b')
 
     def __str__(self):
         self._iaft_cpp.metadata_log()
@@ -516,6 +525,75 @@ class _IAFTCppAdapter(object):
         return None
 
 
+def _read_chkpt_meshes(iaft_grp):
+    """
+    Read the tau/iwn meshes recorded by :meth:`IAFT.save`, if the checkpoint has them.
+
+    :param iaft_grp: HDFArchive group
+        The ``'imaginary_fourier_transform'`` group.
+    :return: dict for the IAFT meshes read. Empty when the checkpoint records no meshes 
+        at all for backward compatibility. 
+    """
+    meshes = {}
+    for grp_name in ('tau_mesh', 'iwn_mesh'):
+        if grp_name not in iaft_grp:
+            continue
+        sub_grp = iaft_grp[grp_name]
+        for stats in ('fermion', 'boson'):
+            if stats in sub_grp:
+                meshes[f"{grp_name} ({stats})"] = np.array(sub_grp[stats])
+    return meshes
+
+
+def _validate_grid_against_checkpoint(iaft, stored_meshes, chkpt_h5):
+    """
+    Check that an IAFT rebuilt from a checkpoint's metadata lands on the same
+    imaginary-axis grid the stored data actually lives on.
+
+    A grid rebuilt from (beta, wmax, prec|eps) only reproduces the original if the
+    DLR/IR backend builds it the same way in the writing and reading builds, so this
+    catches any basis-library change that alters the grid. 
+
+    :raise ValueError: if any stored mesh disagrees with the rebuilt one.
+    """
+    if not stored_meshes:
+        app_log(1, f" [WARNING] '{chkpt_h5}' stores no tau_mesh or iwn_mesh since it was \n"
+                   "created using an older version of CoQui, so its imaginary-axis grid \n"
+                   "could not be verified against the one rebuilt from its metadata.")
+        return
+
+    rebuilt = {
+        'tau_mesh (fermion)': np.asarray(iaft.tau_mesh('f', rel_notation=True)),
+        'tau_mesh (boson)':   np.asarray(iaft.tau_mesh('b', rel_notation=True)),
+        'iwn_mesh (fermion)': np.asarray(iaft.wn_mesh('f')),
+        'iwn_mesh (boson)':   np.asarray(iaft.wn_mesh('b')),
+    }
+
+    explanation = (
+        f"The imaginary-axis grid is rebuilt from the checkpoint's metadata (beta, wmax, prec/eps),\n"
+        "so it reproduces the original only when the DLR/IR backend builds the same grid between \n"
+        "the code that wrote the checkpoint and the code reading it now. A difference means the two"
+        "disagree, typically because the basis library was updated in between. \n"
+        "Rebuild CoQui using the consistent DLR/IR backend or regenerate the checkpoint with the \n"
+        "current build.")
+
+    for label, stored in stored_meshes.items():
+        new = rebuilt[label]
+        # size first
+        if stored.shape != new.shape:
+            raise ValueError(
+                f"{label} has {stored.shape[0]} nodes in the checkpoint, but rebuilding "
+                f"the grid gives {new.shape[0]} nodes. {explanation}")
+        # 1e-10 for tau mesh, 0 for iwn mesh (i.e. integers)
+        tol = 0.0 if label.startswith('iwn_mesh') else 1e-10
+        diff = np.abs(stored.astype(float) - new.astype(float))
+        if np.any(diff > tol):
+            idx = int(np.argmax(diff))
+            raise ValueError(
+                f"{label} differs at index {idx}: the checkpoint has {stored[idx]}, the "
+                f"rebuilt grid has {new[idx]}. {explanation}")
+
+
 class IAFT(object):
     """
     Imaginary-axis Fourier transform (IAFT) for dynamical correlation functions.
@@ -773,8 +851,13 @@ class IAFT(object):
                 wmax = ir_lambda / beta
             # Prefer basis metadata; fall back to source for backward compatibility.
             basis = iaft_grp['basis'] if 'basis' in iaft_grp else (iaft_grp['source'] if 'source' in iaft_grp else "ir")
+            stored_meshes = _read_chkpt_meshes(iaft_grp)
 
-        return cls(beta, wmax, prec=prec, eps=eps, verbose=verbose, basis=basis)
+        iaft = cls(beta, wmax, prec=prec, eps=eps, verbose=verbose, basis=basis)
+        # The grid above was rebuilt from the scalars only; confirm it is the grid the
+        # stored data actually lives on before handing it back.
+        _validate_grid_against_checkpoint(iaft, stored_meshes, chkpt_h5)
+        return iaft
 
     def save(self, h5_grp):
         """
