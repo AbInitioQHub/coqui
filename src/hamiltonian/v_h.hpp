@@ -152,10 +152,12 @@ void v_h(mpi_context_t<communicator,shared_communicator> &mpi,
         if (kp_to_ibz(k) != k_sym)
           continue;
 
-        // apply symmetry on the k2g mapping
+        // apply the spatial rotation on the k2g mapping.
+        // The diagonal density is |pr_l|^2, so time reversal needs no extra
+        // handling here once the orbital is rotated with +S*g.
         k2g_rotate() = k2g();
-        if(kp_trev(k) or kp_symm(k) > 0) {
-          utils::transform_k2g(kp_trev(k), symm_list[kp_symm(k)], Gs, mesh,
+        if(kp_symm(k) > 0) {
+          utils::transform_k2g(false, symm_list[kp_symm(k)], Gs, mesh,
                                  kpts(k_sym, all), k2g_rotate, Xft);
         }
          
@@ -422,10 +424,11 @@ void v_h(mpi_context_t<communicator,shared_communicator> &mpi,
           if (kp_to_ibz(k) != k_sym)
             continue;
 
-          // apply symmetry on the k2g mapping
+          // apply the spatial rotation on the k2g mapping.
+          // Time reversal is handled via real-space conjugation of psi_r below.
           k2g_rotate() = k2g();
-          if(kp_trev(k) or kp_symm(k) > 0) 
-            utils::transform_k2g(kp_trev(k), symm_list[kp_symm(k)], Gs, mesh,
+          if(kp_symm(k) > 0)
+            utils::transform_k2g(false, symm_list[kp_symm(k)], Gs, mesh,
                                  kpts(k_sym,all), k2g_rotate, Xft);
 
           for( auto p : range(npol) ) {
