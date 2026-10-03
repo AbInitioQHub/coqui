@@ -157,6 +157,10 @@ inline std::tuple<std::string,std::string> utest_filename(std::string src)
     return std::make_tuple(std::string(PROJECT_SOURCE_DIR)+
                                "/tests/unit_test_files/pyscf/h2o_mol/",
                            std::string("pyscf"));
+  } else if (src == "pyscf_h2o2_mol") {
+    return std::make_tuple(std::string(PROJECT_SOURCE_DIR)+
+                               "/tests/unit_test_files/pyscf/h2o2_mol/",
+                           std::string("pyscf"));
   } else {
     utils::check(false, "Unrecognized test system: {}. "
                         "Available options: qe_si211, qe_lih222, bdft_lih222, bdft_lih222_sym, pyscf_si222, pyscf_h2_222, pyscf_li_222u", src);

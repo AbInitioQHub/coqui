@@ -165,6 +165,11 @@ inline decltype(auto) default_MF(std::shared_ptr<utils::mpi_context_t<comm_t>>& 
     auto [outdir,prefix] = utils::utest_filename("pyscf_h2o_mol");
     return default_MF(comm, mf::pyscf_source, outdir, prefix, ftype);
 
+  } else if (src == "pyscf_h2o2_mol") {
+
+    auto [outdir,prefix] = utils::utest_filename("pyscf_h2o2_mol");
+    return default_MF(comm, mf::pyscf_source, outdir, prefix, ftype);
+
   } else {
     utils::check(false, "Unrecognized test system: {}. "
                         "Available options: qe_si211, qe_lih222, bdft_si222, pyscf_si222, pyscf_h2_222, pyscf_li_222u", src);
