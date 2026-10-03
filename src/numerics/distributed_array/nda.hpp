@@ -36,7 +36,9 @@ using darray_t = math::nda::distributed_array<local_Array_t,comm>;
 
 template<::nda::MemoryArray local_Array_t,class comm>
 using darray_view_t = math::nda::distributed_array_view<local_Array_t,comm>;
+
+template<::nda::MemoryArray local_Array_t,class comm>
+using irregular_block_darray_t = math::nda::irregular_block_distributed_array<local_Array_t,comm>;
 }
 
 #endif
-
