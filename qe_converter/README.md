@@ -64,6 +64,18 @@ in your QE build directory (typically `bin/` inside the build tree).
 
 
 ## Usage
+
+> **`pw2coqui.x` is serial only — run it on a single MPI rank.**
+> ```shell
+> pw2coqui.x < svo.pw2coqui.in          # or: mpirun -np 1 pw2coqui.x -in svo.pw2coqui.in
+> ```
+> The preceding `pw.x` scf/nscf steps are of course run in parallel as usual;
+> only the conversion is serial. The converter opens its HDF5 file, and every
+> group inside it, on `ionode` alone, so additional ranks have nothing valid to
+> write through. The program now refuses to start on more than one rank rather
+> than produce a damaged file. See issue
+> [#11](https://github.com/AbInitioQHub/coqui/issues/11).
+
 Once QE has been recompiled with the converter, you can proceed with the 
 CoQuí [Quickstart tutorials](https://github.com/AbInitioQHub/coqui-tutorial/blob/main/quickstart/01s_dft_to_coqui_converter.ipynb) 
 to generate CoQuí inputs from QE.
