@@ -46,6 +46,16 @@ PROGRAM pw2coqui
 
   CALL environment_start ( codename )
 
+  ! This converter is serial only; see qe_converter/README.md.
+  ! The HDF5 file handle and the group handles used throughout are opened on
+  ! ionode alone, and the projector gather in write_pp does not populate
+  ! vkb_g_root for every pool layout. On more than one rank the run therefore
+  ! either aborts inside HDF5 or -- worse -- exits 0 after writing
+  ! uninitialised memory into Hamiltonian/<pp_type>/projector_k*. Refuse the
+  ! run instead of producing a silently corrupt file.
+  IF ( nproc > 1 ) CALL errore ( codename, &
+    'the CoQui converter is serial only; rerun on a single MPI rank', 1 )
+
   prefix = 'pwscf'
   fname = ' '
   add_system = .true.
@@ -556,7 +566,7 @@ subroutine write_pp(h5_f)
   enddo
 
   ! MAM: if local potential has polarization dependence, modify below! 
-  call qeh5_add_attribute(h5_n%id,"lspinorbit_loc",0)
+  if(ionode) call qeh5_add_attribute(h5_n%id,"lspinorbit_loc",0)
   CALL mp_sum ( vloc, intra_bgrp_comm )
   if(ionode) then
     call h5_write_vector_c(h5_n,vloc(:,1,1),"pp_local_component")
