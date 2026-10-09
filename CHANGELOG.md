@@ -6,6 +6,7 @@
 ### Notes
 
 - DLR mesh construction changed in this release: DLR checkpoints written by CoQui v0.4.0 or earlier are no longer compatible and must be regenerated. 
+- `reuse_config` requires a TRIQS/ctseg build that provides `ConfigDataT` (configuration reuse).
 
 ### Added
 
@@ -13,6 +14,7 @@
 - `CPPDLR` CMake variable to configure against a local cppdlr source tree instead of the one fetched by `FetchContent`. (#51)
 - Linearized quasiparticle self-consistent GW (LQSGW), `run_lqsgw` in the Python API.
 - Linearized quasiparticle approximation of a Dyson-SCF solution as post-processing.
+- CT-SEG configuration reuse in GW+EDMFT
 
 ### Improved
 
@@ -33,6 +35,11 @@
 - Wannier90 output files from `wannier90` library mode silently written to a truncated path outside `outdir` when `outdir/prefix` exceeds 50 characters; library mode now aborts instead.
 - DMFT unit test `test_extract_h0_and_delta_with_real_downfold_gloc` failing with more than one MPI rank.
 - MPI parallelization of `pw2coqui.x`. (issue #11)
+
+### Fixed
+
+- `solve_impurities_from_chkpt(dmft_iteration=-1, save_results=True)` wrote its results to a new iteration `final_iter + 1` instead of the re-solved one.
+- `solve_impurities_from_chkpt(imp_indices=...)` solved and saved each selected impurity with the parameters and checkpoint group of the impurity at the same list position.
 
 ### Default Value Updates
 

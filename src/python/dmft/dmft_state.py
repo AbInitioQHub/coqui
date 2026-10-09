@@ -66,14 +66,36 @@ def _mix_into(curr, prev, mixing_factor=0.7):
     return
 
 
-def save_impurity_results(solver_results, solver_chkpt, iteration=-1, impurity_index=-1):
+def save_impurity_results(solver_results, solver_chkpt, iteration=-1, impurity_index=-1, *,
+                          chkpt_impurity_index=None):
+    """
+    Write impurity solver results to ``dmft/iter{iteration}/impurity_{i}/results`` of the solver
+    checkpoint (master only; collective through the closing barrier).
+
+    Parameters
+    ----------
+    solver_results : list of dict
+        Solver results, one entry per impurity.
+    solver_chkpt : str
+        Solver checkpoint file.
+    iteration : int, optional
+        DMFT iteration to write; ``-1`` writes ``final_iter + 1``. Default ``-1``.
+    impurity_index : int, optional
+        Entry of ``solver_results`` to write; ``-1`` writes every entry. Default ``-1``.
+    chkpt_impurity_index : int, optional
+        Impurity number ``i`` of the checkpoint group the entry ``impurity_index`` is written to,
+        for a ``solver_results`` that holds only a subset of the impurities (as in
+        ``solve_impurities_from_chkpt`` with ``imp_indices``). Default ``None``: the group number
+        is ``impurity_index`` itself.
+    """
     if mpi.is_master_node():
         with HDFArchive(solver_chkpt, 'a') as ar:
             if "dmft" not in ar.keys():
                 ar.create_group("dmft")
             dmft_io.save_impurities(
                 ar["dmft"], solver_results = solver_results,
-                impurity_index = impurity_index, iteration = iteration
+                impurity_index = impurity_index, iteration = iteration,
+                chkpt_impurity_index = chkpt_impurity_index
             )
     mpi.barrier()
 

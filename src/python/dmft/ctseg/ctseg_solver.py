@@ -31,6 +31,7 @@ from triqs.operators.util.extractors import block_matrix_from_op
 
 from triqs_ctseg import Solver
 import coqui.dmft.ctseg.ctseg_utils as ctseg_utils
+import coqui.dmft.ctseg.config_reuse as config_reuse
 
 
 @contextmanager
@@ -116,7 +117,7 @@ def matrix_to_many_body_operator(h_loc_matrix, gf_struct):
     return sum(c_dag_vec[block]*h_loc0_mat[block]*c_vec[block] for block, bl_size in gf_struct)[0,0]
 
 
-def solve_dynamic_full_mesh(Delta_iw, h_loc0, D0_iw, h_int, **solver_interface_params):
+def solve_dynamic_full_mesh(Delta_iw, h_loc0, D0_iw, h_int, chkpt=None, **solver_interface_params):
     """
     Solve the impurity with dynamic interactions 
 
@@ -124,7 +125,16 @@ def solve_dynamic_full_mesh(Delta_iw, h_loc0, D0_iw, h_int, **solver_interface_p
     h_loc0: triqs.operator
     D0_iw : triqs.Block2Gf 
     h_int: triqs.operator
+    chkpt: dict, optional
+        {"h5", "impurity", "iteration", "save"}: where configuration reuse (``reuse_config``)
+        reads the previous iteration's CT-SEG configuration and saves this one
     """
+    # CoQuí-level keys that Solver.solve does not accept; a given random_seed is made rank-dependent
+    reuse_config = solver_interface_params.pop('reuse_config', False)
+    restart_n_warmup_cycles = solver_interface_params.pop('restart_n_warmup_cycles', None)
+    if solver_interface_params.get('random_seed') is not None:
+        solver_interface_params['random_seed'] = \
+            ctseg_utils.seed_for_rank(solver_interface_params['random_seed'])
     gf_struct = [(bl, gf.target_shape[0]) for (bl, gf) in Delta_iw]
     beta  = Delta_iw.mesh.beta
     n_iw = Delta_iw.mesh.n_iw
@@ -170,7 +180,18 @@ def solve_dynamic_full_mesh(Delta_iw, h_loc0, D0_iw, h_int, **solver_interface_p
     solver_interface_params['measure_densities'] = True
     solver_interface_params['measure_F_tau']     = True
     solver_interface_params['measure_nn_tau']    = True
+    # configuration reuse: start from the previous iteration's configuration when it is usable
+    initial_config, config_source_iter = config_reuse.read_initial_config(
+        chkpt, reuse_config, beta, gf_struct, label="impurity solve")
+    if initial_config is not None:
+        solver_interface_params['n_warmup_cycles'] = restart_n_warmup_cycles
+        S.initial_config = initial_config
     S.solve(h_loc0=h_loc0, h_int=h_int, **solver_interface_params)
+    if initial_config is not None and not S.results.restarted_from_config:
+        config_reuse.warn_restart_rejected(chkpt, "impurity solve", restart_n_warmup_cycles)
+    if reuse_config and chkpt is not None and chkpt.get('save', False):
+        config_reuse.save_to_chkpt(chkpt['h5'], chkpt['iteration'], chkpt['impurity'],
+                                   S.final_config)
     
     # post process
     ctseg_utils.post_process(S, **post_proc_params)
@@ -187,10 +208,14 @@ def solve_dynamic_full_mesh(Delta_iw, h_loc0, D0_iw, h_int, **solver_interface_p
         G_tau = S.results.G_tau,
         orbital_occupations = S.results.densities,
         average_order = S.results.average_order_Delta,
-        average_sign = S.results.average_sign
+        average_sign = S.results.average_sign,
+        # configuration reuse (the defaults keep CT-SEG builds without the restart API working)
+        restarted_from_config = bool(getattr(S.results, 'restarted_from_config', False)),
+        warmup_trace = getattr(S.results, 'warmup_trace', None),
+        config_source_iter = config_source_iter,
     )
 
-def solve_dynamic_dlr_mesh(Delta_iw, h_loc0, D0_iw, h_int, **solver_interface_params):
+def solve_dynamic_dlr_mesh(Delta_iw, h_loc0, D0_iw, h_int, chkpt=None, **solver_interface_params):
     """
     Solve the impurity with dynamic interactions
 
@@ -198,7 +223,16 @@ def solve_dynamic_dlr_mesh(Delta_iw, h_loc0, D0_iw, h_int, **solver_interface_pa
     h_loc0: triqs.operator
     D0_iw : triqs.Block2Gf
     h_int: triqs.operator
+    chkpt: dict, optional
+        {"h5", "impurity", "iteration", "save"}: where configuration reuse (``reuse_config``)
+        reads the previous iteration's CT-SEG configuration and saves this one
     """
+    # CoQuí-level keys that Solver.solve does not accept; a given random_seed is made rank-dependent
+    reuse_config = solver_interface_params.pop('reuse_config', False)
+    restart_n_warmup_cycles = solver_interface_params.pop('restart_n_warmup_cycles', None)
+    if solver_interface_params.get('random_seed') is not None:
+        solver_interface_params['random_seed'] = \
+            ctseg_utils.seed_for_rank(solver_interface_params['random_seed'])
     gf_struct = [(bl, gf.target_shape[0]) for (bl, gf) in Delta_iw]
     beta, wmax, eps  = Delta_iw.mesh.beta, Delta_iw.mesh.w_max, Delta_iw.mesh.eps 
 
@@ -255,7 +289,18 @@ def solve_dynamic_dlr_mesh(Delta_iw, h_loc0, D0_iw, h_int, **solver_interface_pa
     solver_interface_params['measure_densities'] = True
     solver_interface_params['measure_F_tau']     = True
     solver_interface_params['measure_nn_nu_dlr']     = True
+    # configuration reuse: start from the previous iteration's configuration when it is usable
+    initial_config, config_source_iter = config_reuse.read_initial_config(
+        chkpt, reuse_config, beta, gf_struct, label="impurity solve")
+    if initial_config is not None:
+        solver_interface_params['n_warmup_cycles'] = restart_n_warmup_cycles
+        S.initial_config = initial_config
     S.solve(h_loc0=h_loc0, h_int=h_int, **solver_interface_params)
+    if initial_config is not None and not S.results.restarted_from_config:
+        config_reuse.warn_restart_rejected(chkpt, "impurity solve", restart_n_warmup_cycles)
+    if reuse_config and chkpt is not None and chkpt.get('save', False):
+        config_reuse.save_to_chkpt(chkpt['h5'], chkpt['iteration'], chkpt['impurity'],
+                                   S.final_config)
 
     # post process
     ctseg_utils.post_process(S, **post_proc_params)
@@ -271,7 +316,11 @@ def solve_dynamic_dlr_mesh(Delta_iw, h_loc0, D0_iw, h_int, **solver_interface_pa
         # optional
         orbital_occupations = S.results.densities,
         average_order = S.results.average_order_Delta,
-        average_sign = S.results.average_sign
+        average_sign = S.results.average_sign,
+        # configuration reuse (the defaults keep CT-SEG builds without the restart API working)
+        restarted_from_config = bool(getattr(S.results, 'restarted_from_config', False)),
+        warmup_trace = getattr(S.results, 'warmup_trace', None),
+        config_source_iter = config_source_iter,
     )
     
 
@@ -284,7 +333,7 @@ def solve_dynamic_imp(Delta_iw, h_loc0, U_iw, h_int, **solver_params):
         raise NotImplemented
 
 
-def solve_density_dynamic_u_dlr_mesh(Delta_iw, h_loc0, D0_iw, h_int, **solver_interface_params):
+def solve_density_dynamic_u_dlr_mesh(Delta_iw, h_loc0, D0_iw, h_int, chkpt=None, **solver_interface_params):
     """
     Solve the impurity with dynamic interactions
 
@@ -292,7 +341,16 @@ def solve_density_dynamic_u_dlr_mesh(Delta_iw, h_loc0, D0_iw, h_int, **solver_in
     h_loc0: triqs.operator
     D0_iw : triqs.Block2Gf
     h_int: triqs.operator
+    chkpt: dict, optional
+        {"h5", "impurity", "iteration", "save"}: where configuration reuse (``reuse_config``)
+        reads the previous iteration's CT-SEG configuration and saves this one
     """
+    # CoQuí-level keys that Solver.solve does not accept; a given random_seed is made rank-dependent
+    reuse_config = solver_interface_params.pop('reuse_config', False)
+    restart_n_warmup_cycles = solver_interface_params.pop('restart_n_warmup_cycles', None)
+    if solver_interface_params.get('random_seed') is not None:
+        solver_interface_params['random_seed'] = \
+            ctseg_utils.seed_for_rank(solver_interface_params['random_seed'])
     gf_struct = [(bl, gf.target_shape[0]) for (bl, gf) in Delta_iw]
     beta, wmax, eps  = Delta_iw.mesh.beta, Delta_iw.mesh.w_max, Delta_iw.mesh.eps
     n_tau = solver_interface_params.pop('n_tau', max(500001, int(2*beta*wmax)+1))
@@ -326,13 +384,26 @@ def solve_density_dynamic_u_dlr_mesh(Delta_iw, h_loc0, D0_iw, h_int, **solver_in
     solver_interface_params['measure_G_tau']     = False
     solver_interface_params['measure_F_tau']     = False
     solver_interface_params['measure_nn_tau']    = False
+    # configuration reuse: the chemical-potential search starts from the previous iteration's
+    # configuration when it is usable, and never saves
+    initial_config, config_source_iter = config_reuse.read_initial_config(
+        chkpt, reuse_config, beta, gf_struct, label="mu search", log_level=2)
+    if initial_config is not None:
+        solver_interface_params['n_warmup_cycles'] = restart_n_warmup_cycles
+        S.initial_config = initial_config
     with _redirect_solver_output(suppress_solver_output, solver_output_file):
         S.solve(h_loc0=h_loc0, h_int=h_int, **solver_interface_params)
+    if initial_config is not None and not S.results.restarted_from_config:
+        config_reuse.warn_restart_rejected(chkpt, "mu search", restart_n_warmup_cycles)
 
     return SolverResults(# required
         orbital_occupations = S.results.densities,
         average_order = S.results.average_order_Delta,
-        average_sign = S.results.average_sign
+        average_sign = S.results.average_sign,
+        # configuration reuse (the defaults keep CT-SEG builds without the restart API working)
+        restarted_from_config = bool(getattr(S.results, 'restarted_from_config', False)),
+        warmup_trace = getattr(S.results, 'warmup_trace', None),
+        config_source_iter = config_source_iter,
     )
 
 

@@ -153,6 +153,40 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
     return gw_edmft_params
 
 
+def _check_config_reuse(solver_params):
+    """
+    Validate and normalize, in place, the CT-SEG configuration-reuse keys of one impurity block
+    with ``reuse_config`` on. Warm-ups are per rank and are not divided by the rank count.
+    """
+    def _restart_warmup(value, key):
+        if value is None or int(value) < 1:
+            raise ValueError(
+                f"io::_normalize_solver_params_list: reuse_config = True requires {key} >= 1 "
+                f"(warm-up cycles of a solve that starts from a stored configuration); "
+                f"got {value!r}."
+            )
+        return int(value)
+
+    solver_params['restart_n_warmup_cycles'] = _restart_warmup(
+        solver_params.get('restart_n_warmup_cycles'), 'restart_n_warmup_cycles')
+    mu_params = solver_params.get('chemical_potential')
+    if mu_params:
+        mu_params['restart_n_warmup_cycles'] = _restart_warmup(
+            mu_params.get('restart_n_warmup_cycles', solver_params['restart_n_warmup_cycles']),
+            'chemical_potential.restart_n_warmup_cycles')
+
+    try:
+        import triqs_ctseg
+        has_reuse = hasattr(triqs_ctseg, 'ConfigDataT')
+    except ImportError:
+        has_reuse = False
+    if not has_reuse:
+        raise ImportError(
+            "io::_normalize_solver_params_list: reuse_config = True requires a TRIQS/ctseg build "
+            "that can restart from a saved configuration (triqs_ctseg.ConfigDataT)."
+        )
+
+
 # Need to be careful with non-ct-qmc solver
 def _normalize_solver_params_list(solver_params_list, comm_size):
     """
@@ -173,6 +207,9 @@ def _normalize_solver_params_list(solver_params_list, comm_size):
         solver_params_norm['n_cycles'] = int(solver_params_norm['n_cycles']/comm_size)
         solver_params_norm['n_warmup_cycles'] = int(solver_params_norm['n_warmup_cycles'])
         solver_params_norm['length_cycle'] = int(solver_params_norm['length_cycle'])
+
+        if solver_params_norm.get('reuse_config', False):
+            _check_config_reuse(solver_params_norm)
 
         normalized_list.append(solver_params_norm)
 
@@ -204,7 +241,8 @@ def print_degenerate_blks(deg_blks, gf_struct):
         app_log(1, f"Shell {i}: {subset}\n")
 
 
-def save_impurities(dmft_grp, *, solver_results=None, solver_inputs=None, impurity_index=-1, iteration=-1):
+def save_impurities(dmft_grp, *, solver_results=None, solver_inputs=None, impurity_index=-1, iteration=-1,
+                    chkpt_impurity_index=None):
     """
     Save impurity solver results and/or inputs to an HDF5 group.
 
@@ -220,6 +258,11 @@ def save_impurities(dmft_grp, *, solver_results=None, solver_inputs=None, impuri
         The index of the impurity to save. If -1, save all impurities. Default is -1.
     iteration : int, optional
         The DMFT iteration number. If -1, determine the iteration automatically. Default is -1.
+    chkpt_impurity_index : int, optional
+        Impurity number of the checkpoint group ``impurity_<chkpt_impurity_index>`` that list
+        entry ``impurity_index`` is written to, for lists that hold only a subset of the
+        impurities.
+        Default ``None``: the group number is ``impurity_index`` itself.
 
     Raises
     ------
@@ -227,6 +270,7 @@ def save_impurities(dmft_grp, *, solver_results=None, solver_inputs=None, impuri
         If neither `solver_results` nor `solver_inputs` is provided.
         If `solver_results` and `solver_inputs` are provided but have different lengths.
         If `impurity_index` is out of range.
+        If `chkpt_impurity_index` is given together with `impurity_index = -1`, or is negative.
 
     Notes
     -----
@@ -264,15 +308,20 @@ def save_impurities(dmft_grp, *, solver_results=None, solver_inputs=None, impuri
         if impurity_index < 0 or impurity_index >= num_impurities:
             raise ValueError(f"impurity_index {impurity_index} is out of range [-1, {num_impurities}).")
         impurity_list = [impurity_index]
+    if chkpt_impurity_index is not None and (impurity_index == -1 or chkpt_impurity_index < 0):
+        raise ValueError(f"io::save_impurities: chkpt_impurity_index {chkpt_impurity_index} needs "
+                         f"a single impurity_index >= 0 and must be non-negative "
+                         f"(got impurity_index {impurity_index}).")
 
     if f"iter{iteration}" not in dmft_grp.keys():
         dmft_grp.create_group(f"iter{iteration}")
     iter_grp = dmft_grp[f"iter{iteration}"]
 
     for imp_i in impurity_list:
-        if f"impurity_{imp_i}" not in iter_grp.keys():
-            iter_grp.create_group(f"impurity_{imp_i}")
-        imp_grp = iter_grp[f"impurity_{imp_i}"]
+        grp_i = imp_i if chkpt_impurity_index is None else chkpt_impurity_index
+        if f"impurity_{grp_i}" not in iter_grp.keys():
+            iter_grp.create_group(f"impurity_{grp_i}")
+        imp_grp = iter_grp[f"impurity_{grp_i}"]
         if solver_results is not None:
             _write_impurity_results(imp_grp, solver_results[imp_i])
         if solver_inputs is not None:
@@ -310,10 +359,12 @@ def _write_impurity_results(h5_grp, impurity_results):
         'gf_struct', 'mu_imp', 'convergence', 'density',
         'G_iw_data', 'Sigma_iw_data',
         'Pi_iw_data', 'W_iw_data',
-        'Sigma_infty_dc', 'Sigma_iw_dc_data', 'Pi_iw_dc_data'
+        'Sigma_infty_dc', 'Sigma_iw_dc_data', 'Pi_iw_dc_data',
+        'restarted_from_config', 'config_source_iter', 'warmup_trace'
     ]
     for key in optional_keys:
-        if key in impurity_results:
+        # h5 cannot store None: an optional key that is absent or None is not written
+        if impurity_results.get(key) is not None:
             res_grp[key] = impurity_results[key]
 
     # ----- mandatory TRIQS objects directly from the solver -----
@@ -338,6 +389,20 @@ def _write_impurity_inputs(h5_grp, impurity_inputs):
     inp_grp['g_weiss_iw'] = impurity_inputs['g_weiss_iw']
     inp_grp['delta_iw'] = impurity_inputs['delta_iw']
     inp_grp['h0'] = impurity_inputs['h0']
+
+
+def resolve_dmft_iteration(h5_filename, iteration):
+    """``iteration`` itself, or the last stored DMFT iteration of ``h5_filename`` for ``-1``. Collective."""
+    if iteration >= 0:
+        return iteration
+    last = None
+    if mpi.is_master_node():
+        with HDFArchive(h5_filename, 'r') as ar:
+            dmft_grp = ar["dmft"]
+            # "final_iteration": backward compatibility, as in read_impurity_chkpt
+            last = dmft_grp["final_iter"] if "final_iter" in dmft_grp else dmft_grp["final_iteration"]
+            del dmft_grp  # an open subgroup keeps the file open
+    return int(mpi.bcast(last))
 
 
 def read_impurity_chkpt(h5_filename, iteration=-1, *, read="both", impurity_indices=None):

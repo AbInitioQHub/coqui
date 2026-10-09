@@ -681,3 +681,12 @@ def check_spectrum(A, radius=1.0, tol=0.0, truncation=False):
         # least-squares reconstruction
         A_trunc = V_keep @ np.diag(w_keep) @ np.linalg.pinv(V_keep)
         return A_trunc
+
+
+def seed_for_rank(base, rank=None):
+    """
+    Random seed of MPI rank ``rank`` (default: this rank) for a user-given base seed:
+    ``(base + 928374 * rank) mod (2^31 - 1)``. Used whenever ``random_seed`` is specified.
+    """
+    rank = mpi.rank if rank is None else rank
+    return (int(base) + 928374 * int(rank)) % (2**31 - 1)
