@@ -250,7 +250,7 @@ subroutine wann90_run(prefix, clen, nb, nw, nat, at_cart, max_sym_str_len, at_sy
 !  CHARACTER(len=maxlen) :: proj_f_string
 
   integer, allocatable :: distk(:)
-  integer :: i, j, ib, ik, nkl, np
+  integer :: i, j, ib, ik, nkl, np, ioff, nbw
   integer :: mpisize, mpirank
   complex(8), allocatable :: u_matrix(:,:,:)
   complex(8), allocatable :: t_matrix(:,:)
@@ -388,7 +388,9 @@ subroutine wann90_run(prefix, clen, nb, nw, nat, at_cart, max_sym_str_len, at_sy
 
   call w90_plot(w90main, stdout, stderr, ierr)
 
-  ! use m_matrix for temporary storage 
+  ! u_matrix_opt(:,:,ik) is in the basis of the bands inside the outer window at ik
+  ! (row 1 = band nfirstwin(ik)); expand it to the full nb basis before applying u_matrix,
+  ! as Wannier90 does when writing _u_dis.mat
   if(nb > nw) then
     allocate( t_matrix(nb,nw), stat=ierr )
     if(ierr .ne. 0) then
@@ -396,7 +398,10 @@ subroutine wann90_run(prefix, clen, nb, nw, nat, at_cart, max_sym_str_len, at_sy
       return
     endif
     do ik=1,nk
-      t_matrix(:,:) = u_matrix_opt(:,:,ik)
+      ioff = w90main%dis_manifold%nfirstwin(ik)
+      nbw = w90main%dis_manifold%ndimwin(ik)
+      t_matrix(:,:) = (0.d0,0.d0)
+      t_matrix(ioff:ioff+nbw-1,:) = u_matrix_opt(1:nbw,:,ik)
       call utility_zgemm_new( t_matrix(:,:), u_matrix(:,:,ik), u_matrix_opt(:,:,ik) )
     enddo
   else
@@ -436,7 +441,7 @@ subroutine wann90_run_from_files(prefix, clen, nb, nw, eval, uccart, nk, nkabc, 
 
   integer :: stdout, stderr
   integer, allocatable :: distk(:)
-  integer :: i, j, ib, ik, nkl
+  integer :: i, j, ib, ik, nkl, ioff, nbw
   integer :: mpisize, mpirank
   ! m_matrix(nb, nb, nn, nk)
   complex(8), allocatable :: m_matrix(:,:,:,:)
@@ -552,10 +557,16 @@ subroutine wann90_run_from_files(prefix, clen, nb, nw, eval, uccart, nk, nkabc, 
 
   call w90_plot(w90main, stdout, stderr, ierr)
 
-  ! use m_matrix for temporary storage 
+  ! use m_matrix for temporary storage
+  ! u_matrix_opt(:,:,ik) is in the basis of the bands inside the outer window at ik
+  ! (row 1 = band nfirstwin(ik)); expand it to the full nb basis before applying u_matrix,
+  ! as Wannier90 does when writing _u_dis.mat
   if( nb > nw ) then
     do ik=1,nk
-      m_matrix(1:nb,1:nw,1,1) = u_matrix_opt(:,:,ik)
+      ioff = w90main%dis_manifold%nfirstwin(ik)
+      nbw = w90main%dis_manifold%ndimwin(ik)
+      m_matrix(1:nb,1:nw,1,1) = (0.d0,0.d0)
+      m_matrix(ioff:ioff+nbw-1,1:nw,1,1) = u_matrix_opt(1:nbw,:,ik)
       call utility_zgemm_new( m_matrix(1:nb,1:nw,1,1), u_matrix(:,:,ik), u_matrix_opt(:,:,ik) ) 
     enddo
   else

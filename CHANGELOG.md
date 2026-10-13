@@ -17,6 +17,12 @@
 - More stable DLR mesh construction: `cppdlr` pin bumped from `f6bd6ab` to `7a0f60c`. (#51)
 - IAFT mesh compatibility checking when reading a checkpoint. (#51)
 
+### Fixed
+
+- Wrong Wannier projectors from `wannier90` library mode when the outer disentanglement window excludes the lowest of the KS bands at some k-point.
+- Hang in `mlwf_h5_from_wannier90_output` with more than one MPI rank when no `.eig` file is present.
+- Wannier90 output files from `wannier90` library mode silently written to a truncated path outside `outdir` when `outdir/prefix` exceeds 50 characters; library mode now aborts instead.
+
 ### Default Value Updates
 
 - Default imaginary-axis window: `wmax = 1.5 * [(emax - emin) + max(emax - ef, ef - emin)]`, sized for the `Sigma = G*W` convolution, instead of `wmax = 1.5 * max(emax - ef, ef - emin)`. (#56)

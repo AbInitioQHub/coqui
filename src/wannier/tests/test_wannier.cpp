@@ -51,7 +51,8 @@ namespace wannier_tests {
       auto [outdir, prefix] = utils::utest_filename(test_name);
 
       // Create temporary outdir under current working directory and copy seedname.win there.
-      auto tmp_outdir = std::filesystem::current_path() / ("wannier_tmp_" + prefix);
+      // relative: Wannier90 limits outdir/prefix to 50 characters
+      auto tmp_outdir = std::filesystem::path("wannier_tmp_" + prefix);
       auto source_win = std::filesystem::path(outdir) / ".." / "mlwf_dp" / (prefix + ".win");
       auto dest_win = tmp_outdir / (prefix + ".win");
       
@@ -154,6 +155,73 @@ namespace wannier_tests {
       auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi, "qe_svo222_sym"));
       test_library_mode(mf, "qe_svo222_sym");
     }
+  }
+
+  /**
+   * Library mode writes proj_mat in the full num_bands basis when the outer
+   * disentanglement window excludes the lowest bands at some k-points.
+   *
+   * SrVO3 2x2x2 with the outer window starting at 5.7 eV, above the lowest band at
+   * 4 of the 8 k-points (nfirstwin > 1 there). Inside the library, Wannier90 stores
+   * u_matrix_opt in the basis of the bands inside the outer window at each k; its
+   * own _u_dis.mat writer pads that back to the full num_bands basis. The proj_mat
+   * from library mode is compared with the one built from the _u.mat/_u_dis.mat
+   * files written by the same run (mlwf_h5_from_wannier90_output). 
+   */
+  TEST_CASE("wannier90_library_mode_outer_window", "[wannier][library_mode]") {
+    auto& mpi = utils::make_unit_test_mpi_context();
+    auto mf = std::make_shared<mf::MF>(mf::default_MF(mpi, "qe_svo222_sym"));
+    auto [outdir, prefix] = utils::utest_filename("qe_svo222_sym");
+
+    auto tmp_outdir = std::filesystem::path("wannier_tmp_outer_window_" + prefix);
+    auto source_win = std::filesystem::path(outdir) / ".." / "mlwf_outer_window" / (prefix + ".win");
+    if (mpi->comm.root()) {
+      if (std::filesystem::exists(tmp_outdir)) std::filesystem::remove_all(tmp_outdir);
+      std::filesystem::create_directories(tmp_outdir);
+      std::filesystem::copy_file(source_win, tmp_outdir / (prefix + ".win"),
+                                 std::filesystem::copy_options::overwrite_existing);
+    }
+    mpi->comm.barrier();
+
+    auto read_proj_mat = [](std::filesystem::path const& fname) {
+      nda::array<ComplexType, 5> proj_mat;
+      h5::file file(fname.string(), 'r');
+      auto grp = h5::group(file).open_group("dft_input");
+      nda::h5_read(grp, "proj_mat", proj_mat);
+      return proj_mat;
+    };
+
+    ptree pt;
+    pt.put("outdir", tmp_outdir.string());
+    pt.put("prefix", prefix);
+    wannier90_library_mode(*mf, pt);
+    mpi->comm.barrier();
+
+    // Read proj_mat directly from the Wannier90 outputs. 
+    auto ref_file = tmp_outdir / (prefix + ".from_files.mlwf.h5");
+    ptree pt_ref;
+    pt_ref.put("outdir", tmp_outdir.string());
+    pt_ref.put("prefix", prefix);
+    pt_ref.put("h5_filename", ref_file.string());
+    mlwf_h5_from_wannier90_output(*mf, pt_ref);
+    mpi->comm.barrier();
+
+    auto proj_mat = read_proj_mat(tmp_outdir / (prefix + ".mlwf.h5"));
+    auto proj_mat_ref = read_proj_mat(ref_file);
+    REQUIRE(proj_mat.shape() == proj_mat_ref.shape());
+
+    // the lowest band lies below the outer window at some k
+    auto all = nda::range::all;
+    long nk_below = 0;
+    for (long ik = 0; ik < proj_mat_ref.extent(0); ++ik)
+      if (nda::max_element(nda::abs(proj_mat_ref(ik, all, all, all, 0))) == 0.0) ++nk_below;
+    REQUIRE(nk_below > 0);
+
+    ARRAY_EQUAL(proj_mat, proj_mat_ref, 1e-8, 1e-8);
+    mpi->comm.barrier();
+
+    if (mpi->comm.root()) std::filesystem::remove_all(tmp_outdir);
+    mpi->comm.barrier();
   }
 
 } // wannier_tests

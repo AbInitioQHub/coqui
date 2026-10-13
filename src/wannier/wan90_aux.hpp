@@ -997,30 +997,38 @@ auto compute_amn_projections_2(utils::mpi_context_t<mpi3::communicator> &mpi, mf
 }
 */
 
-// spin???
-inline auto get_eig(utils::mpi_context_t<mpi3::communicator> &mpi, mf::MF &mf, std::string prefix,
-    nda::array<int, 1> const& kp_map, nda::array<int,1> const& band_list, bool write_to_file) 
+/*
+ * Eigenvalues (Ha) of the bands in band_list at the k-points in kp_map, (nspin, nk, nband).
+ * Local: every rank holds the mean-field eigenvalues, so no communication is involved.
+ */
+inline auto get_eig(mf::MF &mf, nda::array<int, 1> const& kp_map, nda::array<int,1> const& band_list)
 {
   nda::array<double,3> eigv(mf.nspin(),kp_map.size(),band_list.size());
   for( auto [ik, k] : itertools::enumerate(kp_map) )
     for( auto [in,n] : itertools::enumerate(band_list) )
       eigv(::nda::range::all,ik,in) = mf.eigval()(::nda::range::all,k,n);
-  if(mpi.comm.root() and write_to_file) {
-    // output 
+  return eigv;
+}
+
+/*
+ * Write eigv (Ha, as returned by get_eig) to prefix.eig in eV, Wannier90 format.
+ * Collective: the root rank writes, all ranks wait.
+ */
+// spin???
+inline void write_eig_file(utils::mpi_context_t<mpi3::communicator> &mpi, std::string prefix,
+                           nda::MemoryArrayOfRank<3> auto const& eigv)
+{
+  if(mpi.comm.root()) {
     std::ofstream out(prefix+".eig");
-    time_t timestamp;
-    time(&timestamp);
-    for( auto [ik, k] : itertools::enumerate(kp_map) )
-      for( auto [in,n] : itertools::enumerate(band_list) )
+    for( long ik=0; ik<eigv.extent(1); ++ik )
+      for( long in=0; in<eigv.extent(2); ++in )
           out<<std::fixed <<std::setw(10) <<in+1 <<" "
                     <<std::setw(10) <<ik+1 <<" "
-                    <<std::setw(18) <<std::setprecision(12) <<mf.eigval(0,k,n)/3.674932540e-2 <<"\n";
+                    <<std::setw(18) <<std::setprecision(12) <<eigv(0,ik,in)/3.674932540e-2 <<"\n";
     out.close();
   }
   mpi.comm.barrier();
-  
-  return eigv;
-}  
+}
 
 auto wannier90_library_run(utils::mpi_context_t<mpi3::communicator> &mpi, mf::MF &mf, ptree pt)
 {
@@ -1287,7 +1295,8 @@ auto wannier90_library_run(utils::mpi_context_t<mpi3::communicator> &mpi, mf::MF
   mpi.broadcast(str_len);
  
   // eigenvalues with wann_kp ordering in eV
-  auto eigv = get_eig(mpi,mf,resolved_prefix,kp_map,band_list,write_eigv);
+  auto eigv = get_eig(mf,kp_map,band_list);
+  if(write_eigv) write_eig_file(mpi,resolved_prefix,eigv);
   eigv() /= 3.674932540e-2;
 
   // nnkp array, returned by wann90_setup: 
@@ -1439,7 +1448,7 @@ inline auto wannier90_library_run_from_files(utils::mpi_context_t<mpi3::communic
   ::nda::array<double,2> wann_spreads(nspin,nwann);
 
   if(mpi.comm.root()) {
-    auto eigv = get_eig(mpi,mf,resolved_prefix,kp_map,band_list,false);
+    auto eigv = get_eig(mf,kp_map,band_list);
     eigv() /= 3.674932540e-2;
 #if defined(ENABLE_WANNIER90)
     FC_wann90_run_from_files(resolved_prefix.c_str(),resolved_prefix.size(),nband,nwann,eigv.data(),lattv.data(),
@@ -1542,7 +1551,7 @@ inline void mlwf_h5_from_wannier90_output_impl(
   } else {
     app_log(2, "Eigenvalue file not found, generating from DFT calculation\n");
     auto kp_map = nda::arange<int>(nkpts);
-    eigv = get_eig(mpi, mf, resolved_prefix, kp_map, band_list, false);
+    eigv = get_eig(mf, kp_map, band_list);
     // Convert Hartree -> eV for HDF5 output
     eigv() /= 3.674932540e-2;
   }

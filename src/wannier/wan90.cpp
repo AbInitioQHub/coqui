@@ -92,7 +92,7 @@ void to_wannier90(mf::MF &mf, ptree &pt)
       utils::check(false, "to_wannier90: No projections or auto_projections found in nnkp file.");
   }
   if(write_eigv) {
-    auto eigv = detail::get_eig(mpi,mf,resolved_prefix,kp_map,band_list, true);
+    detail::write_eig_file(mpi,resolved_prefix,detail::get_eig(mf,kp_map,band_list));
   }
   mpi.comm.barrier();
 }
@@ -111,6 +111,11 @@ void wannier90_library_mode_from_nnkp(mf::MF &mf, ptree &pt)
   
   int nproj = 0;
 
+  // Wannier90 truncates the seedname of its output files at 50 characters
+  utils::check(resolved_prefix.size() <= 50,
+               "wan90.cpp::wannier90_library_mode_from_nnkp: outdir/prefix = {} has {} characters;\n"
+               "Wannier90 truncates the seedname of its output files at 50. Use a shorter outdir or a relative path.",
+               resolved_prefix, resolved_prefix.size());
   utils::check(std::filesystem::exists(resolved_prefix+".nnkp"), 
                "Wannier90 nnkp file not found:{}",resolved_prefix+".nnkp");
   utils::check(std::filesystem::exists(resolved_prefix+".win"), 
@@ -141,7 +146,7 @@ void wannier90_library_mode_from_nnkp(mf::MF &mf, ptree &pt)
       utils::check(false, "to_wannier90: No projections or auto_projections found in nnkp file.");
   }
   { 
-    auto eigv = detail::get_eig(mpi,mf,resolved_prefix,kp_map,band_list,true);
+    detail::write_eig_file(mpi,resolved_prefix,detail::get_eig(mf,kp_map,band_list));
   }
   mpi.comm.barrier();
 
@@ -173,6 +178,11 @@ void wannier90_library_mode(mf::MF &mf, ptree &pt)
   auto prefix = io::get_value<std::string>(pt, "prefix");
   auto resolved_prefix = outdir + "/" + prefix;
 
+  // Wannier90 truncates the seedname of its output files at 50 characters
+  utils::check(resolved_prefix.size() <= 50,
+               "wan90.cpp::wannier90_library_mode: outdir/prefix = {} has {} characters;\n"
+               "Wannier90 truncates the seedname of its output files at 50. Use a shorter outdir or a relative path.",
+               resolved_prefix, resolved_prefix.size());
   utils::check(std::filesystem::exists(resolved_prefix+".win"), 
                "Wannier90 win file not found:{}",resolved_prefix+".win");
 
