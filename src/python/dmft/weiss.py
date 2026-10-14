@@ -249,7 +249,7 @@ def extract_h0_and_delta(g_weiss_wsab, iaft, high_freq_multiplier=10, make_hermi
     weiss_tmp = np.zeros(g_weiss_interp.shape, dtype=complex)
     for n, g in enumerate(g_weiss_interp):
         for s in range(nspin):
-            weiss_tmp[n, s] = 1j * iwn_interp[n] - np.linalg.inv(g[s])
+            weiss_tmp[n, s] = 1j * iwn_interp[n] * np.eye(g.shape[-1]) - np.linalg.inv(g[s])
 
     # 2) Fitting the zeroth moment as the non-interacting Hamiltonian
     t_sIab_estimate = estimate_zero_moment(weiss_tmp, iwn_interp)
