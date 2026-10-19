@@ -85,6 +85,7 @@ namespace mf {
         h5::h5_write(sgrp, "nuclear_energy", enuc);
         h5::h5_write(sgrp, "fermi_energy", efermi);
         h5::h5_write(sgrp, "number_of_bands", nbnd);
+        h5::h5_write(sgrp, "number_of_auxiliary_bands", nbnd_aux);
 
         nda::h5_write(sgrp, "kpoint_weights", k_weight, false);
 
@@ -116,12 +117,15 @@ namespace mf {
         species = std::vector<std::string>(nspecies);
         at_ids  = nda::array<int, 1>(natoms);
         at_pos  = nda::array<double, 2>(natoms, 3);
+        grad_nuc = nda::array<std::complex<double>, 2>(natoms, 3);
         //h5::h5_read(grp, "species", species); // CN: reading species is not ready yet. Will fix it easily later...
         h5::h5_read(grp, "nelec", nelec);
         nda::h5_read(grp, "at_ids", at_ids);
         nda::h5_read(grp, "at_pos", at_pos);
         nda::h5_read(grp, "latt", latt);
         nda::h5_read(grp, "recv", recv);
+        if( grp.has_dataset("grad_nuc") )
+          nda::h5_read(grp, "grad_nuc", grad_nuc);
         h5::h5_read(grp, "madelung", madelung);
         h5::h5_read(grp, "enuc", enuc);
         if( H5Aexists(h5::hid_t(grp),"fermi_energy") )
@@ -154,6 +158,7 @@ namespace mf {
 
         // mean-field calculation
         h5::h5_read(grp, "nbnd", nbnd);
+        h5::h5_read(grp, "nbnd_aux", nbnd_aux);
         if(grp.has_dataset("number_of_dimensions"))
           h5::h5_read(grp, "number_of_dimensions", ndims);
         h5::h5_read(grp, "nspin", nspin);
@@ -187,14 +192,27 @@ namespace mf {
           ecutrho = 1.0;
         }
 
+        // basis slice by atom
+        bnd_slice = nda::array<int, 2>(natoms, 2);
+        bnd_slice_aux = nda::array<int, 2>(natoms, 2);
+        nda::h5_read(grp, "bnd_slice", bnd_slice);
+        nda::h5_read(grp, "bnd_slice_aux", bnd_slice_aux);
+
         // TODO Add check if the pyscf input is in AO basis
         h5::group scf_grp = grp.open_group("SCF");
         eigval = nda::array<double, 3>(nspin, nkpts, nbnd);
         eigval_aux = nda::array<double, 3>(nspin, nkpts, nbnd_aux);
         aux_weight = nda::array<double, 3>(nspin, nkpts, nbnd_aux);
         occ    = nda::array<double, 3>(nspin, nkpts, nbnd);
+        mo_coeff = nda::array<std::complex<double>, 4>(nspin, nkpts, nbnd, nbnd);
+        H0_grad = nda::array<std::complex<double>, 6>(natoms, 3, nspin, nkpts, nbnd, nbnd);
+        S_grad = nda::array<std::complex<double>, 6>(natoms, 3, nspin, nkpts, nbnd, nbnd);
         nda::h5_read(scf_grp, "eigval", eigval);
         nda::h5_read(scf_grp, "occ", occ);
+        nda::h5_read(scf_grp, "dm", dm);
+        nda::h5_read(scf_grp, "mo_coeff", mo_coeff);
+        nda::h5_read(scf_grp, "H0_grad", H0_grad);
+        nda::h5_read(scf_grp, "ovlp_grad", S_grad);
 
       }
 
@@ -240,6 +258,8 @@ namespace mf {
       double enuc = 0.0;
       // fermi energy
       double efermi = 0.0;
+      // gradient of nuclar coordinates: [natom, 3]
+      nda::array<std::complex<double>, 2> grad_nuc;
 
       // BZ info
       bz_symm _symm;
@@ -251,6 +271,10 @@ namespace mf {
       int nbnd = 0;
       // # of auxiliary single-particle basis
       int nbnd_aux = 0;
+      // slice range of single-particle basis for each atom
+      nda::array<int, 2> bnd_slice;
+      // slice range of auxiliary single-particle basis for each atom
+      nda::array<int, 2> bnd_slice_aux;
       // whether orbitals are stored on a fft grid
       bool orb_on_fft_grid = false;
       // plane-wave cutoff for AOs
@@ -278,6 +302,14 @@ namespace mf {
       nda::array<double, 3> aux_weight;
       // occupation numbers: [nspin, kpoint, band]
       nda::array<double, 3> occ;
+      // one-electron density matrix: [nspin, kpoint, band, band]
+      nda::array<std::complex<double>, 4> dm;
+      // molecular orbital coefficients: [nspin, kpoint, band, band]
+      nda::array<std::complex<double>, 4> mo_coeff;
+      // gradient of non-interacting hamiltonian: [natoms, 3, nspin, kpoint, band, band]
+      nda::array<std::complex<double>, 6> H0_grad;
+      // gradient of overlap: [natoms, 3, nspin, kpoint, band, band]
+      nda::array<std::complex<double>, 6> S_grad;
 
     public:
       // dummy members, just to be consistent with qe_readonly class...

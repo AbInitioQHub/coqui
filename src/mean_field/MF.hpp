@@ -151,6 +151,19 @@ class MF
     { return atomic_positions()(i,nda::range::all); }
     decltype(auto) species() const  // this will generate a copy, fix!!!
     { return std::visit( [&](auto&& v) { return v.get_sys().species; }, var ); }    
+    decltype(auto) nuclear_gradient() const
+    {
+      auto tmp = nda::array<std::complex<double>, 2>(number_of_atoms(), 3);
+      std::visit ( [& tmp](auto&& v) {
+        if constexpr (requires { v.get_sys().grad_nuc(); } ) {
+          tmp = v.get_sys().grad_nuc();
+        }
+        else {
+          APP_ABORT("MF object does not have grad_nuc");
+        }
+      } , var);
+      return tmp;
+    }
 
     /* FFT grid */
     auto has_wfc_grid() const 
@@ -309,6 +322,71 @@ class MF
     { 
       auto a = std::visit( [&](auto&& v) { return v.get_sys().eigval(); }, var ); 
       return a(nda::range::all,nda::range::all,nda::range(nbnd()));
+    }
+    decltype(auto) bnd_slice() const // return by value?
+    {
+      auto tmp = nda::array<int, 2>(number_of_atoms(), 2);
+      std::visit ( [& tmp](auto&& v) {
+        if constexpr (requires { v.get_sys().bnd_slice(); } ) {
+          tmp = v.get_sys().bnd_slice();
+        }
+        else {
+          APP_ABORT("MF object does not have bnd_slice");
+        }
+      } , var);
+      return tmp;
+    }
+    decltype(auto) bnd_slice_aux() const // return by value?
+    {
+      auto tmp = nda::array<int, 2>(number_of_atoms(), 2);
+      std::visit ( [& tmp](auto&& v) {
+        if constexpr (requires { v.get_sys().bnd_slice_aux(); } ) {
+          tmp = v.get_sys().bnd_slice_aux();
+        }
+        else {
+          APP_ABORT("MF object does not have bnd_slice_aux");
+        }
+      } , var);
+      return tmp;
+    }
+    decltype(auto) mo_coeff() const // return by value?
+    {
+      auto tmp = nda::array<std::complex<double>, 4>(nspin(), nkpts(), nbnd(), nbnd());
+      std::visit ( [& tmp](auto&& v) {
+        if constexpr (requires { v.get_sys().mo_coeff(); } ) {
+          tmp = v.get_sys().mo_coeff();
+        }
+        else {
+          APP_ABORT("MF object does not have mo_coeff");
+        }
+      } , var);
+      return tmp;
+    }
+    decltype(auto) H0_grad() const // return by value?
+    {
+      auto tmp = nda::array<std::complex<double>, 6>(number_of_atoms(), 3, nspin(), nkpts(), nbnd(), nbnd());
+      std::visit ( [& tmp](auto&& v) {
+        if constexpr (requires { v.get_sys().H0_grad(); } ) {
+          tmp = v.get_sys().H0_grad();
+        }
+        else {
+          APP_ABORT("MF object does not have H0_grad");
+        }
+      } , var);
+      return tmp;
+    }
+    decltype(auto) S_grad() const // return by value?
+    {
+      auto tmp = nda::array<std::complex<double>, 6>(number_of_atoms(), 3, nspin(), nkpts(), nbnd(), nbnd());
+      std::visit ( [& tmp](auto&& v) {
+        if constexpr (requires { v.get_sys().S_grad(); } ) {
+          tmp = v.get_sys().S_grad();
+        }
+        else {
+          APP_ABORT("MF object does not have S_grad");
+        }
+      } , var);
+      return tmp;
     }
     auto occ(int is, int ik, int n) const { return occ()(is,ik,n); }
     auto eigval(int is, int ik, int n) const { return eigval()(is,ik,n); }
