@@ -24,6 +24,9 @@
 
 #include <utility>
 #include <tuple>
+#include <limits>
+#include <optional>
+#include <vector>
 #include "configuration.hpp"
 #include "utilities/check.hpp" 
 #include "nda/nda.hpp"
@@ -862,10 +865,436 @@ void redistribute_alltoallv(Arr1_t& A, Arr2_t& B, get_value_t<Arr1_t> a = 1, get
   }
 }
 
-template<DistributedArray Arr1_t, DistributedArray Arr2_t, int Alg = 3> 
+// Layout metadata shared by repeated bounded-memory redistributions.  Building
+// the plan is collective, while executing it does not repeat the layout
+// all-gather.  This matters for hot paths (notably Sigma) whose distributions
+// stay fixed across many tau points and symmetry operations.
+template<long Rank>
+class redistribution_plan {
+public:
+  static constexpr long rank = Rank;
+
+  template<BlockDistributedArray Arr1_t, BlockDistributedArray Arr2_t>
+  redistribution_plan(Arr1_t const& A, Arr2_t const& B, size_t max_chunk_elements = 0) {
+    using value_t = typename std::decay_t<Arr2_t>::Array_t::value_type;
+    static_assert(get_rank<Arr1_t> == Rank and get_rank<Arr2_t> == Rank, "Rank mismatch.");
+    utils::check(A.global_shape() == B.global_shape(), "Size mismatch.");
+    utils::check(*A.communicator() == *B.communicator(), "Communicator mismatch.");
+
+    global_shape_ = A.global_shape();
+    A_origin_ = A.origin();
+    A_local_shape_ = A.local_shape();
+    B_origin_ = B.origin();
+    B_local_shape_ = B.local_shape();
+    mpi_size_ = A.communicator()->size();
+    mpi_rank_ = A.communicator()->rank();
+
+    std::copy_n(A_origin_.data(), Rank, local_blocks_.data());
+    std::copy_n(A_local_shape_.data(), Rank, local_blocks_.data() + Rank);
+    std::copy_n(B_origin_.data(), Rank, local_blocks_.data() + 2 * Rank);
+    std::copy_n(B_local_shape_.data(), Rank, local_blocks_.data() + 3 * Rank);
+    blocks_.resize(static_cast<size_t>(mpi_size_) * 4 * Rank);
+    A.communicator()->all_gather_n(local_blocks_.data(), 4 * Rank, blocks_.data(), 4 * Rank);
+
+    destination_element_size_ = sizeof(value_t);
+    size_t local_pack_elements = static_cast<size_t>(A.local().size());
+    utils::check(local_pack_elements <= std::numeric_limits<size_t>::max() -
+                     static_cast<size_t>(B.local().size()),
+                 "Local pack-size overflow in redistribution_plan.");
+    local_pack_elements += static_cast<size_t>(B.local().size());
+    size_t max_pack_elements = A.communicator()->all_reduce_value(
+        local_pack_elements, boost::mpi3::max<>{});
+    constexpr size_t collective_pack_budget = size_t{64} * 1024 * 1024;
+    collective_pack_too_large_ =
+        max_pack_elements > collective_pack_budget / destination_element_size_;
+
+    constexpr size_t default_chunk_bytes = size_t{32} * 1024 * 1024;
+    size_t mpi_count_limit = static_cast<size_t>(std::numeric_limits<int>::max());
+    if (max_chunk_elements == 0)
+      max_chunk_elements = std::max<size_t>(1, default_chunk_bytes / sizeof(value_t));
+    max_chunk_elements_ = std::max<size_t>(1, std::min(max_chunk_elements, mpi_count_limit));
+  }
+
+  template<BlockDistributedArray Arr1_t, BlockDistributedArray Arr2_t>
+  void validate(Arr1_t const& A, Arr2_t const& B) const {
+    static_assert(get_rank<Arr1_t> == Rank and get_rank<Arr2_t> == Rank, "Rank mismatch.");
+    utils::check(A.global_shape() == global_shape_ and B.global_shape() == global_shape_,
+                 "redistribution_plan global shape changed.");
+    utils::check(A.origin() == A_origin_ and A.local_shape() == A_local_shape_,
+                 "redistribution_plan source layout changed.");
+    utils::check(B.origin() == B_origin_ and B.local_shape() == B_local_shape_,
+                 "redistribution_plan destination layout changed.");
+    utils::check(*A.communicator() == *B.communicator() and
+                 A.communicator()->size() == mpi_size_ and A.communicator()->rank() == mpi_rank_,
+                 "redistribution_plan communicator changed.");
+    using destination_value_t = typename std::decay_t<Arr2_t>::Array_t::value_type;
+    utils::check(sizeof(destination_value_t) == destination_element_size_,
+                 "redistribution_plan destination element size changed: {} != {}.",
+                 sizeof(destination_value_t), destination_element_size_);
+  }
+
+  void validate_source_coverage() const { validate_exact_coverage(0, "source"); }
+  void validate_destination_coverage() const { validate_exact_coverage(2, "destination"); }
+
+  long mpi_size() const { return mpi_size_; }
+  long mpi_rank() const { return mpi_rank_; }
+  size_t max_chunk_elements() const { return max_chunk_elements_; }
+  bool collective_pack_too_large() const { return collective_pack_too_large_; }
+  long local_block(long slot, long axis) const {
+    return local_blocks_[static_cast<size_t>(slot * Rank + axis)];
+  }
+  long block(long peer, long slot, long axis) const {
+    return blocks_[static_cast<size_t>((peer * 4 + slot) * Rank + axis)];
+  }
+
+private:
+  size_t checked_block_volume(long peer, long slot, const char *label) const {
+    size_t volume = 1;
+    bool empty = false;
+    for (long axis = 0; axis < Rank; ++axis) {
+      long origin = block(peer, slot, axis);
+      long extent = block(peer, slot + 1, axis);
+      utils::check(origin >= 0 and extent >= 0 and origin <= global_shape_[axis] - extent,
+                   "redistribution_plan {} block {} is out of bounds on axis {}: origin {}, size {}, global {}.",
+                   label, peer, axis, origin, extent, global_shape_[axis]);
+      empty = empty or extent == 0;
+      if (not empty) {
+        utils::check(static_cast<size_t>(extent) <= std::numeric_limits<size_t>::max() / volume,
+                     "redistribution_plan {} block-volume overflow on rank {}.", label, peer);
+        volume *= static_cast<size_t>(extent);
+      }
+    }
+    return empty ? 0 : volume;
+  }
+
+  void validate_exact_coverage(long slot, const char *label) const {
+    size_t global_volume = 1;
+    for (long axis = 0; axis < Rank; ++axis) {
+      utils::check(global_shape_[axis] >= 0,
+                   "redistribution_plan global shape is negative on axis {}.", axis);
+      if (global_shape_[axis] == 0) {
+        global_volume = 0;
+        break;
+      }
+      utils::check(static_cast<size_t>(global_shape_[axis]) <=
+                       std::numeric_limits<size_t>::max() / global_volume,
+                   "redistribution_plan global-volume overflow.");
+      global_volume *= static_cast<size_t>(global_shape_[axis]);
+    }
+
+    size_t covered_volume = 0;
+    for (long peer = 0; peer < mpi_size_; ++peer) {
+      size_t volume = checked_block_volume(peer, slot, label);
+      utils::check(volume <= std::numeric_limits<size_t>::max() - covered_volume,
+                   "redistribution_plan {} covered-volume overflow.", label);
+      covered_volume += volume;
+    }
+
+    for (long left = 0; left < mpi_size_; ++left) {
+      if (checked_block_volume(left, slot, label) == 0) continue;
+      for (long right = left + 1; right < mpi_size_; ++right) {
+        if (checked_block_volume(right, slot, label) == 0) continue;
+        bool overlaps = true;
+        for (long axis = 0; axis < Rank; ++axis) {
+          long left_begin = block(left, slot, axis);
+          long left_end = left_begin + block(left, slot + 1, axis);
+          long right_begin = block(right, slot, axis);
+          long right_end = right_begin + block(right, slot + 1, axis);
+          overlaps = overlaps and std::max(left_begin, right_begin) < std::min(left_end, right_end);
+        }
+        utils::check(not overlaps,
+                     "redistribution_plan {} blocks overlap on ranks {} and {}.",
+                     label, left, right);
+      }
+    }
+    utils::check(covered_volume == global_volume,
+                 "redistribution_plan {} blocks leave holes: covered {} of {} elements.",
+                 label, covered_volume, global_volume);
+  }
+
+  std::array<long, Rank> global_shape_{};
+  std::array<long, Rank> A_origin_{};
+  std::array<long, Rank> A_local_shape_{};
+  std::array<long, Rank> B_origin_{};
+  std::array<long, Rank> B_local_shape_{};
+  std::array<long, 4 * Rank> local_blocks_{};
+  std::vector<long> blocks_;
+  long mpi_size_ = 0;
+  long mpi_rank_ = 0;
+  size_t max_chunk_elements_ = 0;
+  size_t destination_element_size_ = 0;
+  bool collective_pack_too_large_ = true;
+};
+
+template<BlockDistributedArray Arr1_t, BlockDistributedArray Arr2_t>
+auto make_redistribution_plan(Arr1_t const& A, Arr2_t const& B, size_t max_chunk_elements = 0) {
+  static_assert(get_rank<Arr1_t> == get_rank<Arr2_t>, "Rank mismatch.");
+  return redistribution_plan<get_rank<Arr1_t>>(A, B, max_chunk_elements);
+}
+
+// Bounded-memory redistribution. Each ring round communicates with at most one
+// source and one destination rank, and each rectangular overlap is tiled before
+// it is packed. This avoids the full-size send and receive pack buffers used by
+// redistribute_alltoallv for large distributed tensors.
+template<BlockDistributedArray Arr1_t, BlockDistributedArray Arr2_t>
+void redistribute_streaming(Arr1_t& A, Arr2_t& B,
+                            redistribution_plan<get_rank<Arr1_t>> const& plan,
+                            get_value_t<Arr1_t> a = 1,
+                            get_value_t<Arr2_t> b = 0) {
+  using local_Arr1_t = typename std::decay_t<Arr1_t>::Array_t::regular_type;
+  using local_Arr2_t = typename std::decay_t<Arr2_t>::Array_t::regular_type;
+  static_assert(get_rank<Arr1_t> == get_rank<Arr2_t>, "Rank mismatch.");
+  plan.validate(A, B);
+
+  constexpr long rank = get_rank<Arr1_t>;
+  auto b_one = get_value_t<Arr2_t>{1};
+  auto comm = A.communicator();
+  long mpi_size = plan.mpi_size();
+  long mpi_rank = plan.mpi_rank();
+  size_t max_chunk_elements = plan.max_chunk_elements();
+  auto Aloc = A.local();
+  auto Bloc = B.local();
+
+  if (b == get_value_t<Arr2_t>(0)) {
+    if (Bloc.size() > 0) ::nda::tensor::set(get_value_t<Arr2_t>(0), Bloc);
+  } else if (b != get_value_t<Arr2_t>(1)) {
+    if (Bloc.size() > 0) ::nda::tensor::scale(b, Bloc);
+  }
+  if (a == get_value_t<Arr1_t>(0)) return;
+
+  if (mpi_size == 1) {
+    if constexpr (::nda::mem::have_device_compatible_addr_space<local_Arr1_t, local_Arr2_t>) {
+      ::nda::tensor::add(a, Aloc, b_one, Bloc);
+    } else {
+      static_assert(::nda::mem::have_host_compatible_addr_space<local_Arr1_t, local_Arr2_t>, "oh oh.");
+      Bloc += a * Aloc;
+    }
+    return;
+  }
+
+  auto overlap_global = [&](bool local_A, long peer) {
+    std::vector<::nda::range> overlap(rank, ::nda::range(0));
+    bool nonempty = true;
+    for (long r = 0; r < rank; ++r) {
+      long local_slot = local_A ? 0 : 2;
+      long peer_slot = local_A ? 2 : 0;
+      long i0 = plan.local_block(local_slot, r);
+      long i1 = i0 + plan.local_block(local_slot + 1, r);
+      long j0 = plan.block(peer, peer_slot, r);
+      long j1 = j0 + plan.block(peer, peer_slot + 1, r);
+      if (j1 > i0 and j0 < i1) {
+        overlap[r] = ::nda::range(std::max(i0, j0), std::min(i1, j1));
+      } else {
+        nonempty = false;
+        break;
+      }
+    }
+    return std::make_pair(nonempty, std::move(overlap));
+  };
+
+  auto make_tile_extent = [&](std::vector<::nda::range> const& overlap) {
+    std::vector<long> extent(rank), tile_extent(rank, 1);
+    for (long r = 0; r < rank; ++r)
+      extent[r] = static_cast<long>(overlap[r].last() - overlap[r].first());
+
+    size_t capacity = max_chunk_elements;
+    auto set_tile_extent = [&](long r) {
+      size_t take = std::min<size_t>(static_cast<size_t>(extent[r]), capacity);
+      tile_extent[r] = static_cast<long>(std::max<size_t>(1, take));
+      capacity = std::max<size_t>(1, capacity / static_cast<size_t>(tile_extent[r]));
+    };
+    if constexpr (local_Arr2_t::layout_t::is_stride_order_Fortran()) {
+      for (long r = 0; r < rank; ++r) set_tile_extent(r);
+    } else {
+      for (long r = rank - 1; r >= 0; --r) set_tile_extent(r);
+    }
+    return tile_extent;
+  };
+
+  auto number_of_tiles = [&](std::vector<::nda::range> const& overlap,
+                             std::vector<long> const& tile_extent) {
+    size_t ntiles = 1;
+    for (long r = 0; r < rank; ++r) {
+      size_t extent = static_cast<size_t>(overlap[r].last() - overlap[r].first());
+      size_t block = static_cast<size_t>(tile_extent[r]);
+      size_t nblocks = extent / block + (extent % block != 0);
+      utils::check(nblocks == 0 or ntiles <= std::numeric_limits<size_t>::max() / nblocks,
+                   "Tile-count overflow in redistribute_streaming.");
+      ntiles *= nblocks;
+    }
+    return ntiles;
+  };
+
+  // Generate only the current tile. Keeping all tile ranges would make the
+  // metadata itself scale with tensor size when a small memory cap is used.
+  auto tile_at = [&](std::vector<::nda::range> const& overlap,
+                     std::vector<long> const& tile_extent, size_t tile_index) {
+    std::vector<::nda::range> tile(rank, ::nda::range(0));
+    for (long r = rank - 1; r >= 0; --r) {
+      size_t extent = static_cast<size_t>(overlap[r].last() - overlap[r].first());
+      size_t block = static_cast<size_t>(tile_extent[r]);
+      size_t nblocks = extent / block + (extent % block != 0);
+      size_t iblock = tile_index % nblocks;
+      tile_index /= nblocks;
+      long first = static_cast<long>(overlap[r].first()) + static_cast<long>(iblock * block);
+      tile[r] = ::nda::range(first, std::min(first + tile_extent[r], static_cast<long>(overlap[r].last())));
+    }
+    utils::check(tile_index == 0, "Tile index overflow in redistribute_streaming.");
+    return tile;
+  };
+
+  auto to_local_ranges = [&](std::vector<::nda::range> const& global_ranges, bool local_A) {
+    std::vector<::nda::range> local_ranges(rank, ::nda::range(0));
+    long slot = local_A ? 0 : 2;
+    for (long r = 0; r < rank; ++r) {
+      long origin = plan.local_block(slot, r);
+      local_ranges[r] = ::nda::range(static_cast<long>(global_ranges[r].first()) - origin,
+                                     static_cast<long>(global_ranges[r].last()) - origin);
+    }
+    return local_ranges;
+  };
+
+  size_t sent_elements = 0;
+  size_t received_elements = 0;
+
+  // Same-rank overlap needs no MPI scratch.
+  {
+    auto [has_self_A, self_global_A] = overlap_global(true, mpi_rank);
+    auto [has_self_B, self_global_B] = overlap_global(false, mpi_rank);
+    utils::check(has_self_A == has_self_B, "Logic error in redistribute_streaming self overlap.");
+    if (has_self_A) {
+      auto A_self = detail::get_sub_matrix<rank>(Aloc, to_local_ranges(self_global_A, true));
+      auto B_self = detail::get_sub_matrix<rank>(Bloc, to_local_ranges(self_global_B, false));
+      utils::check(A_self.size() == B_self.size(), "Self-overlap size mismatch in redistribute_streaming.");
+      if constexpr (::nda::mem::have_device_compatible_addr_space<local_Arr1_t, local_Arr2_t>) {
+        ::nda::tensor::add(a, A_self, b_one, B_self);
+      } else {
+        static_assert(::nda::mem::have_host_compatible_addr_space<local_Arr1_t, local_Arr2_t>, "oh oh.");
+        B_self += a * A_self;
+      }
+      sent_elements += A_self.size();
+      received_elements += B_self.size();
+    }
+  }
+
+  constexpr int redistribute_tag = 0;
+  for (long step = 1; step < mpi_size; ++step) {
+    long destination = (mpi_rank + step) % mpi_size;
+    long source = (mpi_rank - step + mpi_size) % mpi_size;
+    auto [has_send, send_global] = overlap_global(true, destination);
+    auto [has_recv, recv_global] = overlap_global(false, source);
+    auto send_tile_extent = has_send ? make_tile_extent(send_global) : std::vector<long>{};
+    auto recv_tile_extent = has_recv ? make_tile_extent(recv_global) : std::vector<long>{};
+    size_t send_ntiles = has_send ? number_of_tiles(send_global, send_tile_extent) : 0;
+    size_t recv_ntiles = has_recv ? number_of_tiles(recv_global, recv_tile_extent) : 0;
+    size_t nrounds = std::max(send_ntiles, recv_ntiles);
+
+    for (size_t itile = 0; itile < nrounds; ++itile) {
+      std::optional<local_Arr2_t> send_buffer;
+      std::optional<local_Arr2_t> recv_buffer;
+      std::vector<::nda::range> send_tile;
+      std::vector<::nda::range> recv_tile;
+      if (itile < send_ntiles) {
+        send_tile = tile_at(send_global, send_tile_extent, itile);
+        auto A_tile = detail::get_sub_matrix<rank>(Aloc, to_local_ranges(send_tile, true));
+        send_buffer.emplace(A_tile);
+        utils::check(send_buffer->size() <= max_chunk_elements, "Send tile exceeds redistribute_streaming chunk limit.");
+      }
+      if (itile < recv_ntiles) {
+        recv_tile = tile_at(recv_global, recv_tile_extent, itile);
+        auto B_tile = detail::get_sub_matrix<rank>(Bloc, to_local_ranges(recv_tile, false));
+        recv_buffer.emplace(B_tile.shape());
+        utils::check(recv_buffer->size() <= max_chunk_elements, "Receive tile exceeds redistribute_streaming chunk limit.");
+      }
+
+      boost::mpi3::request recv_request;
+      boost::mpi3::request send_request;
+      if (recv_buffer)
+        recv_request = comm->ireceive_n(recv_buffer->data(), static_cast<int>(recv_buffer->size()), source, redistribute_tag);
+      if (send_buffer)
+        send_request = comm->isend_n(send_buffer->data(), static_cast<int>(send_buffer->size()), destination, redistribute_tag);
+
+      if (recv_buffer) {
+        recv_request.wait();
+        auto B_tile = detail::get_sub_matrix<rank>(Bloc, to_local_ranges(recv_tile, false));
+        if constexpr (::nda::mem::have_device_compatible_addr_space<local_Arr1_t, local_Arr2_t>) {
+          ::nda::tensor::add(a, *recv_buffer, b_one, B_tile);
+        } else {
+          static_assert(::nda::mem::have_host_compatible_addr_space<local_Arr1_t, local_Arr2_t>, "oh oh.");
+          B_tile += a * (*recv_buffer);
+        }
+        received_elements += recv_buffer->size();
+      }
+      if (send_buffer) {
+        send_request.wait();
+        sent_elements += send_buffer->size();
+      }
+    }
+  }
+
+  utils::check(sent_elements == static_cast<size_t>(Aloc.size()),
+               "redistribute_streaming did not cover the full local source: {} != {}", sent_elements, Aloc.size());
+  utils::check(received_elements == static_cast<size_t>(Bloc.size()),
+               "redistribute_streaming did not cover the full local destination: {} != {}", received_elements, Bloc.size());
+}
+
+// Backward-compatible one-shot entry point. Repeated callers should construct
+// one redistribution_plan and use the overload above.
+template<BlockDistributedArray Arr1_t, BlockDistributedArray Arr2_t>
+void redistribute_streaming(Arr1_t& A, Arr2_t& B,
+                            get_value_t<Arr1_t> a = 1,
+                            get_value_t<Arr2_t> b = 0,
+                            size_t max_chunk_elements = 0) {
+  auto plan = make_redistribution_plan(A, B, max_chunk_elements);
+  redistribute_streaming(A, B, plan, a, b);
+}
+
+// Reuse cached layout metadata while retaining the small-layout all-to-all-v
+// fast path for regular arrays. Irregular block collections always use the
+// metadata-driven streaming path because they intentionally expose no regular
+// grid contract.
+template<BlockDistributedArray Arr1_t, BlockDistributedArray Arr2_t>
+void redistribute(Arr1_t& A, Arr2_t& B,
+                  redistribution_plan<get_rank<Arr1_t>> const& plan,
+                  get_value_t<Arr1_t> a = 1,
+                  get_value_t<Arr2_t> b = 0) {
+  plan.validate(A, B);
+  if constexpr (DistributedArray<Arr1_t> and DistributedArray<Arr2_t>) {
+    if (a == get_value_t<Arr1_t>(1) and b == get_value_t<Arr2_t>(0) and
+        not plan.collective_pack_too_large()) {
+      redistribute_alltoallv(A, B, a, b);
+      return;
+    }
+  }
+  redistribute_streaming(A, B, plan, a, b);
+}
+
+template<DistributedArray Arr1_t, DistributedArray Arr2_t, int Alg = 0>
 void redistribute(Arr1_t& A, Arr2_t& B, get_value_t<Arr1_t> a = 1, get_value_t<Arr2_t> b = 0) {
 
   switch(Alg) {
+    case 0: {
+      // Keep the optimized collective path for small arrays. For large arrays,
+      // cap explicit communication scratch instead of allocating full local
+      // send and receive packs. Select collectively from the largest actual
+      // local pack requirement so every rank takes the same path.
+      using value_B_t = typename std::decay_t<Arr2_t>::Array_t::value_type;
+      size_t local_pack_elements = static_cast<size_t>(A.local().size());
+      utils::check(local_pack_elements <= std::numeric_limits<size_t>::max() - static_cast<size_t>(B.local().size()),
+                   "Local pack-size overflow in redistribute.");
+      local_pack_elements += static_cast<size_t>(B.local().size());
+      size_t max_pack_elements = A.communicator()->all_reduce_value(local_pack_elements, boost::mpi3::max<>{});
+      constexpr size_t collective_pack_budget = size_t{64} * 1024 * 1024;
+      bool collective_pack_too_large = max_pack_elements > collective_pack_budget / sizeof(value_B_t);
+      // redistribute_alltoallv currently only implements B = A. Route scaled
+      // redistributions through the streaming implementation as well.
+      if (a != get_value_t<Arr1_t>(1) or b != get_value_t<Arr2_t>(0) or
+          collective_pack_too_large)
+        redistribute_streaming(A, B, a, b);
+      else
+        redistribute_alltoallv(A, B, a, b);
+      break;
+    }
     case 1:
       redistribute_standard(A, B, a, b);
       break;
@@ -875,6 +1304,11 @@ void redistribute(Arr1_t& A, Arr2_t& B, get_value_t<Arr1_t> a = 1, get_value_t<A
     case 3:
       redistribute_alltoallv(A, B, a, b);
       break;
+    case 4:
+      redistribute_streaming(A, B, a, b);
+      break;
+    default:
+      APP_ABORT("redistribute: Invalid algorithm {}", Alg);
   }
 }
 
