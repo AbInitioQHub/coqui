@@ -237,15 +237,16 @@ void print_mbpt_gradient(const nda::array<data_type, 2>& gradient, std::shared_p
 
   app_log(1, "  {}", str);
   app_log(1, "  --------------------------------------------------------------------------------------");
-  app_log(1, "   {:<5}{:<5}{:>20}{:>20}{:>20}", "id", "nuc", "X" + unit, "Y" + unit, "Z" + unit);
+  app_log(1, "   {:<5} | {:<5} | {:>20} | {:>20} | {:>20}", "id", "nuc", "X" + unit, "Y" + unit, "Z" + unit);
   app_log(1, "  --------------------------------------------------------------------------------------");
   for (int iatom = 0; iatom < mf->number_of_atoms(); ++iatom) {
-    app_log(1, "   {:<5}{:<5}{:>+20.10f}{:>+20.10f}{:>+20.10f}",
+    app_log(1, "   {:<5} | {:<5} | {:>+20.10f} | {:>+20.10f} | {:>+20.10f}",
       iatom, mf->atomic_id(iatom),
       nda::real(gradient(iatom, 0) * factor),
       nda::real(gradient(iatom, 1) * factor),
       nda::real(gradient(iatom, 2) * factor));
   }
+  app_log(1, "  --------------------------------------------------------------------------------------");
   app_log(1, "\n");
 }
 
