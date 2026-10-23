@@ -31,9 +31,9 @@ namespace methods {
     {
       // http://patorjk.com/software/taag/#p=display&f=Calvin%20S&t=COQUI%20chol-hf-gradient
       app_log(1, "\n"
-                 "╔═╗╔═╗╔═╗ ╦ ╦╦  ┌─┐┬ ┬┌─┐┬   ┬ ┬┌─┐  ┌─┐┬─┐┌─┐┌┬┐┬┌─┐┌┐┌┌┬┐\n"
-                 "║  ║ ║║═╬╗║ ║║  │  ├─┤│ ││───├─┤├┤───│ ┬├┬┘├─┤ │││├┤ │││ │ \n"
-                 "╚═╝╚═╝╚═╝╚╚═╝╩  └─┘┴ ┴└─┘┴─┘ ┴ ┴└    └─┘┴└─┴ ┴─┴┘┴└─┘┘└┘ ┴ \n");
+                 "╔═╗╔═╗╔═╗ ╦ ╦╦  ┌─┐┬ ┬┌─┐┬   ┬ ┬┌─┐  ┌─┐┬─┐┌─┐┌┬┐\n"
+                 "║  ║ ║║═╬╗║ ║║  │  ├─┤│ ││───├─┤├┤───│ ┬├┬┘├─┤ ││\n"
+                 "╚═╝╚═╝╚═╝╚╚═╝╩  └─┘┴ ┴└─┘┴─┘ ┴ ┴└    └─┘┴└─┴ ┴─┴┘\n");
 
       utils::check(_mf->nkpts() == _mf->nkpts_ibz(),
                    "hf_t::cholesky_hf_grad::evaluate: Symmetry not yet implemented.");
