@@ -19,20 +19,20 @@
  */
 
 
-#ifndef COQUI_QP_PARAMS_T_H
-#define COQUI_QP_PARAMS_T_H
+#ifndef COQUI_QP_CONTEXT_T_H
+#define COQUI_QP_CONTEXT_T_H
 
 #include <string>
 
 namespace methods::lqp {
 
 /**
- * Controls of the low-frequency fit of Sigma(iw) and of the pole-weight extraction, consumed
- * by the linearized quasiparticle kernel (linearized_qp.hpp, which includes this header rather
- * than the reverse: the inputs must not depend on the kernel). Defaults are the ones validated
- * in implementation_notes/quasiparticle_approx/quasiparticle_Z_LQSGW_note.tex.
+ * Controls of the linearized quasiparticle scheme (qp_approx = "lqp"): the low-frequency fit of
+ * Sigma(iw) and the pole-weight extraction, consumed by the kernel (linearized_qp.hpp, which
+ * includes this header rather than the reverse: the inputs must not depend on the kernel).
+ * Input block [<block>.lqp].
  */
-struct fit_params_t {
+struct params_t {
   // Number of lowest positive fermionic Matsubara frequencies in the fit window. With
   // symmetric_window the window is n = +/-1, +/-3, ..., +/-(2 n_fit - 1), i.e. 2 n_fit nodes.
   int    n_fit            = 6;
@@ -50,15 +50,15 @@ struct fit_params_t {
 
 } // methods::lqp
 
-namespace methods {
+namespace methods::qp_eqn {
 
 /**
- * Controls of the quasiparticle-equation schemes: the diagonal Sigma_aa(iw) is continued to
- * the real axis and the scalar quasiparticle equation is solved there. The block configures
- * the whole scheme, not only the continuation -- the ac_* keys are the continuation that
- * feeds the equation. Input block [<block>.qp_eqn]; solvers in qp_solvers.hpp (qp_eqn_*).
+ * Controls of the quasiparticle-equation schemes (qp_approx = "qp_eqn"): 
+ * the diagonal Sigma_aa(iw) is continued to the real axis and the scalar 
+ * quasiparticle equation is solved there. 
+ * Corresponding solvers are implemented in qp_solvers.hpp.
  */
-struct qp_eqn_params_t {
+struct params_t {
   // Which scalar quasiparticle equation is solved on the real axis:
   // - "sc" / "sc_bisection": bisection on w = eps + Re Sigma(w) ("sc" is an alias)
   // - "sc_newton":           secant iteration on the same equation
@@ -81,38 +81,38 @@ struct qp_eqn_params_t {
   std::string off_diag_mode = "fermi";
 };
 
+} // methods::qp_eqn
+
+namespace methods {
+
 /**
  * Inputs of every quasiparticle calculation, self-consistent or one-shot.
- *
- * Two independent axes:
- * - qp_approx: how the dynamic Sigma(iw) is reduced to a static quasiparticle Hamiltonian;
- * - qp_scf_mode: what is updated in a self-consistent loop. 
- * The scheme-specific controls live in the member named after the scheme (qp_eqn, lqp),
- * which mirrors the input blocks [<block>.qp_eqn] and [<block>.lqp].
  */
-struct qp_params_t {
-  // How Sigma(iw) becomes a static quasiparticle Hamiltonian:
+struct qp_context_t {
+  // How the dynamic Sigma(iw) is reduced to a static quasiparticle Hamiltonian:
   // - "qp_eqn": analytic continuation + the scalar quasiparticle equation on the real axis
-  //             (see qp_eqn)
-  // - "lqp":    matrix linearization Sigma(iw) ~ A + iw B on the Matsubara axis (see lqp)
+  //             (see qp_eqn for details controls)
+  // - "lqp":    matrix linearization Sigma(iw) ~ A + iw B on the Matsubara axis 
+  //             (see lqp for details controls)
   std::string qp_approx   = "qp_eqn";
 
-  // What the self-consistent loop updates;
+  // What does the self-consistent loop updates:
   // - "evscf": QP energies only, QP wavefunctions stay at the mean-field ones
   // - "qpscf": both QP energies and QP wavefunctions
   std::string qp_scf_mode = "qpscf";
 
-  // whether to update dynamically screened interaction W in evscf.
+  // Whether to update dynamically screened interaction W.
   bool        keep_scr_coulomb_fixed = false;
 
+  // Tolerance for the chemical potential update.
   double      mu_tolerance  = 1e-9;
   std::string mu_update_alg = "bisection";
 
-  // Scheme-specific controls, mirroring the input blocks of the same name.
-  qp_eqn_params_t   qp_eqn;
-  lqp::fit_params_t lqp;
+  // Scheme-specific controls, one namespace and one member per qp_approx choice.
+  qp_eqn::params_t qp_eqn;
+  lqp::params_t    lqp;
 };
 
 } // methods
 
-#endif //COQUI_QP_PARAMS_T_H
+#endif //COQUI_QP_CONTEXT_T_H

@@ -120,9 +120,9 @@ def test_g0w0_thc(mpi):
             "basis": "dlr"
         },
         "qp_eqn": {
-            "solver": "sc"
+            "solver": "sc",
+            "eta": 1e-6
         },
-        "eta": 1e-6, 
     }
     coqui.run_evgw(gw_params, h_int=thc)
     mpi.barrier()
@@ -148,7 +148,7 @@ def test_lqsgw_thc(mpi):
         import numpy as np
         with HDFArchive("lqsgw.mbpt.h5", "r") as ar:
             it = ar["scf"]["final_iter"]
-            Z = np.asarray(ar["scf"][f"iter{it}"]["Z_ska"])
+            Z = np.asarray(ar["scf"][f"iter{it}"]["Zqp_ska"])
         assert Z.min() > 0.0 and Z.max() <= 1.0 + 1e-10
         os.remove("lqsgw.mbpt.h5")
     mpi.barrier()

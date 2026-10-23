@@ -175,7 +175,7 @@ void solve_qp_eqn(sArray_t<Array_view_3D_t> &sE_ska,
                   const sArray_t<Array_view_4D_t> &sVhf_skij,
                   const sArray_t<Array_view_4D_t> &sMO_skia,
                   double mu,
-                  const imag_axes_ft::IAFT &FT, qp_params_t &qp_params) {
+                  const imag_axes_ft::IAFT &FT, qp_context_t &qp_params) {
   using math::shm::make_shared_array;
   using math::nda::make_distributed_array;
   using local_Array_4D_t = nda::array<ComplexType, 4>;
@@ -339,7 +339,7 @@ void add_evscf_vcorr(MBState &mb_state,
                      solvers::mb_solver_t<corr_solver_t> &mb_solver,
                      eri_t &eri,
                      const imag_axes_ft::IAFT &FT,
-                     qp_params_t &qp_params, 
+                     qp_context_t &qp_params, 
                      bool fixed_w) {
   using math::shm::make_shared_array;
 
@@ -413,7 +413,7 @@ void add_evscf_vcorr(MBState &mb_state,
 auto qp_approx(const sArray_t<Array_view_5D_t> &sSigma_tskij,
                const sArray_t<Array_view_4D_t> &sMO_skia,
                const sArray_t<Array_view_3D_t> &sE_ska, double mu,
-               const imag_axes_ft::IAFT &FT, qp_params_t &qp_params)
+               const imag_axes_ft::IAFT &FT, qp_context_t &qp_params)
                -> sArray_t<Array_view_4D_t> {
   using math::shm::make_shared_array;
   using math::nda::make_distributed_array;
@@ -558,7 +558,7 @@ void add_qpscf_vcorr(MBState &mb_state,
                      solvers::mb_solver_t<corr_solver_t> &mb_solver,
                      eri_t &eri,
                      const imag_axes_ft::IAFT &FT,
-                     qp_params_t &qp_params) {
+                     qp_context_t &qp_params) {
   using math::shm::make_shared_array;
 
   auto& sHeff_skij = mb_state.sHeff_skij.value();
@@ -596,7 +596,7 @@ void add_qpscf_vcorr(MBState &mb_state,
 
 template<typename eri_t, typename corr_solver_t>
 void add_lqp_vcorr(MBState &mb_state, double mu, solvers::mb_solver_t<corr_solver_t> &mb_solver,
-                     eri_t &eri, const imag_axes_ft::IAFT &FT, qp_params_t &qp_params) {
+                     eri_t &eri, const imag_axes_ft::IAFT &FT, qp_context_t &qp_params) {
   using math::shm::make_shared_array;
 
   auto& sHeff_skij = mb_state.sHeff_skij.value();
@@ -606,13 +606,16 @@ void add_lqp_vcorr(MBState &mb_state, double mu, solvers::mb_solver_t<corr_solve
   auto [ns, nkpts, nbnd, nbnd2] = sHeff_skij.shape();
   auto nt = FT.nt_f();
 
-  // 1. G0, W, Sigma(tau) -- identical to add_qpscf_vcorr
   mb_state.sSigma_tskij.emplace(make_shared_array<Array_view_5D_t>(*mpi, {nt, ns, nkpts, nbnd, nbnd}));
   mb_state.sG_tskij.emplace(make_shared_array<Array_view_5D_t>(*mpi, {nt, ns, nkpts, nbnd, nbnd}));
   update_G(mb_state.sG_tskij.value(), sMO_skia, sE_ska, mu, FT);
   FT.check_leakage(mb_state.sG_tskij.value(), imag_axes_ft::fermion, "Green's function");
+
+  // compute screen interaction
   utils::check(mb_solver.scr_eri != nullptr, "qp_scf_common.cpp::add_lqp_vcorr: mb_solver.scr_eri == nullptr.");
   mb_solver.scr_eri->update_w(mb_state, eri, mb_solver.corr->iter());
+  
+  // compute dynamic self-energy in the primary basis
   mb_solver.corr->evaluate(mb_state, eri);
   FT.check_leakage(mb_state.sSigma_tskij.value(), imag_axes_ft::fermion, "Self-energy");
   mpi->comm.barrier();
@@ -621,19 +624,20 @@ void add_lqp_vcorr(MBState &mb_state, double mu, solvers::mb_solver_t<corr_solve
   auto const& p = qp_params.lqp;
   auto op = lqp::make_fit_operator(FT, p);
   app_log(2, "\n* Linearized QP (qp_approx = lqp) update of the QP Hamiltonian:\n"
-             "  - n_fit = {}, fit_order = {}, exact = {}, cond(design) = {:.2e}",
-          p.n_fit, op.fit_order, op.exact, op.cond);
+             "  - n_fit = {}, fit_order = {}, exact = {}",
+          p.n_fit, op.fit_order, op.M.shape(0) == op.M.shape(1));
 
   auto& sSigma = mb_state.sSigma_tskij.value();
   auto sHnew_skij = make_shared_array<Array_view_4D_t>(*mpi, {ns, nkpts, nbnd, nbnd});
-  auto sZ_ska     = make_shared_array<Array_view_3D_t>(*mpi, {ns, nkpts, nbnd});
-  sHnew_skij.set_zero(); sZ_ska.set_zero();
-  nda::array<double, 2> min_eig_sk(ns, nkpts), resid_sk(ns, nkpts);
-  min_eig_sk() = 0.0; resid_sk() = 0.0;
+  auto sZqp_ska     = make_shared_array<nda::array_view<double, 3>>(*mpi, {ns, nkpts, nbnd});
+  sHnew_skij.set_zero(); sZqp_ska.set_zero();
+  nda::array<double, 2> min_eig_Zinv_sk(ns, nkpts), resid_sk(ns, nkpts);
+  min_eig_Zinv_sk() = 0.0; resid_sk() = 0.0;
 
-  nda::array<ComplexType, 2> tmp(nbnd, nbnd), F_MO(nbnd, nbnd), Cinv(nbnd, nbnd);
+  nda::array<ComplexType, 2> tmp(nbnd, nbnd), F_MO(nbnd, nbnd);
+  nda::matrix<ComplexType> Cinv(nbnd, nbnd);   // reused for every (s,k): no allocation in the loop
   nda::array<ComplexType, 3> Sigma_MO(nt, nbnd, nbnd);
-  sHnew_skij.win().fence(); sZ_ska.win().fence();
+  sHnew_skij.win().fence(); sZqp_ska.win().fence();
   for (long sk = mpi->comm.rank(); sk < ns*nkpts; sk += mpi->comm.size()) {
     long is = sk / nkpts, ik = sk % nkpts;
     auto C = sMO_skia.local()(is, ik, nda::ellipsis{});
@@ -644,33 +648,31 @@ void add_lqp_vcorr(MBState &mb_state, double mu, solvers::mb_solver_t<corr_solve
       nda::blas::gemm(sSigma.local()(it, is, ik, nda::ellipsis{}), C, tmp);
       nda::blas::gemm(nda::dagger(C), tmp, Sigma_MO(it, nda::ellipsis{}));
     }
-    auto r = lqp::solve_point(F_MO, Sigma_MO, mu, FT, op, p);
+    auto results = lqp::linearized_qp_kpoint(F_MO, Sigma_MO, mu, FT, op, p);
     // 3. Heff = C^-dag H_QP C^-1  (C^-1 = C^dag S for an orthonormal C, S the overlap); the
     //    kernel returns H_QP in absolute energies, so no shift is needed here
-    nda::matrix<ComplexType> Cm(C);
-    Cinv = nda::inverse(Cm);
-    nda::blas::gemm(r.qp.Hqp, Cinv, tmp);
+    Cinv = C;
+    nda::inverse_in_place(Cinv);
+    nda::blas::gemm(results.Hqp, Cinv, tmp);
     nda::blas::gemm(nda::dagger(Cinv), tmp, sHnew_skij.local()(is, ik, nda::ellipsis{}));
-    for (long a = 0; a < nbnd; ++a) sZ_ska.local()(is, ik, a) = r.qp.Zqp(a);
-    min_eig_sk(is, ik) = r.qp.min_eig; resid_sk(is, ik) = r.diagnostics.resid;
+    for (long a = 0; a < nbnd; ++a) sZqp_ska.local()(is, ik, a) = results.Zqp(a);
+    min_eig_Zinv_sk(is, ik) = results.min_eig_Zinv; 
+    resid_sk(is, ik) = results.resid;
   }
-  sHnew_skij.win().fence(); sZ_ska.win().fence();
+  sHnew_skij.win().fence(); sZqp_ska.win().fence();
   // ranks wrote disjoint (s,k) blocks of node-shared arrays; reduce across nodes
-  sHnew_skij.all_reduce(); sZ_ska.all_reduce();
-  mpi->comm.all_reduce_in_place_n(min_eig_sk.data(), min_eig_sk.size(), std::plus<>{});
+  sHnew_skij.all_reduce();
+  sZqp_ska.all_reduce();
+  mpi->comm.all_reduce_in_place_n(min_eig_Zinv_sk.data(), min_eig_Zinv_sk.size(), std::plus<>{});
   mpi->comm.all_reduce_in_place_n(resid_sk.data(), resid_sk.size(), std::plus<>{});
 
-  double zmin = 1.0, zmax = 0.0;
-  for (auto const& z : sZ_ska.local()) { zmin = std::min(zmin, z.real()); zmax = std::max(zmax, z.real()); }
   app_log(2, "  - min eig(1 - B) = {:.4f}, max fit residual = {:.1e}, Z_qp in [{:.4f}, {:.4f}]\n",
-          *std::min_element(min_eig_sk.data(), min_eig_sk.data() + min_eig_sk.size()),
-          *std::max_element(resid_sk.data(), resid_sk.data() + resid_sk.size()), zmin, zmax);
+          nda::min_element(min_eig_Zinv_sk), nda::max_element(resid_sk),
+          nda::min_element(sZqp_ska.local()), nda::max_element(sZqp_ska.local()));
 
   if (mpi->node_comm.root()) sHeff_skij.local() = sHnew_skij.local();
   mpi->comm.barrier();
-  // Diagnostic only: the pole weights are reported, never fed back. MBState::dump_qpscf writes
-  // them to scf/iter{N}/Z_ska.
-  mb_state.sZqp_ska = std::move(sZ_ska);
+  mb_state.sZqp_ska = std::move(sZqp_ska);
 
   // deallocation
   mb_state.dW_qtPQ.reset();
@@ -818,14 +820,14 @@ void write_mf_data(mf::MF &mf, const imag_axes_ft::IAFT &ft,
 
 template double update_mu(double, const mf::MF&, const sArray_t<Array_view_3D_t>&, double, double, std::string);
 
-template void add_evscf_vcorr(MBState&, double, solvers::mb_solver_t<>&, thc_reader_t&, const imag_axes_ft::IAFT&, qp_params_t&, bool);
-template void add_evscf_vcorr(MBState&, double, solvers::mb_solver_t<>&, chol_reader_t&, const imag_axes_ft::IAFT&, qp_params_t&, bool);
+template void add_evscf_vcorr(MBState&, double, solvers::mb_solver_t<>&, thc_reader_t&, const imag_axes_ft::IAFT&, qp_context_t&, bool);
+template void add_evscf_vcorr(MBState&, double, solvers::mb_solver_t<>&, chol_reader_t&, const imag_axes_ft::IAFT&, qp_context_t&, bool);
 
-template void add_qpscf_vcorr(MBState&, double, solvers::mb_solver_t<>&, thc_reader_t&, const imag_axes_ft::IAFT&, qp_params_t&);
-template void add_qpscf_vcorr(MBState&, double, solvers::mb_solver_t<>&, chol_reader_t&, const imag_axes_ft::IAFT&, qp_params_t&);
+template void add_qpscf_vcorr(MBState&, double, solvers::mb_solver_t<>&, thc_reader_t&, const imag_axes_ft::IAFT&, qp_context_t&);
+template void add_qpscf_vcorr(MBState&, double, solvers::mb_solver_t<>&, chol_reader_t&, const imag_axes_ft::IAFT&, qp_context_t&);
 
-template void add_lqp_vcorr(MBState&, double, solvers::mb_solver_t<>&, thc_reader_t&, const imag_axes_ft::IAFT&, qp_params_t&);
-template void add_lqp_vcorr(MBState&, double, solvers::mb_solver_t<>&, chol_reader_t&, const imag_axes_ft::IAFT&, qp_params_t&);
+template void add_lqp_vcorr(MBState&, double, solvers::mb_solver_t<>&, thc_reader_t&, const imag_axes_ft::IAFT&, qp_context_t&);
+template void add_lqp_vcorr(MBState&, double, solvers::mb_solver_t<>&, chol_reader_t&, const imag_axes_ft::IAFT&, qp_context_t&);
 
 template double qp_eqn_linearized(double, analyt_cont::AC_t &, long, double, double, double);
 template std::tuple<double,double> qp_eqn_bisection(double, analyt_cont::AC_t &, long, double, double, double, double);

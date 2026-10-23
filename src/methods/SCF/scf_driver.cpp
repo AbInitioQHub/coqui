@@ -20,6 +20,7 @@
 
 
 
+#include <limits>
 #include "nda/nda.hpp"
 #include "numerics/distributed_array/nda.hpp"
 #include "numerics/shared_array/nda.hpp"
@@ -102,7 +103,7 @@ auto scf_loop(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri, const imag_ax
   }
   Timer.stop("WRITE");
 
-  double F_conv, Sigma_conv;
+  double F_conv = std::numeric_limits<double>::infinity(), Sigma_conv = F_conv;
   std::vector<double> energies(4, 0.0);
   std::vector<double> energies_diff(3, 0.0);
   auto converged = [&]() {
@@ -278,7 +279,7 @@ double qp_scf_loop(
   MBState &mb_state, 
   eri_t &mb_eri, 
   const imag_axes_ft::IAFT& FT,
-  qp_params_t& qp_params, 
+  qp_context_t& qp_params, 
   solvers::mb_solver_t<corr_solver_t> mb_solver,
   iter_scf::iter_scf_t *iter_solver,
   int niter, 
@@ -295,18 +296,21 @@ double qp_scf_loop(
   // Two independent axes: qp_approx says how Sigma(iw) is reduced to a static QP Hamiltonian,
   // qp_scf_mode says what the loop updates with it.
   utils::check(qp_params.qp_approx == "qp_eqn" or qp_params.qp_approx == "lqp",
-               "qp_scf_loop: unknown qp_approx {}: qp_eqn or lqp.", qp_params.qp_approx);
+               "scf_driver.cpp::qp_scf_loop: unknown qp_approx {}: qp_eqn or lqp.",
+               qp_params.qp_approx);
   utils::check(qp_params.qp_scf_mode == "qpscf" or qp_params.qp_scf_mode == "evscf",
-               "qp_scf_loop: unknown qp_scf_mode {}: qpscf or evscf.", qp_params.qp_scf_mode);
+               "scf_driver.cpp::qp_scf_loop: unknown qp_scf_mode {}: qpscf or evscf.",
+               qp_params.qp_scf_mode);
   utils::check(not (qp_params.qp_scf_mode == "evscf" and qp_params.qp_approx == "lqp"),
-               "qp_scf_loop: qp_scf_mode = evscf with qp_approx = lqp is not implemented. "
-               "Use qp_scf_mode = qpscf (solver_type = lqsgw) for the linearized scheme.");
+               "scf_driver.cpp::qp_scf_loop: qp_scf_mode = evscf with qp_approx = lqp is not "
+               "implemented. Use qp_scf_mode = qpscf (solver_type = lqsgw) for the linearized "
+               "scheme.");
   if (qp_params.qp_approx == "qp_eqn") {
     auto const& sol = qp_params.qp_eqn.solver;
     utils::check(sol=="sc" or sol=="sc_newton" or sol=="sc_bisection" or
                  sol=="linearized" or sol=="spectral",
-                 "qp_scf_loop: unknown qp_eqn.solver {}: sc, sc_bisection, sc_newton, spectral "
-                 "or linearized.", sol);
+                 "scf_driver.cpp::qp_scf_loop: unknown qp_eqn.solver {}: sc, sc_bisection, "
+                 "sc_newton, spectral or linearized.", sol);
   }
   // http://patorjk.com/software/taag/#p=display&f=Calvin%20S&t=COQUI%20qp-scf
   app_log(1, "\n"
@@ -329,6 +333,9 @@ double qp_scf_loop(
   mb_state.sDm_skij.emplace(make_shared_array<Array_view_4D_t>(*mpi, {mf->nspin(), mf->nkpts_ibz(), mf->nbnd(), mf->nbnd()}));
   mb_state.sMO_skia.emplace(make_shared_array<Array_view_4D_t>(*mpi, {mf->nspin(), mf->nkpts_ibz(), mf->nbnd(), mf->nbnd()}));
   mb_state.sE_ska.emplace(make_shared_array<Array_view_3D_t>(*mpi, {mf->nspin(), mf->nkpts_ibz(), mf->nbnd()}));
+  // pole weights are set only by add_lqp_vcorr: clear any left from an earlier run on this
+  // MBState, so dump_qpscf never writes another scheme's weights
+  mb_state.sZqp_ska.reset();
   auto& sHeff_skij = mb_state.sHeff_skij.value();
   auto& sDm_skij = mb_state.sDm_skij.value();
   auto& sMO_skia = mb_state.sMO_skia.value();
@@ -363,9 +370,20 @@ double qp_scf_loop(
   }
   Timer.stop("WRITE");
 
-  double Heff_conv;
+  double Heff_conv = std::numeric_limits<double>::infinity();
   double e_tot  = 0.0;
   double e_diff = 0.0;
+  // the energy contributions {non-interacting (H0), beyond H0} and their change per iteration
+  std::vector<double> energies(2, 0.0), energies_diff(2, 0.0);
+  // as in scf_loop: converged when every energy contribution has stopped changing and, 
+  // Heff as well (if iter_solver is present).  
+  auto converged = [&]() {
+    bool energy_converged = std::all_of(energies_diff.begin(), energies_diff.end(),
+                                        [conv_tol](double x) { return std::abs(x) < conv_tol; });
+    if (iter_solver != nullptr)
+      return energy_converged and std::abs(Heff_conv) <= std::abs(conv_tol);
+    return energy_converged;
+  };
   long it = init_it + 1;
   do {
     app_log(1, "\n** Iteration # {} **", it);
@@ -408,7 +426,7 @@ double qp_scf_loop(
         add_evscf_vcorr(mb_state, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_params, qp_params.keep_scr_coulomb_fixed);
       } else {
         if (qp_params.qp_approx == "lqp") {
-          // add_lqp_vcorr replaces sHeff_skij by C^-dag (H_QP + mu) C^-1 and stores the pole weights
+          // add_lqp_vcorr replaces sHeff_skij by C^-dag H_QP C^-1 and stores the pole weights
           add_lqp_vcorr(mb_state, mu, mb_solver, mb_eri.corr_eri->get(), FT, qp_params);
         } else {
           // add_qpscf_vcorr only updates sHeff_skij. MO_skia and E_ska are updated later. 
@@ -419,7 +437,8 @@ double qp_scf_loop(
     Timer.stop("MBPT_SOLVERS");
 
     Timer.start("ITERATIVE");
-    Heff_conv = solve_iterative(*mpi, *iter_solver, it, mb_state.coqui_prefix, sHeff_skij, sS_skij);
+    if (iter_solver != nullptr)
+      Heff_conv = solve_iterative(*mpi, *iter_solver, it, mb_state.coqui_prefix, sHeff_skij, sS_skij);
     Timer.stop("ITERATIVE");
 
     Timer.start("CANONICALIZATION");
@@ -432,15 +451,19 @@ double qp_scf_loop(
     Timer.stop("CANONICALIZATION");
 
     auto k_weight = mf->k_weight();
-    auto [e_1e, e_hf] = eval_hf_energy(sDm_skij, sHeff_skij, sH0_skij, k_weight, true);
-    e_diff = e_tot - (e_1e + e_hf);
-    e_tot  = e_1e + e_hf;
+    // e_beyond_h0 = 1/2 Tr[Dm (Heff - H0)]: the interaction energy of the static QP Hamiltonian
+    // (Hartree-Fock plus its static correlation potential), not a Hartree-Fock energy
+    auto [e_1e, e_beyond_h0] = eval_hf_energy(sDm_skij, sHeff_skij, sH0_skij, k_weight, true);
+    e_diff = e_tot - (e_1e + e_beyond_h0);
+    e_tot  = e_1e + e_beyond_h0;
+    energies_diff = {e_1e - energies[0], e_beyond_h0 - energies[1]};
+    energies = {e_1e, e_beyond_h0};
 
     // print energies and scf convergence
     app_log(1, "\nEnergy contributions");
     app_log(1, "--------------------");
     app_log(1, "  non-interacting (H0):           {} a.u.", e_1e);
-    app_log(1, "  beyond H0:                      {} a.u.", e_hf);
+    app_log(1, "  beyond H0:                      {} a.u.", e_beyond_h0);
     app_log(1, "  total energy:                   {} a.u.", e_tot);
     app_log(1, " ");
     app_log(1, "energy difference:                {} a.u.", e_diff);
@@ -451,7 +474,7 @@ double qp_scf_loop(
     Timer.stop("WRITE");
 
     it++;
-  } while(it<init_it+niter+1 and std::abs(Heff_conv) > std::abs(conv_tol));
+  } while(it<init_it+niter+1 and not converged());
   Timer.stop("SCF_TOTAL");
 
   app_log(2, "\n  QP-SCF timers");
@@ -534,7 +557,7 @@ template double                                      \
 qp_scf_loop(MBState&,                         \
             mb_eri_t<HF, HARTREE, EXCHANGE, CORR>&,    \
             const imag_axes_ft::IAFT&,         \
-            qp_params_t&, \
+            qp_context_t&, \
             solvers::mb_solver_t<solvers::gw_t>,       \
             iter_scf::iter_scf_t*, \
             int, bool, double);

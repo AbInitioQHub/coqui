@@ -26,6 +26,7 @@
 
 #include "python/mean_field/mf_module.hpp"
 #include "python/mean_field/mf_module.wrap.hxx"
+#include "python/utils/imag_axes_ft/iaft_module.wrap.hxx"
 
 namespace coqui_py::post_proc {
 
@@ -69,40 +70,38 @@ namespace coqui_py::post_proc {
     );
   }
 
-
-  /**
-   * pproc_t::linearized_qp on arrays: one fit at a fixed window, returned as the kernel's own
-   * methods::lqp::result_t (Python class ResultT). E_ska is absolute (mu is in the result); 
-   * status_sk (ns, nk) is 0 ok, 1 the residual gate failed, 2 = 1 - B not positive definite, 
-   * and the entries of a failed point are zero. Sigma_tskab must be on the fermionic tau mesh of
-   * IAFT(beta, wmax, basis, prec) and F_skab must include H0.
-   */
   methods::lqp::result_t
-  linearized_qp_solve(nda::array<ComplexType, 4> F_skab, nda::array<ComplexType, 5> Sigma_tskab,
-                      double mu, double beta, double wmax, const std::string &basis,
-                      const std::string &prec, int n_fit, int fit_order, bool symmetric_window,
-                      double fit_resid_tol) {
-    methods::lqp::fit_params_t p;
-    p.n_fit = n_fit; p.fit_order = fit_order; p.symmetric_window = symmetric_window;
-    p.fit_resid_tol = fit_resid_tol;
-    return methods::pproc_t::linearized_qp(F_skab, Sigma_tskab, mu, beta, wmax, basis, prec, p);
+  linearized_qp_solve(MpiHandler &mpi,
+                      nda::array_view<ComplexType, 4> F_skab,
+                      nda::array_view<ComplexType, 5> Sigma_tskab,
+                      double mu, const imag_axes_ft::IAFT &ft, int n_fit, int fit_order,
+                      bool symmetric_window, double fit_resid_tol) {
+    methods::lqp::params_t params{.n_fit = n_fit, .fit_order = fit_order,
+                                  .symmetric_window = symmetric_window,
+                                  .fit_resid_tol = fit_resid_tol};
+    return methods::lqp::to_owned(methods::lqp::linearized_qp_solve(
+        *mpi.get_mpi(), F_skab, Sigma_tskab, mu, ft, params, methods::lqp::on_failure_e::abort));
   }
 
-  /**
-   * pproc_t::linearized_qp_ladder on arrays, returned as the kernel's methods::lqp::ladder_result_t
-   * (Python class LadderResultT): the last accepted rung in `last` plus the climb's bookkeeping
-   * (err_fit_sk, dHqp_sk, histories, n_accepted, mesh_limited, n_fit_mesh_max, stopped_*).
-   * n_accepted == 0 means even n_fit = 2 failed the gate and `last` is empty.
-   */
   methods::lqp::ladder_result_t
-  linearized_qp_ladder(nda::array<ComplexType, 4> F_skab, nda::array<ComplexType, 5> Sigma_tskab,
-                       double mu, double beta, double wmax, const std::string &basis,
-                       const std::string &prec, int n_fit_max, double fit_resid_tol,
-                       bool symmetric_window) {
-    methods::lqp::fit_params_t p;
-    p.symmetric_window = symmetric_window; p.fit_resid_tol = fit_resid_tol;
-    return methods::pproc_t::linearized_qp_ladder(F_skab, Sigma_tskab, mu, beta, wmax, basis, prec,
-                                                  p, n_fit_max);
+  linearized_qp_ladder(MpiHandler &mpi,
+                       nda::array_view<ComplexType, 4> F_skab,
+                       nda::array_view<ComplexType, 5> Sigma_tskab,
+                       double mu, const imag_axes_ft::IAFT &ft, int n_fit_max,
+                       double fit_resid_tol, bool symmetric_window) {
+    return methods::lqp::to_owned(methods::lqp::linearized_qp_ladder(
+        *mpi.get_mpi(), F_skab, Sigma_tskab, mu, ft, n_fit_max, fit_resid_tol, symmetric_window));
+  }
+
+  void linearized_qp_checkpoint(MpiHandler &mpi, const std::string &coqui_h5,
+                                const std::string &grp_name, long iteration,
+                                const std::string &source, int n_fit, int fit_order,
+                                bool symmetric_window, double fit_resid_tol, int n_fit_max) {
+    methods::lqp::params_t params{.n_fit = n_fit, .fit_order = fit_order,
+                                  .symmetric_window = symmetric_window,
+                                  .fit_resid_tol = fit_resid_tol};
+    methods::pproc_t::linearized_qp_checkpoint(*mpi.get_mpi(), coqui_h5, source, grp_name,
+                                               iteration, params, n_fit_max);
   }
 
 } // coqui_py

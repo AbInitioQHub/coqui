@@ -21,6 +21,7 @@ limitations under the License.
 import json
 
 from coqui._lib.mbpt_module import mbpt as mbpt_cxx
+from coqui.utils.qp_input import nest_flat_qp_keys, MBPT_FLAT_QP_KEYS
 
 
 def _run_mbpt(solver_type, params, h_int,
@@ -264,7 +265,8 @@ def run_evgw(params, h_int,
             all of them on a DLR mesh.
           * ``eta`` *(float, default ``π/beta``, Hartree)* — broadening at which the
             continued self-energy is evaluated.
-          * ``tol`` *(float, default ``1e-8``)* — convergence tolerance of the solver.
+          * ``tol`` *(float, default ``conv_thr``)* — convergence tolerance of the solver.
+
     h_int : ThcCoulomb or CholCoulomb
         Primary Coulomb interaction object.
     h_int_hf : ThcCoulomb or CholCoulomb, optional
@@ -295,6 +297,7 @@ def run_evgw(params, h_int,
             h_int=thc,
         )
     """
+    params = nest_flat_qp_keys(params, MBPT_FLAT_QP_KEYS, "run_evgw")
     _run_mbpt("evgw", params, h_int,
               h_int_hf = h_int_hf, h_int_hartree = h_int_hartree, h_int_exchange = h_int_exchange,
               projector_info = None, local_polarizabilities = None)
@@ -333,6 +336,7 @@ def run_qpgw(params, h_int,
             off-diagonal self-energy matrix elements are evaluated when constructing the
             qpGW Hamiltonian. ``"fermi"`` evaluates at the Fermi level; ``"qp_energy"``
             at the quasiparticle energy of each state.
+
     h_int : ThcCoulomb or CholCoulomb
         Primary Coulomb interaction object.
     h_int_hf : ThcCoulomb or CholCoulomb, optional
@@ -359,10 +363,11 @@ def run_qpgw(params, h_int,
         run_qpgw(
             {"beta": 200, "niter": 5, "prefix": "svo.qpgw",
              "iaft": {"prec": "medium"},
-             "off_diag_mode": "fermi"},
+             "qp_eqn": {"off_diag_mode": "fermi"}},
             h_int=thc,
         )
     """
+    params = nest_flat_qp_keys(params, MBPT_FLAT_QP_KEYS, "run_qpgw")
     _run_mbpt("qpgw", params, h_int,
               h_int_hf = h_int_hf, h_int_hartree = h_int_hartree, h_int_exchange = h_int_exchange,
               projector_info = None, local_polarizabilities = None)
@@ -378,7 +383,6 @@ def run_lqsgw(params, h_int,
     ``Z^1/2 (H0 + V_HF + A - μ) Z^1/2 + μ`` with ``Z = (1 - B)^-1``. No analytic
     continuation is involved. The loop is closed with the unit-weight Green's function
     of that Hamiltonian (Kutepov, Oudovenko and Kotliar, CPC 219, 407 (2017), Eq. 23).
-    Pole weights ``<v|Z|v>`` are written to ``scf/iter{N}/Z_ska`` as a diagnostic.
 
     This is a different approximation from ``qp_eqn.solver="linearized"`` of :func:`run_qpgw`
     / :func:`run_evgw`, which Taylor-expands the diagonal quasiparticle equation around
@@ -393,9 +397,7 @@ def run_lqsgw(params, h_int,
         - ``lqp`` *(dict, optional)* — controls of the linearization of ``Σ(iω)``:
 
           * ``n_fit`` *(int, default ``6``)* — number of lowest positive fermionic
-            Matsubara frequencies in the fit window (``2*n_fit`` symmetric nodes). All
-            nodes must lie on the IAFT sampling mesh (IR and DLR both contain the lowest
-            ones).
+            Matsubara frequencies in the fit window (``2*n_fit`` symmetric nodes).
           * ``fit_order`` *(int, default ``2*n_fit - 1``)* — highest power of ``iω``; the
             default is an exactly-determined interpolation.
           * ``fit_resid_tol`` *(float, default ``1e-8``)* — an exactly-determined fit with

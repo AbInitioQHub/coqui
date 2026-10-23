@@ -34,9 +34,6 @@ svo_thc = coqui.make_thc_coulomb(mf=svo_mf, params=eri_params)
 gw_params = {
     "outdir": "./",
     "prefix": "svo.lqsgw",
-    # LQSGW is a self-consistent scheme, so let the loop run to conv_thr rather than to a
-    # fixed number of iterations. This system converges in ~14 iterations with the default
-    # iterative solver (DIIS; see 04_diis.py for its controls).
     "niter": 20,
     "conv_thr": 1e-5,
     "beta": 200,
@@ -84,7 +81,7 @@ if mpi.root():
   from h5 import HDFArchive
   with HDFArchive("svo.lqsgw.mbpt.h5", "r") as ar:
       it = ar["scf"]["final_iter"]
-      Z = np.asarray(ar["scf"][f"iter{it}"]["Z_ska"])
+      Z = np.asarray(ar["scf"][f"iter{it}"]["Zqp_ska"])
   print(f"LQSGW pole weights at iteration {it}: "
         f"Z in [{Z.min():.4f}, {Z.max():.4f}], mean {Z.mean():.4f}")
 

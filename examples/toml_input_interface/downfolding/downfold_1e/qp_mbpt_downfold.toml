@@ -57,6 +57,6 @@ solver        = "sc"                     # scalar QP equation solver: "sc"/"sc_b
                                          # "sc_newton", "spectral" or "linearized". default = "sc"
 ac_alg        = "pade"                   # analytical continuation algorithm. default = "pade"
 eta           = 1e-6                     # infinitesimal shift above the real axis
-ac_nfit       = 30                       # Number of poles to fit
+ac_nfit       = 30                       # Matsubara points fed to the continuation
 off_diag_mode = "qp_energy"              # QP schemes for off-diagonal self-energy: "qp_energy" or "fermi".
                                          # default: "qp_energy"

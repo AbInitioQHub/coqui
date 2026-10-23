@@ -66,10 +66,7 @@ namespace methods {
       if (mpi->comm.root()) {
         h5::file file(coqui_prefix + ".mbpt.h5", 'a');
         auto iter_grp = h5::group(file).open_group("scf/iter" + std::to_string(iter));
-        auto Zloc = sZqp_ska.value().local();
-        nda::array<double, 3> Z(Zloc.shape());
-        Z = nda::real(Zloc);
-        nda::h5_write(iter_grp, "Z_ska", Z, false);
+        nda::h5_write(iter_grp, "Zqp_ska", sZqp_ska.value().local(), false);
       }
       mpi->comm.barrier();
     }

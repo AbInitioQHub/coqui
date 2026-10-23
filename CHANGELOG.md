@@ -11,11 +11,19 @@
 
 - Imaginary-time and Matsubara meshes to h5 checkpoint, written by both the C++ and the Python IAFT. (#51)
 - `CPPDLR` CMake variable to configure against a local cppdlr source tree instead of the one fetched by `FetchContent`. (#51)
+- Linearized quasiparticle self-consistent GW (LQSGW), `run_lqsgw` in the Python API.
+- Linearized quasiparticle approximation of a Dyson-SCF solution as post-processing: `qp_approx = "lqp"` in `band_interpolation`, and `linearized_qp_from_checkpoint` (on the SCF k-points or on Wannier-interpolated ones) and `linearized_qp_from_arrays` in the Python API, giving the quasiparticle Hamiltonian, the renormalization factor `Z` and the pole weights.
 
 ### Improved
 
 - More stable DLR mesh construction: `cppdlr` pin bumped from `f6bd6ab` to `7a0f60c`. (#51)
 - IAFT mesh compatibility checking when reading a checkpoint. (#51)
+- Convergence logic of the quasiparticle self-consistent loops (`qphf`, `evgw`, `qpgw`, `lqsgw`). 
+
+### API Updates
+
+- One input interface for every quasiparticle approximation: `qp_approx` selects the scheme (`"qp_eqn"` or `"lqp"`, replacing `qp_type`), and each scheme reads its controls from its own nested block, `qp_eqn` or `lqp`, instead of flat keys.
+- The flat quasiparticle-equation keys of `evgw`, `qpgw`, `downfold_1e`, `gw_downfold` and `band_interpolation` move into the `qp_eqn` block: `ac_alg` → `qp_eqn.ac_alg`, `Nfit`/`qp_Nfit` → `qp_eqn.ac_nfit`, `eta`/`qp_eta` → `qp_eqn.eta`, `off_diag_mode` → `qp_eqn.off_diag_mode`, `qp_tol` → `qp_eqn.tol`. 
 
 ### Fixed
 

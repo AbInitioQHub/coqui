@@ -23,6 +23,7 @@ import numpy as np
 from coqui import IAFT
 
 from coqui._lib import post_proc_module as pproc_mod
+from coqui.utils.qp_input import nest_flat_qp_keys, BAND_INTERPOLATION_FLAT_QP_KEYS
 
 
 def band_interpolation(mf, params):
@@ -63,19 +64,16 @@ def band_interpolation(mf, params):
         - ``translate_home_cell`` *(bool, optional, default ``False``)* — if ``True``,
           translates Wannier centres to the home unit cell.
         - ``qp_approx`` *(str, optional, default ``"qp_eqn"``)* — how quasiparticle energies
-          are obtained from a Dyson checkpoint when ``Heff_skij`` is absent. Two families,
-          which are different approximations and not two accuracies of one:
+          are obtained from a Dyson checkpoint when ``Heff_skij`` is absent. Two schemes are ,
+          are implemented: 
 
           * ``"qp_eqn"`` — the scalar quasiparticle equation solved on the real axis, fed
             by an analytic continuation of the *diagonal* ``Σ_aa(iω)`` (Padé). Controlled
             by the ``qp_eqn`` block below.
           * ``"lqp"`` — matrix linearization ``Z^1/2 (F + Σ(0) - μ) Z^1/2`` of the full
             ``Σ(iω)`` around ``ω = 0`` on the Matsubara axis, in the KS basis; also writes
-            the pole weights ``qp_approx/Z_ska``. Controlled by the ``lqp`` block below.
+            the pole weights ``qp_approx/Zqp_ska``. Controlled by the ``lqp`` block below.
             This is the one-shot form of what ``run_lqsgw`` iterates.
-
-          The deprecated ``qp_type`` is still read and mapped onto ``qp_approx`` plus
-          ``qp_eqn.solver`` (``"lqp"`` selects the second family, anything else the first).
 
         - ``qp_eqn`` *(dict, optional)* — controls of the quasiparticle-equation schemes
           (these do not affect ``qp_approx="lqp"``, which reads the ``lqp`` block):
@@ -106,8 +104,11 @@ def band_interpolation(mf, params):
     Returns
     -------
     None
-        Results are written to ``outdir/prefix.mbpt.h5`` under
-        ``{grp_name}/iter{N}/qp_approx/wannier_inter/``.
+        Results are written to ``outdir/prefix.mbpt.h5``: the quasiparticle Hamiltonian on the
+        IBZ mesh under ``{grp_name}/iter{N}/qp_approx/`` and the interpolated bands under
+        ``{grp_name}/iter{N}/qp_approx/wannier_inter/``. An iteration holding its own
+        ``Heff_skij`` (quasiparticle self-consistent, or the mean-field starting point) is
+        interpolated as is, with the bands under ``{grp_name}/iter{N}/wannier_inter/``.
 
     Examples
     --------
@@ -127,6 +128,7 @@ def band_interpolation(mf, params):
             ),
         })
     """
+    params = nest_flat_qp_keys(params, BAND_INTERPOLATION_FLAT_QP_KEYS, "band_interpolation")
     pproc_mod.band_interpolation(mf, json.dumps(params))
 
 
@@ -173,28 +175,12 @@ def spectral_interpolation(mf, params):
         - ``Nfit`` *(int, optional)* — number of Matsubara points for the Padé fit.
           Defaults to half the number of available fermionic frequencies.
 
-        Quasiparticle energy options (computed on the IBZ k-mesh, then Wannier-interpolated):
-
-        - ``qp_approx`` *(str, optional, default ``"qp_eqn"``)* — ``"qp_eqn"`` (Padé +
-          scalar QP equation, see the ``qp_eqn`` block) or ``"lqp"`` (matrix linearization).
-        - ``qp_eqn.solver`` *(str, optional, default ``"sc"``)* — QP equation solver.
-          ``"sc"`` (bisection), ``"sc_newton"`` (secant), or ``"linearized"``.
-        - ``qp_eta`` *(float, optional, default ``0.0001``, units: Hartree)* — broadening
-          on the real axis used when evaluating the self-energy in the QP equation.
-        - ``qp_Nfit`` *(int, optional, default ``18``)* — number of Matsubara points for
-          the Padé fit of the self-energy used in the QP equation.
-        - ``qp_tol`` *(float, optional, default ``1e-8``)* — convergence tolerance for
-          the QP root-finding algorithm.
-
     Returns
     -------
     None
         Results are written to ``outdir/prefix.mbpt.h5`` under:
 
         - ``{grp_name}/iter{N}/ac/`` — spectral function A(k,ω) (unchanged).
-        - ``{grp_name}/iter{N}/qp_approx/E_ska`` — QP energies on the IBZ k-mesh.
-        - ``{grp_name}/iter{N}/qp_approx/wannier_inter/E_ska`` — QP band structure
-          interpolated along the k-path.
 
     Examples
     --------

@@ -105,7 +105,7 @@ namespace methods {
   }
 
   void embed_t::downfolding(MBState &mb_state, ptree const& pt,
-                            qp_params_t *qp_params, std::string format_type) {
+                            qp_context_t *qp_params, std::string format_type) {
 
     std::string filename = mb_state.coqui_prefix + ".mbpt.h5";
     utils::check(std::filesystem::exists(filename),
@@ -511,7 +511,7 @@ namespace methods {
     print_downfold_mb_timers();
   }
 
-  void embed_t::downfold_mb_solution_qp_impl(MBState &mb_state, qp_params_t &qp_params,
+  void embed_t::downfold_mb_solution_qp_impl(MBState &mb_state, qp_context_t &qp_params,
                                              bool update_dc, std::string dc_type,
                                              bool force_real, std::string format_type) {
     using math::shm::make_shared_array;
@@ -1244,7 +1244,7 @@ namespace methods {
                                 long weiss_b_iter, imag_axes_ft::IAFT &ft,
                                 double mu,
                                 sArray_t<Array_view_4D_t> &sMO_skia, sArray_t<Array_view_3D_t> &sE_ska,
-                                qp_params_t &qp_params, bool force_real, std::string format_type)
+                                qp_context_t &qp_params, bool force_real, std::string format_type)
   -> std::tuple<nda::array<ComplexType, 4>, nda::array<ComplexType, 4>, nda::array<ComplexType, 5>> {
     app_log(2, "Evaluating double counting self-energy with Gloc coming from "
                "\"{}/iter{}\"", dc_src_grp, dc_iter);
@@ -1412,7 +1412,7 @@ namespace methods {
                                    long weiss_b_iter, imag_axes_ft::IAFT &ft,
                                    double mu,
                                    sArray_t<Array_view_4D_t> &sMO_skia, sArray_t<Array_view_3D_t> &sE_ska,
-                                   qp_params_t &qp_params, bool force_real, std::string format_type)
+                                   qp_context_t &qp_params, bool force_real, std::string format_type)
   -> std::tuple<nda::array<ComplexType, 4>, nda::array<ComplexType, 4>, nda::array<ComplexType, 5>> {
     h5::file file(prefix+".mbpt.h5", 'r');
     auto grp = h5::group(file);

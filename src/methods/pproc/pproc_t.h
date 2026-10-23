@@ -38,7 +38,7 @@
 #include "utilities/mpi_context.h"
 #include "numerics/ac/AC_t.hpp"
 #include "numerics/imag_axes_ft/iaft_utils.hpp"
-#include "methods/SCF/qp/qp_params_t.h"
+#include "methods/SCF/qp/qp_context_t.h"
 #include "methods/SCF/qp/qp_solvers.hpp"
 #include "methods/SCF/qp/linearized_qp.hpp"
 
@@ -81,14 +81,23 @@ namespace methods {
                                std::string grp_name="scf", long iter=-1, 
                                bool translate_home_cell=false);
     /**
-     * Wannier interpolation plus analytical continuation for spectral functions on the provided k-points.
-     * Also computes quasiparticle energies on the IBZ k-mesh from the dynamic self-energy and
-     * Wannier-interpolates them along the k-path.
-     * (Only for dyson-type calculation)
-     * @param mf - [INPUT] a mean-field instance for all the metadata of the system
-     * @param project_file - [INPUT] a h5 file which stores the projection matrices and the target k-points
-     * @param ac_params - [INPUT] parameters for ac
-     * @param qp_params - [INPUT] parameters for quasiparticle equation solver
+     * Spectral function of a Dyson-SCF solution on the target k-points of the Wannier projection:
+     * 1. Wannier-interpolates {grp_name}/iter{N}/{F_skij, Sigma_tskij} and solves Dyson's equation
+     *    there (wannier_interpolation(..., "dyson")), writing {grp_name}/iter{N}/wannier_inter/
+     *    {F_skab, Sigma_tskab, G_tskab, G_wskab, kpts, kpt_labels, kpt_label_idx, ...};
+     * 2. analytically continues G_wskab to the real axis, writing {grp_name}/iter{N}/ac/.
+     * No quasiparticle approximation is applied here: the band structure from a quasiparticle
+     * Hamiltonian is band_interpolation's, and the linearized quasiparticle approximation of the
+     * interpolated solution is linearized_qp_checkpoint with source = "interpolated", which reads this
+     * wannier_inter/ output. (Only for a Dyson-type calculation)
+     * @param mf                  - [INPUT] a mean-field instance for all the metadata of the system
+     * @param pt                  - [INPUT] input parameters, forwarded to wannier_interpolation
+     * @param project_file        - [INPUT] a h5 file which stores the projection matrices and the
+     *                              target k-points
+     * @param ac_params           - [INPUT] parameters for ac
+     * @param grp_name            - [INPUT] top-level group, "scf" or "embed"
+     * @param iter                - [INPUT] iteration; -1 = {grp_name}/final_iter
+     * @param translate_home_cell - [INPUT] forwarded to wannier_interpolation
      */
     void spectral_interpolation(mf::MF &mf, ptree const& pt, std::string project_file,
                                 analyt_cont::ac_context_t &ac_params,
@@ -98,117 +107,107 @@ namespace methods {
                                 std::string grp_name="scf", long iter=-1, bool translate_home_cell=false);
             
     /**
-     * Compute quasiparticle energies on the IBZ k-mesh by solving the QP equation
-     * E_a = F_aa + Re[Sigma_aa(E_a - mu)] for each (spin, k, band).
-     * Writes E_ska to {grp_name}/iter{N}/qp_approx/E_ska in the checkpoint file.
-     */
-    void compute_qp_on_ibz_kmesh(mf::MF &mf, const qp_params_t &qp_params, 
-                                std::string grp_name="scf", long iter=-1);
-
-    /**
-     * Post-processing entry point of the linearized quasiparticle approximation on arrays the
-     * caller already holds -- no checkpoint, no MPI distribution. It is the same kernel and the
-     * same driver as the LQSGW loop and the checkpoint post-processing (methods::lqp), run
-     * serially -- no MPI is required to be initialized -- with on_failure_e::report: a point that fails the residual gate or the causality
-     * check is left zero and flagged in result_t::status_sk instead of aborting, because in an
-     * analysis over many k-points one bad point must not hide the rest.
+     * Quasiparticle approximation as a post-processing step of a Dyson-SCF solution: 
+     * 1. reads the iteration {grp_name}/iter{N} of a full-frequency calculation (scf_loop), 
+     * i.e. F_skij, Sigma_tskij and mu, 
+     * 2. adds system/H0_skij to F and reduces the dynamic Sigma(tau) to a static
+     * quasiparticle Hamiltonian 
+     * 3. writes it back to {grp_name}/iter{N}/qp_approx/. 
+     *  
+     * qp_params.qp_approx selects the QP scheme:
+     *   "qp_eqn": diagonal in the KS basis -- analytic continuation of Sigma_aa(iw) and the scalar
+     *             quasiparticle equation E_a = F_aa + Re[Sigma_aa(E_a - mu)] band by band
+     *             (qp_eqn_from_dyson_impl); Heff_skij = U diag(E_qp) U^dagger.
+     *   "lqp"   : the matrix linearization Sigma(iw) ~ A + iw B, one fit at qp_params.lqp.n_fit,
+     *             aborting on a failed point (linearized_qp_checkpoint with source = "mesh").
+     * Each reads its own inputs into node-shared memory (dimensions from the dataset shapes),
+     * writes the controls it used to qp_approx/<scheme>/ (see qp_approx_reusable) and removes
+     * the other scheme's results.
      *
-     * The Python API (coqui.post_proc.linearized_qp) is built on this; it also uses it on
-     * Wannier-window quantities, which have no checkpoint layout of their own.
+     * @param qp_params - [INPUT] qp_approx and the controls of that family; the qp_scf_mode,
+     *                    chemical-potential and keep_scr_coulomb_fixed members are not used
+     * @param grp_name  - [INPUT] top-level group, "scf" or "embed"
+     * @param iter      - [INPUT] iteration; -1 = {grp_name}/final_iter
+     */
+    void qp_approx_from_dyson(const qp_context_t &qp_params, std::string grp_name="scf",
+                              long iter=-1);
+
+    /**
+     * Linearized quasiparticle approximation on a Dyson solution stored in a CoQui checkpoint. 
      *
-     * @param F_skab      - [INPUT] static one-body matrix (ns, nk, n, n), **including H0**
-     * @param Sigma_tskab - [INPUT] dynamic self-energy (nt, ns, nk, n, n) on ft's fermionic tau mesh
-     * @param mu          - [INPUT] chemical potential [Ha]
-     * @param ft          - [INPUT] imaginary-axis transform driver Sigma was sampled with
-     * @param p           - [INPUT] fit controls
-     * @return methods::lqp::result_t for every (s,k); consult status_sk before trusting a point
+     * The input/output is determined based on the source argument: 
+     * 1. source = "mesh": the Dyson-SCF solution on the k-points of the SCF calculation, in
+     *    the primary basis.
+     *    reads  {grp}/iter{N}/{F_skij, Sigma_tskij, mu} and system/H0_skij (added to F)
+     *    writes {grp}/iter{N}/qp_approx/{E_ska, Heff_skij, Zqp_ska, mu, scheme} and
+     *           {grp}/iter{N}/qp_approx/lqp/{diagnostics, controls[, ladder/]}
+     * 2. source = "interpolated": the Wannier-interpolated Dyson solution on the interpolated
+     *    k-points, in the Wannier basis, as written by spectral_interpolation.
+     *    reads  {grp}/iter{N}/wannier_inter/{F_skab, Sigma_tskab} (H0 included) and {grp}/iter{N}/mu
+     *    writes {grp}/iter{N}/wannier_inter/qp_approx/{E_ska, Heff_skab, Zqp_ska, mu, scheme} and
+     *           {grp}/iter{N}/wannier_inter/qp_approx/lqp/{diagnostics, controls[, ladder/]}
+     *
+     * Both cases write the same layout under the group they read from. The lqp/ group is
+     * recreated on every run, so nothing of an earlier run survives in it.
+     *
+     * @param mpi        - [INPUT] MPI context
+     * @param filename   - [INPUT] checkpoint file (read, then appended to)
+     * @param source     - [INPUT] "mesh" (use case 1) or "interpolated" (use case 2)
+     * @param grp_name   - [INPUT] top-level group, "scf" or "embed"
+     * @param iter       - [INPUT] iteration; -1 = {grp}/final_iter
+     * @param params     - [INPUT] fit controls; a single fit uses all of them, the ladder only
+     *                     fit_resid_tol and symmetric_window
+     * @param n_fit_max  - [INPUT] 0: one fit with params; > 0: the exactly-determined ladder up to
+     *                     this n_fit
+     * @note Aborts on a missing input dataset; a single fit aborts on a point that fails the
+     *       residual gate or has 1 - B not positive definite (on_failure_e::abort), and the
+     *       ladder, which rejects such a fit and stops, aborts when no fit is accepted or
+     *       n_fit_max < 2 (see lqp::linearized_qp_ladder). A written result therefore has no
+     *       failed point.
      */
-    static lqp::result_t linearized_qp(nda::array_const_view<ComplexType, 4> F_skab,
-                                       nda::array_const_view<ComplexType, 5> Sigma_tskab,
-                                       double mu, imag_axes_ft::IAFT const& ft,
-                                       lqp::fit_params_t const& p);
+    static void linearized_qp_checkpoint(utils::mpi_context_t<mpi3::communicator>& mpi,
+                                         std::string const& filename, std::string const& source,
+                                         std::string const& grp_name, long iter,
+                                         lqp::params_t const& params, int n_fit_max);
 
     /**
-     * Same, with the IAFT built from its defining parameters, for a caller that has none to pass:
-     * the Python binding, whose IAFT for basis = "ir" is a sparse_ir object with no C++
-     * counterpart. Sigma_tskab must then be sampled on the tau mesh this IAFT generates. For
-     * "ir" that means the sparse_ir mesh must equal the C++ tables', which is pinned by the unit
-     * test src/python/utils/imag_axes_ft/tests/test_iaft.py (1e-12) rather than checked here.
-     * @param beta, wmax, basis, prec - [INPUT] the IAFT constructor arguments
+     * Whether {grp}/iter{N}/qp_approx/ holds a quasiparticle Hamiltonian band_interpolation may
+     * reuse for the approximation it was asked for, instead of recomputing it: Heff_skij
+     * present, written by the same qp_approx scheme, and every control stored in
+     * qp_approx/<scheme>/ equal to the request -- qp_eqn {solver, ac_alg, ac_nfit, eta, tol};
+     * lqp {n_fit, fit_order (resolved), symmetric_window, fit_resid_tol}. A ladder result
+     * qualifies like a single fit: it stores the setup of its last accepted fit, which is a
+     * single fit with that setup. No failed point needs checking: linearized_qp_checkpoint
+     * aborts rather than write one. A checkpoint from an earlier CoQui version, which stores no controls, is never
+     * reused. When a qp_approx/Heff_skij exists but is not reused, the reason is logged.
+     * @param iter_grp  - [INPUT] the open {grp}/iter{N} group
+     * @param requested - [INPUT] the quasiparticle approximation band_interpolation was given
      */
-    static lqp::result_t linearized_qp(nda::array_const_view<ComplexType, 4> F_skab,
-                                       nda::array_const_view<ComplexType, 5> Sigma_tskab,
-                                       double mu, double beta, double wmax,
-                                       std::string const& basis, std::string const& prec,
-                                       lqp::fit_params_t const& p);
-
-    /**
-     * The convergence rule on arrays (lqp::linearized_qp_ladder), serial and reporting, with the
-     * IAFT built from its parameters like linearized_qp() above: climb the exactly-determined
-     * ladder n_fit = 2, 3, ... until the residual gate fires or the sampling mesh ends, return the
-     * last accepted rung with its truncation-error estimate. What the Python API runs by default.
-     * @param n_fit_max - [INPUT] highest rung to try (capped at the mesh)
-     * @param p         - [INPUT] fit controls; fit_resid_tol is the gate, symmetric_window is used
-     */
-    static lqp::ladder_result_t linearized_qp_ladder(nda::array_const_view<ComplexType, 4> F_skab,
-                                                     nda::array_const_view<ComplexType, 5> Sigma_tskab,
-                                                     double mu, double beta, double wmax,
-                                                     std::string const& basis, std::string const& prec,
-                                                     lqp::fit_params_t const& p, int n_fit_max);
+    static bool qp_approx_reusable(h5::group iter_grp, qp_context_t const& requested);
 
   private:
     /**
-     * qp_approx == "lqp" branch of compute_qp_on_ibz_kmesh: matrix linearization of Sigma(iw)
-     * around w = 0 in the KS basis:
-     *  1. K = F + Sigma(0) - mu,
-     *  2. Z = (1 - dSigma/d(iw))^-1
-     *  3. H_QP = Z^1/2 K Z^1/2, 
-     * solved independently at every (s,k).
-     * 
-     * Writes to qp_approx/{E_ska, Heff_skij, Z_ska, mu, scheme} and
-     * qp_approx/lqp/{min_eig_sk, fit_resid_sk, n_fit, fit_order, cond}.
-     *
-     * @param FT           - [INPUT] Fourier transform driver on the imaginary axes, as read from
-     *                       the checkpoint; supplies the tau and Matsubara meshes and beta
-     * @param qp_params    - [INPUT] only the lqp member is used; see methods::lqp::fit_params_t
-     * @param sFhf_skij    - [INPUT] static one-body matrix (ns, nk, nb, nb) in the KS basis,
-     *                       **including H0** (the caller adds system/H0_skij to F_skij)
-     * @param sSigma_tskij - [INPUT] dynamic self-energy (nt, ns, nk, nb, nb) on FT's fermionic
-     *                       tau mesh, same basis as sFhf_skij
-     * @param mu           - [INPUT] chemical potential [Ha] of the iteration being processed
-     * @param filename     - [INPUT] checkpoint the results are appended to
-     * @param grp_name     - [INPUT] top-level group, "scf" or "embed"
-     * @param iter         - [INPUT] iteration index; the results go to {grp_name}/iter{iter}
-     */
-    void lqp_on_ibz_kmesh_impl(imag_axes_ft::IAFT const& FT, qp_params_t const& qp_params,
-                                 math::shm::shared_array<nda::array_view<ComplexType, 4>> const& sFhf_skij,
-                                 math::shm::shared_array<nda::array_view<ComplexType, 5>> const& sSigma_tskij,
-                                 double mu, std::string filename, std::string grp_name, long iter);
-
-    /**
      * qp_approx == "qp_eqn" branch (qp_eqn.solver in {"sc", "sc_bisection", "sc_newton", "linearized"}) of
-     * compute_qp_on_ibz_kmesh: 
-     * 1. diagonalize F, 
-     * 2. analytically continue the diagonal Sigma_aa(iw) by Pade, 
+     * qp_approx_from_dyson, the counterpart of linearized_qp_checkpoint for "lqp":
+     * 0. read {grp_name}/iter{N}/{F_skij, Sigma_tskij, mu} and system/H0_skij into node-shared
+     *    memory (dimensions from the dataset shapes, the IAFT the checkpoint's),
+     * 1. diagonalize F + H0,
+     * 2. analytically continue the diagonal Sigma_aa(iw) (qp_eqn.ac_alg),
      * 3. solve the scalar quasiparticle equation on the real axis band by band 
      *    (at the quasiparticle energy for the "sc*" variants, by first-order expansion 
      *     around eps_KS for "linearized").
      * 
-     * Writes qp_approx/{E_ska, Heff_skij, mu, scheme, ac_solver}.
+     * Writes qp_approx/{E_ska, Heff_skij, mu, scheme} and the controls
+     * qp_approx/qp_eqn/{solver, ac_alg, ac_nfit, eta, tol}; removes the Zqp_ska and lqp/ of an
+     * earlier lqp run, and the legacy ac_solver.
      *
-     * @param FT           - [INPUT] Fourier transform driver on the imaginary axes
-     * @param qp_params    - [INPUT] only the ac member is used; see qp_eqn_params_t
-     * @param sFhf_skij    - [INPUT] static one-body matrix (ns, nk, nb, nb) including H0
-     * @param sSigma_tskij - [INPUT] dynamic self-energy (nt, ns, nk, nb, nb) on the tau mesh
-     * @param mu           - [INPUT] chemical potential [Ha]
-     * @param filename     - [INPUT] checkpoint the results are appended to
-     * @param grp_name     - [INPUT] top-level group, "scf" or "embed"
-     * @param iter         - [INPUT] iteration index
+     * @param filename - [INPUT] checkpoint file (read, then appended to)
+     * @param grp_name - [INPUT] top-level group, "scf" or "embed"
+     * @param iter     - [INPUT] iteration; -1 = {grp_name}/final_iter
+     * @param params   - [INPUT] qp_eqn controls; see methods::qp_eqn::params_t
      */
-    void qp_ac_on_ibz_kmesh_impl(imag_axes_ft::IAFT const& FT, qp_params_t const& qp_params,
-                                 math::shm::shared_array<nda::array_view<ComplexType, 4>> const& sFhf_skij,
-                                 math::shm::shared_array<nda::array_view<ComplexType, 5>> const& sSigma_tskij,
-                                 double mu, std::string filename, std::string grp_name, long iter);
+    void qp_eqn_from_dyson_impl(std::string const& filename, std::string const& grp_name,
+                                long iter, qp_eqn::params_t const& params);
 
     template<nda::ArrayOfRank<4> local_Array_4D_t, typename communicator_t>
     void read_scf_dataset(std::string dataset,

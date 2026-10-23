@@ -32,7 +32,7 @@
 #include "numerics/iter_scf/iter_scf_t.hpp"
 
 #include "utilities/mpi_context.h"
-#include "methods/SCF/qp/qp_params_t.h"
+#include "methods/SCF/qp/qp_context_t.h"
 #include "methods/SCF/scf_common.hpp"
 #include "methods/SCF/mb_solver_t.h"
 #include "methods/mb_state/mb_state.hpp"
@@ -51,13 +51,35 @@ auto scf_loop(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri, const imag_ax
               -> std::tuple<double, double>;
 
 /**
- * Generic self-consistent loop for quasiparticle equations. 
- * The template parameters allow for different types of self-energy solvers (e.g. HF, GW, GF2) 
+ * Self-consistent loop on a static quasiparticle Hamiltonian Heff. Each iteration builds G from
+ * the current Heff, evaluates the self-energy, reduces it to a new Heff, mixes it with the
+ * previous ones (iter_solver), re-diagonalizes, updates mu and the density, and writes
+ * scf/iter{N} (MBState::dump_qpscf).
+ *
+ * qp_params selects the scheme along two independent axes:
+ *   qp_scf_mode = "qpscf", qp_approx = "qp_eqn": qpGW
+ *   qp_scf_mode = "evscf", qp_approx = "qp_eqn": evGW
+ *   qp_scf_mode = "qpscf", qp_approx = "lqp"   : LQSGW, the linearized Sigma
+ *   qp_scf_mode = "evscf", qp_approx = "lqp"   : not implemented, rejected
+ * With mb_solver.corr == nullptr (HF) no self-energy is added and the axes are irrelevant.
+ *
+ * The template parameters allow for different types of self-energy solvers (e.g. HF, GW, GF2)
  * and different types of Coulomb Hamiltonian representations (e.g. THC, Cholesky).
+ * @param mb_state    - [INPUT/OUTPUT] many-body state; Heff, MO, E and Dm are (re)allocated here
+ * @param mb_eri      - [INPUT] ERI bundle (Hartree-Fock and correlated parts)
+ * @param FT          - [INPUT] imaginary-axis transform driver
+ * @param qp_params   - [INPUT] the two axes and each family's controls (qp_context_t), plus the
+ *                      chemical-potential update and keep_scr_coulomb_fixed
+ * @param mb_solver   - [INPUT] HF solver and, beyond HF, the correlated and screening solvers
+ * @param iter_solver - [INPUT] mixing of Heff between iterations (damping or DIIS)
+ * @param niter       - [INPUT] maximum number of iterations
+ * @param restart     - [INPUT] continue from the last iteration in the checkpoint
+ * @param conv_tol    - [INPUT] stop when the largest change of Heff falls below it
+ * @return the total energy of the last iteration [Ha]
  */
 template<typename eri_t, typename corr_solver_t>
 double qp_scf_loop(MBState &mb_state, eri_t &mb_eri, const imag_axes_ft::IAFT& FT,
-                   qp_params_t &qp_params, solvers::mb_solver_t<corr_solver_t> mb_solver,
+                   qp_context_t &qp_params, solvers::mb_solver_t<corr_solver_t> mb_solver,
                    iter_scf::iter_scf_t *iter_solver = nullptr, int niter = 1,
                    bool restart = false, double conv_tol = 1e-8);
 
