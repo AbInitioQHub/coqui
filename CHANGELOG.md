@@ -30,6 +30,7 @@
 - Wrong Wannier projectors from `wannier90` library mode when the outer disentanglement window excludes the lowest of the KS bands at some k-point.
 - Hang in `mlwf_h5_from_wannier90_output` with more than one MPI rank when no `.eig` file is present.
 - Wannier90 output files from `wannier90` library mode silently written to a truncated path outside `outdir` when `outdir/prefix` exceeds 50 characters; library mode now aborts instead.
+- Fixe DMFT unit test `test_extract_h0_and_delta_with_real_downfold_gloc` which failing with more than one MPI rank.
 
 ### Default Value Updates
 

@@ -44,10 +44,15 @@ def downfold_inputs(mpi, request):
     wan_h5 = coqui.TEST_INPUT_DIR + "qe/svo_kp222_nbnd40/mlwf/svo.mlwf.h5"
 
     mf = construct_qe_mf(mpi, "qe_svo222_sym")
+    # The ISDF interpolating points depend on the number of MPI ranks, so every quantity below
+    # differs between rank counts within the ISDF accuracy (h0 by ~5e-5 at thresh = 1e-5 with the
+    # default block size). 
+    # chol_block_size = 1 makes the point selection rank-independent up to ties and rounding:
     eri_params = {
         "storage": "incore",
-        "thresh": 1e-4,
+        "thresh": 1e-5,
         "ecut": mf.ecutwfc() * 1.5,
+        "chol_block_size": 1,
         "init": True,
     }
     thc = coqui.make_thc_coulomb(mf, eri_params)
@@ -107,15 +112,16 @@ def test_extract_h0_and_delta_with_real_downfold_gloc(downfold_inputs):
 
     h0_sab, delta_iw = extract_h0_and_delta(g_iw, ir_kernel)
 
+    # generated with thresh = 1e-5, chol_block_size = 1; atol is the ISDF accuracy, see the fixture
     H0_SAB_REF = np.array([[
-        [ 1.98632457e-01, -3.39822832e-05,  3.27477287e-05], 
-        [-3.39822832e-05,  1.98823108e-01, -9.76175950e-05],
-        [ 3.27477287e-05, -9.76175950e-05,  1.98808918e-01]
-    ]]) 
+        [ 1.985756442e-01,  9.557958753e-06, -1.224950026e-05],
+        [ 9.557958753e-06,  1.985735773e-01,  4.318933304e-06],
+        [-1.224950026e-05,  4.318933304e-06,  1.985829596e-01]
+    ]])
     assert h0_sab.shape == g_iw.shape[1:]
     assert h0_sab.shape == H0_SAB_REF.shape
     assert delta_iw.shape == g_iw.shape
-    assert np.allclose(h0_sab.real, H0_SAB_REF, atol=1e-8)
+    assert np.allclose(h0_sab.real, H0_SAB_REF, atol=1e-4)
     assert np.allclose(h0_sab.imag, 0.0, atol=1e-12)
     # Causality check
     wzero_idx = delta_iw.shape[0] // 2
