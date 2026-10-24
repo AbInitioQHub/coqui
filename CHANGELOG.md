@@ -24,6 +24,7 @@
 
 - One input interface for every quasiparticle approximation: `qp_approx` selects the scheme (`"qp_eqn"` or `"lqp"`, replacing `qp_type`), and each scheme reads its controls from its own nested block, `qp_eqn` or `lqp`, instead of flat keys.
 - The flat quasiparticle-equation keys of `evgw`, `qpgw`, `downfold_1e`, `gw_downfold` and `band_interpolation` move into the `qp_eqn` block: `ac_alg` → `qp_eqn.ac_alg`, `Nfit`/`qp_Nfit` → `qp_eqn.ac_nfit`, `eta`/`qp_eta` → `qp_eqn.eta`, `off_diag_mode` → `qp_eqn.off_diag_mode`, `qp_tol` → `qp_eqn.tol`. 
+- `band_plot` no longer draws the legend: call `ax.legend()` after plotting.
 
 ### Fixed
 

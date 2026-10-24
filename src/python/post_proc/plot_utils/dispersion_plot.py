@@ -27,15 +27,45 @@ from h5 import HDFArchive
 from coqui import app_log, app_warning
 
 
+def _has_path(ar, path):
+    """Whether ``path`` exists in the archive"""
+    grp = ar
+    for key in path.split("/"):
+        if key not in grp:
+            return False
+        grp = grp[key]
+    return True
+
+
 def band_plot(ax, coqui_h5, iteration=-1,
-              fontsize=16, label="", verbal=True, calc_type="mbpt",
+              fontsize=16, label="", verbal=True, 
+              calc_type="mbpt", qp_source="mesh",
               **kwargs):
     """
     Plot quasiparticle band structure from a CoQuí checkpoint onto a Matplotlib axes.
 
-    Reads Wannier-interpolated quasiparticle energies from ``scf/iter{N}`` in the
-    HDF5 checkpoint, shifts them by the chemical potential, converts to eV, and
-    plots each band as a line with high-symmetry k-point labels on the x-axis.
+    Reads quasiparticle energies along a Wannier-interpolated k-path from
+    ``scf/iter{N}`` (or ``embed/iter{N}``) in the HDF5 checkpoint, shifts them by the
+    chemical potential, converts to eV, and plots each band as a line with
+    high-symmetry k-point labels on the x-axis.
+
+    A Dyson solution reaches a band structure in one of two orders, and the checkpoint
+    path names that order, outer step first (``qp_source`` selects one):
+
+    - ``"mesh"``: the quasiparticle approximation on the k-points of the calculation,
+      then Wannier interpolation of the static quasiparticle Hamiltonian. Read from
+      ``iter{N}/qp_approx/wannier_inter/``, written by 
+      ``linearized_qp_from_checkpoint(source="mesh")``. 
+      An iteration that holds its own quasiparticle Hamiltonian (quasiparticle
+      self-consistency, or the mean-field starting point) is interpolated as is, and is
+      read from ``iter{N}/wannier_inter/``.
+    - ``"interpolated"``: Wannier interpolation of the dynamic solution, then the
+      linearized quasiparticle approximation in the Wannier space. Read from
+      ``iter{N}/wannier_inter/qp_approx/``, written by
+      ``linearized_qp_from_checkpoint(source="interpolated")``.
+
+    The two are different approximations and agree only as far as the Wannier space
+    captures the self-energy.
 
     Parameters
     ----------
@@ -54,6 +84,9 @@ def band_plot(ax, coqui_h5, iteration=-1,
         If ``True`` (default), prints a summary of what was read (k-points, bands, μ).
     calc_type : str, optional
         Calculation type. ``"mbpt"`` (default) reads from the ``scf`` group; ``"dmft"`` reads from the ``embed`` group.
+    qp_source : str, optional
+        ``"mesh"`` (default) or ``"interpolated"``: where the quasiparticle
+        approximation was applied
     **kwargs
         Additional keyword arguments forwarded to ``ax.plot`` (e.g. ``color``,
         ``linestyle``, ``linewidth``).
@@ -84,20 +117,40 @@ def band_plot(ax, coqui_h5, iteration=-1,
                          "Acceptable options are 'mbpt' for many-body perturbation theory "
                          "and 'dmft' for dmft embedding results.")
 
+    if qp_source not in ["mesh", "interpolated"]:
+        raise ValueError(f"Unknown qp_source = {qp_source}. \n"
+                         "Acceptable options are 'mesh' (quasiparticle approximation, then "
+                         "interpolation) and 'interpolated' (interpolation, then quasiparticle "
+                         "approximation).")
+
     h5_grp = "scf" if calc_type == "mbpt" else "embed"
     with HDFArchive(coqui_h5, 'r') as ar:
         if iteration == -1:
             iteration = ar[f"{h5_grp}/final_iter"]
+        iter_grp = f"{h5_grp}/iter{iteration}"
 
-        if "qp_approx" in ar[f"{h5_grp}/iter{iteration}"]:
-            qp_grp = ar[f"{h5_grp}/iter{iteration}/qp_approx"]
+        if qp_source == "mesh":
+            # E_ska, mu and the k-path labels all sit in one group
+            if _has_path(ar, f"{iter_grp}/qp_approx/wannier_inter/E_ska"):
+                qp_grp = f"{iter_grp}/qp_approx"
+            elif _has_path(ar, f"{iter_grp}/wannier_inter/E_ska"):
+                qp_grp = iter_grp
+            else:
+                raise KeyError(f"No interpolated quasiparticle bands of {iter_grp} in {coqui_h5} "
+                               "(qp_source = 'mesh'): run band_interpolation first.")
+            mu = ar[f"{qp_grp}/mu"] * Hartree_eV
+            E_ska = ar[f"{qp_grp}/wannier_inter/E_ska"] * Hartree_eV
+            label_idx = ar[f"{qp_grp}/wannier_inter/kpt_label_idx"]
+            kpt_label_str = ar[f"{qp_grp}/wannier_inter/kpt_labels"]
         else:
-            qp_grp = ar[f"{h5_grp}/iter{iteration}"]
-
-        mu = qp_grp["mu"] * Hartree_eV
-        E_ska = qp_grp["wannier_inter/E_ska"] * Hartree_eV
-        label_idx = qp_grp["wannier_inter/kpt_label_idx"]
-        kpt_label_str = qp_grp["wannier_inter/kpt_labels"]
+            if not _has_path(ar, f"{iter_grp}/wannier_inter/qp_approx/E_ska"):
+                raise KeyError(f"No quasiparticle bands of the interpolated solution of "
+                               f"{iter_grp} in {coqui_h5} (qp_source = 'interpolated'): run "
+                               "linearized_qp_from_checkpoint(source='interpolated') first.")
+            mu = ar[f"{iter_grp}/wannier_inter/qp_approx/mu"] * Hartree_eV
+            E_ska = ar[f"{iter_grp}/wannier_inter/qp_approx/E_ska"] * Hartree_eV
+            label_idx = ar[f"{iter_grp}/wannier_inter/kpt_label_idx"]
+            kpt_label_str = ar[f"{iter_grp}/wannier_inter/kpt_labels"]
 
     kpt_label = [letter if letter != 'G' else r'$\Gamma$' for letter in kpt_label_str]
 
@@ -111,6 +164,7 @@ def band_plot(ax, coqui_h5, iteration=-1,
             app_log(1, "  Iteration          = {} (i.e. DFT bands)".format(iteration))
         else:
             app_log(1, "  Iteration          = {}".format(iteration))
+        app_log(1, "  QP source          = {}".format(qp_source))
         app_log(1, "  Number of spins    = {}".format(ns))
         app_log(1, "  Number of k-points = {}".format(nkpts))
         app_log(1, "  Number of bands    = {}".format(nbnd))
@@ -125,7 +179,6 @@ def band_plot(ax, coqui_h5, iteration=-1,
     ax.tick_params(axis='both', which='major', labelsize=fontsize)
     ax.set_ylabel('$\\epsilon - \\mu$ (eV)', fontsize=fontsize)
     ax.set_xlim(0, nkpts)
-    ax.legend(fontsize=fontsize)
 
 
 def spectral_plot(ax, coqui_h5, calc_type, iteration=-1, orb_list=None,
