@@ -633,6 +633,11 @@ namespace methods {
                      "This implies that your previous \"downfold_1e\" iteration does not finish properly. Please check!",
                      gw_iter, weiss_f_iter);
         auto qp_grp = iter_grp.open_group("qp_approx");
+        utils::check(qp_grp.has_dataset("MO_skia"),
+                     "embed_t::dmft_embed_qp_impl: \"scf/iter{}/qp_approx\" no longer holds the "
+                     "QPGW results of \"downfold_1e\" (MO_skia is missing): a quasiparticle "
+                     "post-processing run (band_interpolation, lqp_from_dyson_scf) has replaced "
+                     "the group since. Rerun \"downfold_1e\".", gw_iter);
         nda::h5_read(qp_grp, "E_ska", E_ska);
         nda::h5_read(qp_grp, "MO_skia", MO_skia);
         if (qp_grp.has_dataset("Vcorr_skab"))

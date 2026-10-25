@@ -32,12 +32,13 @@ from .post_proc import (
   minipole,
 )
 from .linearized_qp import (
-  linearized_qp_from_arrays,
-  linearized_qp_from_checkpoint,
+  lqp_from_dyson_scf,
+  lqp_from_spectral_interpolation,
+  lqp_from_arrays,
   LinearizedQPResult,
   LinearizedQPLadder,
 )
-from .plot_utils import band_plot, spectral_plot
+from .plot_utils import band_plot, band_plot_from_spectral_interpolation, spectral_plot
 
 _TRIQS_AVAILABLE = False
 _TRIQS_IMPORT_ERROR = None
@@ -69,9 +70,9 @@ __all__ = [
   "band_interpolation", "spectral_interpolation",
   "local_dos", "unfold_bz", "dump_vxc", "dump_hartree",
   "pade", "aaa_adapol_on_mesh", "aaa_adapol", "aaa_adapol_imag", "minipole",
-  "linearized_qp_from_arrays",
-  "linearized_qp_from_checkpoint", "LinearizedQPResult", "LinearizedQPLadder",
-  "band_plot", "spectral_plot",
+  "lqp_from_dyson_scf", "lqp_from_spectral_interpolation",
+  "lqp_from_arrays", "LinearizedQPResult", "LinearizedQPLadder",
+  "band_plot", "band_plot_from_spectral_interpolation", "spectral_plot",
 ]
 
 if _TRIQS_AVAILABLE:

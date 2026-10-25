@@ -848,17 +848,14 @@ namespace methods {
     if (_context.comm.root()) {
       h5::file file(filename, 'a');
       auto iter_grp = h5::group(file).open_group(grp_name+"/iter"+std::to_string(iter));
-      auto qp_grp = iter_grp.has_subgroup("qp_approx") ?
-                    iter_grp.open_group("qp_approx") : iter_grp.create_group("qp_approx");
-      // an earlier lqp run's results would otherwise sit next to these energies (unlink of an
-      // absent key is a no-op)
-      for (std::string key : {"Zqp_ska", "ac_solver", "lqp"}) qp_grp.unlink(key);
+      // qp_approx/ holds one QP result and belongs to its writer: it is created fresh
+      // (create_group replaces an existing group), so nothing of an earlier run survives
+      auto qp_grp = iter_grp.create_group("qp_approx");
       nda::h5_write(qp_grp, "E_ska",    E_qp_ska,           false);
       nda::h5_write(qp_grp, "Heff_skij", sHeff_skij.local(), false);
       h5::h5_write(qp_grp, "mu", mu);
       h5::h5_write(qp_grp, "scheme", std::string("qp_eqn"));
-      // the controls this result was computed with, compared by qp_approx_reusable; a fresh group
-      // (create_group replaces an existing one)
+      // the controls this result was computed with, compared by qp_approx_reusable
       auto pg = qp_grp.create_group("qp_eqn");
       h5::h5_write(pg, "solver",  params.solver);
       h5::h5_write(pg, "ac_alg",  params.ac_alg);
@@ -981,17 +978,12 @@ namespace methods {
     if (mpi.comm.root()) {
       h5::file file(filename, 'a');
       auto iter_grp = h5::group(file).open_group(iter_path);
-      // top: energies and Heff; diag: diagnostics and controls. The same layout under the input's
-      // group in both cases: top = <in>/qp_approx/, diag = <in>/qp_approx/lqp/. qp_approx/ may be
-      // shared (wannier_inter/, downfold_1e's datasets) and is kept; lqp/ belongs to this writer
-      // alone and is created fresh (create_group replaces an existing one, dropping a stale
-      // ladder/). An earlier qp_eqn run's controls would otherwise describe these energies.
-      // (No default-constructed h5::group: it creates an in-memory h5::file.)
+      // top = <in>/qp_approx/ (energies, Heff), diag = <in>/qp_approx/lqp/ (diagnostics, controls).
+      // qp_approx/ holds one QP result and belongs to its writer: it is created fresh
+      // (create_group replaces an existing group), so nothing of an earlier run survives.
       auto in_grp = iter_grp.open_group(in_sub);
-      auto top  = (in_grp.has_subgroup("qp_approx"))? in_grp.open_group("qp_approx")
-                                                    : in_grp.create_group("qp_approx");
+      auto top  = in_grp.create_group("qp_approx");
       auto diagnositc_grp = top.create_group("lqp");
-      for (std::string key : {"ac_solver", "qp_eqn"}) top.unlink(key);
       nda::h5_write(top, "E_ska", res.E_ska, false);
       nda::h5_write(top, Heff_key, res.Hqp_skab.local(), false);
       nda::h5_write(top, "Zqp_ska", res.Zqp_ska, false);

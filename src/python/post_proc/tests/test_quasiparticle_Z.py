@@ -20,9 +20,9 @@ limitations under the License.
 
 """
 Unit tests for the Python layer of the linearized quasiparticle approximation
-(post_proc.linearized_qp): how linearized_qp_from_arrays and
-linearized_qp_from_checkpoint hand their arguments, arrays and IAFT to the C++ kernel and
-which result they return or write. 
+(post_proc.linearized_qp): how lqp_from_arrays, lqp_from_dyson_scf and
+lqp_from_spectral_interpolation hand their arguments, arrays and IAFT to the C++
+kernel and which result they return or write.
 """
 
 from mpi4py import MPI
@@ -34,8 +34,9 @@ from h5 import HDFArchive
 from coqui import IAFT
 from coqui.utils.tests.test_coqui_env import mpi
 from coqui.post_proc import (
-    linearized_qp_from_arrays,
-    linearized_qp_from_checkpoint,
+    lqp_from_arrays,
+    lqp_from_dyson_scf,
+    lqp_from_spectral_interpolation,
     LinearizedQPResult,
     LinearizedQPLadder,
 )
@@ -59,16 +60,16 @@ def _random_hermitian(norb, seed):
 
 
 # ---------------------------------------------------------------------------
-# linearized_qp_from_arrays
+# lqp_from_arrays
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("basis", ["dlr", "ir"])
-def test_linearized_qp_from_arrays(mpi, basis):
-    """linearized_qp_from_arrays hands its arrays, mu, IAFT and fit controls to the kernel
+def test_lqp_from_arrays(mpi, basis):
+    """lqp_from_arrays hands its arrays, mu, IAFT and fit controls to the kernel
     and returns the single fit or the ladder it asked for.
 
     Setup: a scalar-pole Sigma (e = 7, g = 3) on a 4x4 real-symmetric F, mu = 0.3, sampled with
-    the Python IAFT of the parametrized basis. 
+    the Python IAFT of the parametrized basis.
 
     Cases:
       1. Single fit at n_fit = 6.
@@ -95,8 +96,9 @@ def test_linearized_qp_from_arrays(mpi, basis):
     z = 1.0 / (1.0 + g / e**2)
 
     # 1.
-    res = linearized_qp_from_arrays(mpi, F.astype(np.complex128), Sigma_tsk, mu, iaft,
-                                    converge=False, n_fit=6, fit_order=-1)
+    res = lqp_from_arrays(mpi=mpi, F_sk=F.astype(np.complex128), Sigma_tsk=Sigma_tsk, mu=mu,
+                          iaft=iaft, converge=False, n_fit=6, n_fit_max=20, fit_order=-1,
+                          symmetric_window=True, fit_resid_tol=1e-8)
     assert isinstance(res, LinearizedQPResult)
     assert res.n_fit == 6 and res.fit_order == 11
     np.testing.assert_allclose(res.Zqp_ska[0, 0], np.full(norb, z), atol=1e-10)
@@ -105,19 +107,22 @@ def test_linearized_qp_from_arrays(mpi, basis):
     np.testing.assert_allclose(np.sort(res.E_ska[0, 0]), np.sort(E_exact), atol=1e-9)
 
     # 2.
-    lad = linearized_qp_from_arrays(mpi, F.astype(np.complex128), Sigma_tsk, mu, iaft,
-                                    converge=True, n_fit_max=4)
+    lad = lqp_from_arrays(mpi=mpi, F_sk=F.astype(np.complex128), Sigma_tsk=Sigma_tsk, mu=mu,
+                          iaft=iaft, converge=True, n_fit=6, n_fit_max=4, fit_order=-1,
+                          symmetric_window=True, fit_resid_tol=1e-8)
     assert isinstance(lad, LinearizedQPLadder) and isinstance(lad.last, LinearizedQPResult)
     assert lad.n_fit_cap == 4 and lad.last.n_fit == 4
 
     # 3.
-    res_fortran = linearized_qp_from_arrays(mpi, np.asfortranarray(F.astype(np.complex128)),
-                                            np.asfortranarray(Sigma_tsk), mu, iaft,
-                                            converge=False, n_fit=6, fit_order=-1)
+    res_fortran = lqp_from_arrays(mpi=mpi, F_sk=np.asfortranarray(F.astype(np.complex128)),
+                                  Sigma_tsk=np.asfortranarray(Sigma_tsk), mu=mu, iaft=iaft,
+                                  converge=False, n_fit=6, n_fit_max=20, fit_order=-1,
+                                  symmetric_window=True, fit_resid_tol=1e-8)
     np.testing.assert_allclose(res_fortran.E_ska, res.E_ska, atol=1e-12)
     np.testing.assert_allclose(res_fortran.Z_skab, res.Z_skab, atol=1e-12)
-    res_real = linearized_qp_from_arrays(mpi, F, Sigma_tsk, mu, iaft,
-                                         converge=False, n_fit=6, fit_order=-1)
+    res_real = lqp_from_arrays(mpi=mpi, F_sk=F, Sigma_tsk=Sigma_tsk, mu=mu, iaft=iaft,
+                               converge=False, n_fit=6, n_fit_max=20, fit_order=-1,
+                               symmetric_window=True, fit_resid_tol=1e-8)
     np.testing.assert_allclose(res_real.E_ska, res.E_ska, atol=1e-12)
 
     # 4.
@@ -125,12 +130,13 @@ def test_linearized_qp_from_arrays(mpi, basis):
         custom = IAFT(beta=100.0, wmax=40.0, prec="custom", eps=1e-12, basis="ir", verbose=False)
         Sigma_tsk_custom = _scalar_pole_sigma_tau(custom, norb, e, g)[:, None, None]
         with pytest.raises(NotImplementedError):
-            linearized_qp_from_arrays(mpi, F, Sigma_tsk_custom, mu, custom, converge=False,
-                                      n_fit=6)
+            lqp_from_arrays(mpi=mpi, F_sk=F, Sigma_tsk=Sigma_tsk_custom, mu=mu, iaft=custom,
+                            converge=False, n_fit=6, n_fit_max=20, fit_order=-1,
+                            symmetric_window=True, fit_resid_tol=1e-8)
 
 
 # ---------------------------------------------------------------------------
-# linearized_qp_from_checkpoint
+# lqp_from_dyson_scf, lqp_from_spectral_interpolation
 # ---------------------------------------------------------------------------
 
 def _write_synthetic_checkpoint(path, iaft):
@@ -171,21 +177,20 @@ def _read_datasets(path, group, keys):
         return {key: (grp[key] if key in grp else None) for key in keys}
 
 
-def test_linearized_qp_from_checkpoint(mpi, tmp_path):
-    """linearized_qp_from_checkpoint hands its arguments to the C++ writer unchanged and
-    returns None.
+def test_lqp_from_dyson_scf(mpi, tmp_path):
+    """lqp_from_dyson_scf hands its arguments to the C++ writer unchanged, solves on
+    the k-points of the SCF solution and returns None.
 
-    Setup: one synthetic checkpoint with diagonal scalar poles. 
+    Setup: one synthetic checkpoint with diagonal scalar poles.
 
-    Cases (2-3 continue on the file left by the case before, so they run in order):
-      1. source = "mesh", single fit with n_fit = 5, fit_order = 7, fit_resid_tol = 1e-7.
+    Cases (2 continues on the file left by case 1, so they run in order):
+      1. Single fit with n_fit = 5, fit_order = 7, fit_resid_tol = 1e-7.
          - Returns None.
          - qp_approx/lqp/ stores exactly these controls.
-         - qp_approx/Zqp_ska is the analytic Z.
-      2. source = "mesh", converge=True with n_fit_max = 4.
+         - qp_approx/Zqp_ska is the analytic Z, to 1e-9: the poles (e = 10, 12) lie far above
+           the fit window, the measured error ~5e-12).
+      2. converge=True with n_fit_max = 4.
          - qp_approx/lqp/ladder/ stores n_fit_cap = 4.
-      3. source = "interpolated".
-         - The result is in wannier_inter/qp_approx/, with the analytic Z.
     """
     comm = MPI.COMM_WORLD
     chkpt = os.path.join(comm.bcast(str(tmp_path), root=0), "synthetic.mbpt.h5")
@@ -195,27 +200,52 @@ def test_linearized_qp_from_checkpoint(mpi, tmp_path):
     comm.Barrier()
 
     # 1.
-    linearized_qp_from_checkpoint(mpi, chkpt, grp_name="scf", iteration=-1, source="mesh",
-                                  converge=False, n_fit=5, fit_order=7,
-                                  symmetric_window=True, fit_resid_tol=1e-7)
+    lqp_from_dyson_scf(mpi, chkpt, grp_name="scf", iteration=-1, converge=False,
+                       n_fit=5, n_fit_max=20, fit_order=7, symmetric_window=True,
+                       fit_resid_tol=1e-7)
     controls = _read_datasets(chkpt, "scf/iter0/qp_approx/lqp",
                               ("n_fit", "fit_order", "symmetric_window", "fit_resid_tol"))
     assert controls["n_fit"] == 5 and controls["fit_order"] == 7
     assert controls["symmetric_window"] and controls["fit_resid_tol"] == 1e-7
     Zqp = _read_datasets(chkpt, "scf/iter0/qp_approx", ("Zqp_ska",))["Zqp_ska"]
-    np.testing.assert_allclose(np.sort(Zqp[0, 0]), np.sort(Z_exact), rtol=1e-5)
+    np.testing.assert_allclose(np.sort(Zqp[0, 0]), np.sort(Z_exact), rtol=1e-9)
     comm.Barrier()
 
     # 2.
-    linearized_qp_from_checkpoint(mpi, chkpt, grp_name="scf", iteration=-1, source="mesh",
-                                  converge=True, n_fit_max=4)
+    lqp_from_dyson_scf(mpi, chkpt, grp_name="scf", iteration=-1, converge=True,
+                       n_fit=6, n_fit_max=4, fit_order=-1, symmetric_window=True,
+                       fit_resid_tol=1e-8)
     lad = _read_datasets(chkpt, "scf/iter0/qp_approx/lqp/ladder", ("n_fit_cap",))
     assert lad["n_fit_cap"] == 4
     comm.Barrier()
 
-    # 3.
-    linearized_qp_from_checkpoint(mpi, chkpt, grp_name="scf", iteration=-1, source="interpolated",
-                                  converge=False)
+
+def test_lqp_from_spectral_interpolation(mpi, tmp_path):
+    """lqp_from_spectral_interpolation solves on the Wannier-interpolated solution and
+    writes the result under wannier_inter/.
+
+    Setup: one synthetic checkpoint with diagonal scalar poles, whose wannier_inter/ holds the
+    same self-energy with H0 folded into F.
+
+    Cases:
+      1. Single fit at n_fit = 6.
+         - wannier_inter/qp_approx/Zqp_ska is the analytic Z, to 1e-9 as in
+           test_lqp_from_dyson_scf.
+         - qp_approx/ of the SCF k-points is not written.
+    """
+    comm = MPI.COMM_WORLD
+    chkpt = os.path.join(comm.bcast(str(tmp_path), root=0), "synthetic.mbpt.h5")
+    iaft = IAFT(beta=100.0, wmax=40.0, prec="high", basis="dlr", verbose=False)
+    Z_exact = _write_synthetic_checkpoint(chkpt, iaft) if comm.rank == 0 else None
+    Z_exact = comm.bcast(Z_exact, root=0)
+    comm.Barrier()
+
+    # 1.
+    lqp_from_spectral_interpolation(mpi, chkpt, grp_name="scf", iteration=-1,
+                                    converge=False, n_fit=6, n_fit_max=20,
+                                    fit_order=-1, symmetric_window=True,
+                                    fit_resid_tol=1e-8)
     Zqp = _read_datasets(chkpt, "scf/iter0/wannier_inter/qp_approx", ("Zqp_ska",))["Zqp_ska"]
-    np.testing.assert_allclose(np.sort(Zqp[0, 0]), np.sort(Z_exact), rtol=1e-5)
+    np.testing.assert_allclose(np.sort(Zqp[0, 0]), np.sort(Z_exact), rtol=1e-9)
+    assert _read_datasets(chkpt, "scf/iter0", ("qp_approx",))["qp_approx"] is None
     comm.Barrier()

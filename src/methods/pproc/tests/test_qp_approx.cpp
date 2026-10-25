@@ -81,7 +81,7 @@ namespace bdft_tests {
 
   TEST_CASE("pproc_linearized_qp_checkpoint", "[methods][mbpt][pproc][lqp]") {
     // linearized_qp_checkpoint writes the result under the group it read from, 
-    // and keeps nothing of an earlier run in lqp/.
+    // and keeps nothing of an earlier run in qp_approx/.
     //
     // Setup: one G0W0 iteration of LiH. 
     // 
@@ -94,8 +94,9 @@ namespace bdft_tests {
     //      - qp_approx/ holds the ladder's last fit; lqp/n_fit and lqp/ladder/n_accepted match.
     //   3. Mesh, single fit after the ladder.
     //      - The stale ladder/ is gone.
-    //   4. Mesh, single fit after a qp_eqn run.
-    //      - The qp_eqn leftovers (qp_approx/qp_eqn/, ac_solver), written by hand, are gone.
+    //   4. Mesh, single fit after a qp_eqn band_interpolation run.
+    //      - The leftovers, written by hand, are gone: qp_approx/qp_eqn/ and ac_solver, and the
+    //        bands interpolated from the previous Heff_skij, qp_approx/wannier_inter/.
     //   5. Kpath, the same arrays placed under wannier_inter/.
     //      - wannier_inter/qp_approx/ holds the same result in the same layout.
     using utils::ARRAY_EQUAL;
@@ -177,12 +178,13 @@ namespace bdft_tests {
     }
     mpi_context->comm.barrier();
 
-    // 4. a qp_eqn run's leftovers should be overwritten. 
+    // 4. a qp_eqn band_interpolation run's leftovers should be overwritten.
     if (mpi_context->comm.root()) {
       h5::file file(fname, 'a');
       auto qg = h5::group(file).open_group("scf/iter1/qp_approx");
       h5::h5_write(qg.create_group("qp_eqn"), "solver", std::string("sc"));
       h5::h5_write(qg, "ac_solver", std::string("sc"));
+      nda::h5_write(qg.create_group("wannier_inter"), "E_ska", res.E_ska, false);
     }
     mpi_context->comm.barrier();
     pproc_t::linearized_qp_checkpoint(*mpi_context, fname, "mesh", "scf", 1, params, 0);
@@ -191,6 +193,7 @@ namespace bdft_tests {
       auto qg = h5::group(file).open_group("scf/iter1/qp_approx");
       CHECK(not qg.has_subgroup("qp_eqn"));
       CHECK(not qg.has_dataset("ac_solver"));
+      CHECK(not qg.has_subgroup("wannier_inter"));
     }
     mpi_context->comm.barrier();
 
@@ -220,7 +223,7 @@ namespace bdft_tests {
     // qp_approx_from_dyson with qp_approx = "qp_eqn" replaces an earlier lqp result,
     // stores the controls it ran with, and gives the correct orbital energies
     //
-    // Setup: one G0W0 iteration of LiH with an lqp result already written. 
+    // Setup: one G0W0 iteration of LiH on an IR mesh, with an lqp result already written.
     //
     // Cases:
     //   1. Layout.
@@ -229,10 +232,10 @@ namespace bdft_tests {
     //      - The lqp result (Zqp_ska, lqp/) is gone.
     //   2. Energies.
     //      - E_ska of the four lowest bands at the first IBZ k-point matches values pinned on
-    //        2026-10-21.
+    //        2026-10-24.
     using utils::VALUE_EQUAL;
     auto& mpi_context = utils::make_unit_test_mpi_context();
-    imag_axes_ft::IAFT ft(100.0, 7.0, imag_axes_ft::dlr_basis);
+    imag_axes_ft::IAFT ft(100.0, 7.0, imag_axes_ft::ir_basis, "high");
     std::string prefix = "pproc_qp_eqn", fname = prefix + ".mbpt.h5";
     write_g0w0_checkpoint(mpi_context, ft, prefix);
     lqp::params_t const lqp_params{.n_fit = 4, .fit_order = -1, .symmetric_window = true,
@@ -267,12 +270,12 @@ namespace bdft_tests {
       CHECK(eta == 1e-4); CHECK(tol == 1e-8);
       CHECK(not qg.has_dataset("Zqp_ska"));
       CHECK(not qg.has_subgroup("lqp"));
-      // 2. pinned 2026-10-21; the same to ~2e-15 on 1, 2 and 16 ranks. The tolerance is 100x
+      // 2. pinned 2026-10-24; the same to ~2e-15 on 1, 2 and 4 ranks. The tolerance is 100x
       //    qp_eqn.tol: bisection stops at the first midpoint with |residual| <= tol, so a
       //    perturbation far below it may stop at a neighbouring midpoint, ~tol away; a broken
       //    input or continuation moves the energies by >= 1e-4 Ha.
-      std::array<double, 4> const E_pinned = {-1.955244224998229e+00, -3.437622520203171e-01,
-                                               7.688893627651769e-01,  8.089195293784360e-01};
+      std::array<double, 4> const E_pinned = {-1.955088743564202e+00, -3.438826725760254e-01,
+                                               7.690725924379263e-01,  8.093076551998136e-01};
       for (long a = 0; a < 4; ++a) VALUE_EQUAL(E(0, 0, a), E_pinned[a], 1e-6, 1e-6);
     }
     remove_checkpoint(mpi_context, fname);

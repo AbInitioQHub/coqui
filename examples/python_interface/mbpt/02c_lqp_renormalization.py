@@ -17,7 +17,7 @@ import os
 import numpy as np
 from h5 import HDFArchive
 import coqui
-from coqui.post_proc import linearized_qp_from_checkpoint
+from coqui.post_proc import lqp_from_spectral_interpolation
 
 import matplotlib.pyplot as plt
 plt.style.use("seaborn-v0_8-deep")
@@ -33,7 +33,7 @@ if not os.path.isfile(coqui_h5):
 # Linearized QP of the Wannier-interpolated solution in scf/iter1/wannier_inter/. The fit window
 # is chosen automatically: it grows until the fit stops being reliable, and the last reliable
 # fit is kept. Results are written to scf/iter1/wannier_inter/qp_approx/.
-linearized_qp_from_checkpoint(mpi, coqui_h5, grp_name="scf", iteration=1, source="interpolated")
+lqp_from_spectral_interpolation(mpi, coqui_h5, grp_name="scf", iteration=1)
 
 if mpi.root():
     with HDFArchive(coqui_h5, "r") as ar:
@@ -50,8 +50,9 @@ if mpi.root():
 
     # top: quasiparticle bands on top of the G0W0 spectral function A(k, w)
     coqui.post_proc.spectral_plot(ax_bands, coqui_h5=coqui_h5, iteration=1, calc_type="mbpt")
-    coqui.post_proc.band_plot(ax_bands, coqui_h5=coqui_h5, iteration=1, qp_source="interpolated",
-                              color="tab:red", label="lqp")
+    coqui.post_proc.band_plot_from_spectral_interpolation(ax_bands, coqui_h5=coqui_h5,
+                                                          iteration=1, color="tab:red",
+                                                          label="lqp")
     ax_bands.axhline(y=0, color="black", linestyle="-", linewidth=2.0, alpha=0.5)
     ax_bands.set_ylim(-4, 4)
     ax_bands.legend(loc=4, fontsize=12)
@@ -59,7 +60,7 @@ if mpi.root():
     # bottom: pole weights of the quasiparticle bands, in the order of their energies
     for band in range(nbnd):
         ax_weights.plot(kpts, Zqp_ska[0, :, band], label=f"band {band + 1}")
-    ax_weights.set_xlim(0, nkpts)
+    ax_weights.set_xlim(0, nkpts - 1)
     ax_weights.set_xticks(*ticks)
     ax_weights.set_ylabel(r"pole weight $\langle v|Z|v \rangle$", fontsize=16)
     ax_weights.tick_params(axis="both", which="major", labelsize=16)

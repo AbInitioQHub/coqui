@@ -12,7 +12,7 @@
 - Imaginary-time and Matsubara meshes to h5 checkpoint, written by both the C++ and the Python IAFT. (#51)
 - `CPPDLR` CMake variable to configure against a local cppdlr source tree instead of the one fetched by `FetchContent`. (#51)
 - Linearized quasiparticle self-consistent GW (LQSGW), `run_lqsgw` in the Python API.
-- Linearized quasiparticle approximation of a Dyson-SCF solution as post-processing: `qp_approx = "lqp"` in `band_interpolation`, and `linearized_qp_from_checkpoint` (on the SCF k-points or on Wannier-interpolated ones) and `linearized_qp_from_arrays` in the Python API, giving the quasiparticle Hamiltonian, the renormalization factor `Z` and the pole weights.
+- Linearized quasiparticle approximation of a Dyson-SCF solution as post-processing.
 
 ### Improved
 
@@ -31,7 +31,7 @@
 - Wrong Wannier projectors from `wannier90` library mode when the outer disentanglement window excludes the lowest of the KS bands at some k-point.
 - Hang in `mlwf_h5_from_wannier90_output` with more than one MPI rank when no `.eig` file is present.
 - Wannier90 output files from `wannier90` library mode silently written to a truncated path outside `outdir` when `outdir/prefix` exceeds 50 characters; library mode now aborts instead.
-- Fixe DMFT unit test `test_extract_h0_and_delta_with_real_downfold_gloc` which failing with more than one MPI rank.
+- DMFT unit test `test_extract_h0_and_delta_with_real_downfold_gloc` failing with more than one MPI rank.
 
 ### Default Value Updates
 
