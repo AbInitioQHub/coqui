@@ -27,15 +27,27 @@ from h5 import HDFArchive
 from coqui import app_log, app_warning
 
 
+def _has_path(ar, path):
+    """Whether ``path`` exists in the archive"""
+    grp = ar
+    for key in path.split("/"):
+        if key not in grp:
+            return False
+        grp = grp[key]
+    return True
+
+
 def band_plot(ax, coqui_h5, iteration=-1,
               fontsize=16, label="", verbal=True, calc_type="mbpt",
               **kwargs):
     """
-    Plot quasiparticle band structure from a CoQuí checkpoint onto a Matplotlib axes.
+    Plot the quasiparticle band structure written by ``band_interpolation`` onto a Matplotlib
+    axes.
 
-    Reads Wannier-interpolated quasiparticle energies from ``scf/iter{N}`` in the
-    HDF5 checkpoint, shifts them by the chemical potential, converts to eV, and
-    plots each band as a line with high-symmetry k-point labels on the x-axis.
+    Plots ``E_ska - mu`` (eV) along the k-path of ``band_interpolation``: for a Dyson-SCF
+    iteration the bands of its ``qp_approx`` setting, for a quasiparticle self-consistent
+    iteration or the mean field the iteration's own. For the bands of
+    ``lqp_from_spectral_interpolation``, use ``band_plot_from_spectral_interpolation``.
 
     Parameters
     ----------
@@ -49,11 +61,12 @@ def band_plot(ax, coqui_h5, iteration=-1,
     fontsize : int, optional
         Font size for axis labels and tick labels. Default ``16``.
     label : str, optional
-        Legend label for the plotted bands. Default ``""``.
+        Legend label for the plotted bands. Default ``""``. ``band_plot`` does not draw the
+        legend: call ``ax.legend()`` once all curves are on the axes.
     verbal : bool, optional
         If ``True`` (default), prints a summary of what was read (k-points, bands, μ).
     calc_type : str, optional
-        Calculation type. ``"mbpt"`` (default) reads from the ``scf`` group; ``"dmft"`` reads from the ``embed`` group.
+        ``"mbpt"`` (default) reads the ``scf`` group, ``"dmft"`` the ``embed`` group.
     **kwargs
         Additional keyword arguments forwarded to ``ax.plot`` (e.g. ``color``,
         ``linestyle``, ``linewidth``).
@@ -79,42 +92,108 @@ def band_plot(ax, coqui_h5, iteration=-1,
         plt.tight_layout()
         plt.savefig("bands.png")
     """
+    iter_grp = _iteration_group(coqui_h5, calc_type, iteration)
+    with HDFArchive(coqui_h5, 'r') as ar:
+        # E_ska, mu and the k-path labels all sit in one group
+        if _has_path(ar, f"{iter_grp}/qp_approx/wannier_inter/E_ska"):
+            qp_grp = f"{iter_grp}/qp_approx"
+        elif _has_path(ar, f"{iter_grp}/wannier_inter/E_ska"):
+            qp_grp = iter_grp
+        else:
+            raise KeyError(f"No interpolated quasiparticle bands of {iter_grp} in {coqui_h5}: "
+                           "run band_interpolation first.")
+        mu = ar[f"{qp_grp}/mu"]
+        E_ska = ar[f"{qp_grp}/wannier_inter/E_ska"]
+        label_idx = ar[f"{qp_grp}/wannier_inter/kpt_label_idx"]
+        kpt_label_str = ar[f"{qp_grp}/wannier_inter/kpt_labels"]
+
+    _draw_bands(ax, E_ska, mu, label_idx, kpt_label_str, coqui_h5, iter_grp, fontsize, label,
+                verbal, **kwargs)
+
+
+def band_plot_from_spectral_interpolation(ax, coqui_h5, iteration=-1,
+                                          fontsize=16, label="", verbal=True,
+                                          calc_type="mbpt", **kwargs):
+    """
+    Plot the quasiparticle band structure written by ``lqp_from_spectral_interpolation`` onto a
+    Matplotlib axes.
+
+    Plots ``E_ska - mu`` (eV) from ``iter{N}/wannier_inter/qp_approx/``, along the k-path of
+    ``spectral_interpolation``. For the bands of ``band_interpolation``, use ``band_plot``.
+
+    Parameters
+    ----------
+    As in ``band_plot``.
+
+    Returns
+    -------
+    None
+
+    Examples
+    --------
+    ::
+
+        import matplotlib.pyplot as plt
+        from coqui.post_proc import (spectral_interpolation, lqp_from_spectral_interpolation,
+                                     spectral_plot, band_plot_from_spectral_interpolation)
+
+        spectral_interpolation(mf, params)
+        lqp_from_spectral_interpolation(mpi, "svo.gw.mbpt.h5", grp_name="scf", iteration=1)
+
+        fig, ax = plt.subplots()
+        spectral_plot(ax, "svo.gw.mbpt.h5", calc_type="mbpt", iteration=1)
+        band_plot_from_spectral_interpolation(ax, "svo.gw.mbpt.h5", iteration=1,
+                                              color="tab:red", label="lqp")
+        ax.legend()
+        plt.savefig("bands.png")
+    """
+    iter_grp = _iteration_group(coqui_h5, calc_type, iteration)
+    with HDFArchive(coqui_h5, 'r') as ar:
+        if not _has_path(ar, f"{iter_grp}/wannier_inter/qp_approx/E_ska"):
+            raise KeyError(f"No quasiparticle bands of the Wannier-interpolated solution of "
+                           f"{iter_grp} in {coqui_h5}: run spectral_interpolation, then "
+                           "lqp_from_spectral_interpolation first.")
+        mu = ar[f"{iter_grp}/wannier_inter/qp_approx/mu"]
+        E_ska = ar[f"{iter_grp}/wannier_inter/qp_approx/E_ska"]
+        label_idx = ar[f"{iter_grp}/wannier_inter/kpt_label_idx"]
+        kpt_label_str = ar[f"{iter_grp}/wannier_inter/kpt_labels"]
+
+    _draw_bands(ax, E_ska, mu, label_idx, kpt_label_str, coqui_h5, iter_grp, fontsize, label,
+                verbal, **kwargs)
+
+
+def _iteration_group(coqui_h5, calc_type, iteration):
+    """``{scf|embed}/iter{N}`` for ``calc_type`` and ``iteration`` (``-1`` = the last one)."""
     if calc_type not in ["mbpt", "dmft"]:
         raise ValueError(f"Unknown calc_type = {calc_type}. \n"
                          "Acceptable options are 'mbpt' for many-body perturbation theory "
                          "and 'dmft' for dmft embedding results.")
-
     h5_grp = "scf" if calc_type == "mbpt" else "embed"
-    with HDFArchive(coqui_h5, 'r') as ar:
-        if iteration == -1:
+    if iteration == -1:
+        with HDFArchive(coqui_h5, 'r') as ar:
             iteration = ar[f"{h5_grp}/final_iter"]
+    return f"{h5_grp}/iter{iteration}"
 
-        if "qp_approx" in ar[f"{h5_grp}/iter{iteration}"]:
-            qp_grp = ar[f"{h5_grp}/iter{iteration}/qp_approx"]
-        else:
-            qp_grp = ar[f"{h5_grp}/iter{iteration}"]
 
-        mu = qp_grp["mu"] * Hartree_eV
-        E_ska = qp_grp["wannier_inter/E_ska"] * Hartree_eV
-        label_idx = qp_grp["wannier_inter/kpt_label_idx"]
-        kpt_label_str = qp_grp["wannier_inter/kpt_labels"]
-
+def _draw_bands(ax, E_ska, mu, label_idx, kpt_label_str, coqui_h5, iter_grp, fontsize, label,
+                verbal, **kwargs):
+    """Plot E_ska - mu [Ha] in eV along the k-path, one line per band, and label the axes."""
     kpt_label = [letter if letter != 'G' else r'$\Gamma$' for letter in kpt_label_str]
 
-    E_ska -= mu
+    E_ska = (E_ska - mu) * Hartree_eV
     ns, nkpts, nbnd = E_ska.shape
     if verbal:
         app_log(1, "  Plotting QP Band Structure")
         app_log(1, "  --------------------------")
         app_log(1, "  CoQui h5           = {}".format(coqui_h5))
-        if iteration == 0:
-            app_log(1, "  Iteration          = {} (i.e. DFT bands)".format(iteration))
+        if iter_grp.endswith("/iter0"):
+            app_log(1, "  Iteration          = {} (i.e. DFT bands)".format(iter_grp))
         else:
-            app_log(1, "  Iteration          = {}".format(iteration))
+            app_log(1, "  Iteration          = {}".format(iter_grp))
         app_log(1, "  Number of spins    = {}".format(ns))
         app_log(1, "  Number of k-points = {}".format(nkpts))
         app_log(1, "  Number of bands    = {}".format(nbnd))
-        app_log(1, f"  Chemical potential = {mu:.3f} (eV)\n")
+        app_log(1, f"  Chemical potential = {mu * Hartree_eV:.3f} (eV)\n")
 
     for i in range(nbnd):
         ax.plot(np.arange(nkpts), E_ska[0, :, i],
@@ -124,8 +203,7 @@ def band_plot(ax, coqui_h5, iteration=-1,
     ax.set_xticks(ticks_pos, kpt_label)
     ax.tick_params(axis='both', which='major', labelsize=fontsize)
     ax.set_ylabel('$\\epsilon - \\mu$ (eV)', fontsize=fontsize)
-    ax.set_xlim(0, nkpts)
-    ax.legend(fontsize=fontsize)
+    ax.set_xlim(0, nkpts - 1)
 
 
 def spectral_plot(ax, coqui_h5, calc_type, iteration=-1, orb_list=None,
@@ -320,7 +398,7 @@ def _spectral_plot(ax, A_wk, w_mesh, kpt_label, label_idx,
 
     ax.tick_params(axis='both', which='major', labelsize=fontsize)
     ax.set_ylabel(r'$\epsilon - \mu$ (eV)', fontsize=fontsize)
-    ax.set_xlim(0, nkpts)
+    ax.set_xlim(0, nkpts - 1)
 
     # Set custom ticks
     ticks_pos = label_idx - 1

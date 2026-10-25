@@ -93,6 +93,19 @@ public:
 
   // TODO Function to read MBPT data
 
+  /**
+   * Write the QP-SCF state of iteration `iter` to CoQui checkpoint: 
+   * 
+   * Dm_skij, Heff_skij, MO_skia, E_ska and mu (chkpt::dump_scf), 
+   * plus Zqp_ska when an LQSGW iteration set sZqp_ska.
+   *
+   * Zqp_ska is computed before damping/DIIS, while E_ska is not. 
+   * So with damping or DIIS their band labels may not match until convergence.
+   * @param iter - [INPUT] iteration number of the QP-SCF solution
+   * @param mu   - [INPUT] chemical potential [Ha] of this iteration
+   */
+  void dump_qpscf(long iter, double mu);
+
   void set_zero_local_polarizabilities();
   bool read_local_polarizabilities(long weiss_b_iter=-1);
   void set_local_polarizabilities(std::map<std::string, nda::array<ComplexType, 5>> local_polarizabilities);
@@ -139,6 +152,9 @@ public:
   std::optional<sArray_t<nda::array_view<ComplexType, 4> > > sMO_skia;
   // QP energies
   std::optional<sArray_t<nda::array_view<ComplexType, 3> > > sE_ska;
+  // LQSGW pole weights <v|Z|v> of the current iteration, in the eigenvalue order of the unmixed
+  // H_QP (pairing with E_ska: see dump_qpscf)
+  std::optional<sArray_t<nda::array_view<double, 3> > > sZqp_ska;
 
   
   /** local quantities in MLWF basis for quantum embedding */

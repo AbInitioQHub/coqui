@@ -78,3 +78,6 @@ cython_debug/
 # IDE files
 .idea/
 *build*/
+
+# Claude Code worktrees (git worktree add ... .claude/worktrees/<name>)
+.claude/worktrees/

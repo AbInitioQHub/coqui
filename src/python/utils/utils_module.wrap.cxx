@@ -18,6 +18,8 @@
 
 using c2py::operator""_a;
 
+// ==================== Wrapped classes =====================
+
 // ==================== enums =====================
 
 // ==================== module classes =====================
@@ -25,44 +27,44 @@ using c2py::operator""_a;
 // ==================== module functions ====================
 
 // app_debug
-static auto const _c2py_fun_0 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_0 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](int level, const std::string &msg) {
       return coqui_py::app_debug(level, msg);
     },
     "level", "msg")};
 
 // app_error
-static auto const _c2py_fun_1 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_1 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](const std::string &msg) { return coqui_py::app_error(msg); }, "msg")};
 
 // app_log
-static auto const _c2py_fun_2 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_2 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](int level, const std::string &msg) {
       return coqui_py::app_log(level, msg);
     },
     "level", "msg")};
 
 // app_warning
-static auto const _c2py_fun_3 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_3 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](const std::string &msg) { return coqui_py::app_warning(msg); }, "msg")};
 
 // set_verbosity
-static auto const _c2py_fun_4 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_4 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](coqui_py::MpiHandler &mpi_handler, int output_level, int debug_level) {
       return coqui_py::set_verbosity(mpi_handler, output_level, debug_level);
     },
     "mpi_handler", "output_level"_a = 2, "debug_level"_a = 0)};
 
 // utest_filename
-static auto const _c2py_fun_5 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_5 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](std::string src) { return coqui_py::utest_filename(src); }, "src")};
 
-static const auto _c2py_doc_0 = _c2py_fun_0.doc(R"DOC()DOC");
-static const auto _c2py_doc_1 = _c2py_fun_1.doc(R"DOC()DOC");
-static const auto _c2py_doc_2 = _c2py_fun_2.doc(R"DOC()DOC");
-static const auto _c2py_doc_3 = _c2py_fun_3.doc(R"DOC()DOC");
-static const auto _c2py_doc_4 =
-    _c2py_fun_4.doc(R"DOC(
+static const auto doc_d_0 = fun_0.doc(R"DOC()DOC");
+static const auto doc_d_1 = fun_1.doc(R"DOC()DOC");
+static const auto doc_d_2 = fun_2.doc(R"DOC()DOC");
+static const auto doc_d_3 = fun_3.doc(R"DOC()DOC");
+static const auto doc_d_4 =
+    fun_4.doc(R"DOC(
 Set verbosity levels for CoQui logging output.
 
 Parameters
@@ -74,25 +76,25 @@ output_level : {par_1}
 debug_level : {par_2}
    - [INPUT] Level of debug verbosity (default: 0)
 )DOC",
-                    {{c2py::python_typename<coqui_py::MpiHandler &>()},
-                     {c2py::python_typename<int>()},
-                     {c2py::python_typename<int>()}});
-static const auto _c2py_doc_5 = _c2py_fun_5.doc(R"DOC()DOC");
+              {{c2py::python_typename<coqui_py::MpiHandler &>()},
+               {c2py::python_typename<int>()},
+               {c2py::python_typename<int>()}});
+static const auto doc_d_5 = fun_5.doc(R"DOC()DOC");
 //--------------------- module function table  -----------------------------
 
 static PyMethodDef module_methods[] = {
-    {"app_debug", (PyCFunction)c2py::pyfkw<_c2py_fun_0>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_0.c_str()},
-    {"app_error", (PyCFunction)c2py::pyfkw<_c2py_fun_1>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_1.c_str()},
-    {"app_log", (PyCFunction)c2py::pyfkw<_c2py_fun_2>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_2.c_str()},
-    {"app_warning", (PyCFunction)c2py::pyfkw<_c2py_fun_3>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_3.c_str()},
-    {"set_verbosity", (PyCFunction)c2py::pyfkw<_c2py_fun_4>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_4.c_str()},
-    {"utest_filename", (PyCFunction)c2py::pyfkw<_c2py_fun_5>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_5.c_str()},
+    {"app_debug", (PyCFunction)c2py::pyfkw<fun_0>, METH_VARARGS | METH_KEYWORDS,
+     doc_d_0.c_str()},
+    {"app_error", (PyCFunction)c2py::pyfkw<fun_1>, METH_VARARGS | METH_KEYWORDS,
+     doc_d_1.c_str()},
+    {"app_log", (PyCFunction)c2py::pyfkw<fun_2>, METH_VARARGS | METH_KEYWORDS,
+     doc_d_2.c_str()},
+    {"app_warning", (PyCFunction)c2py::pyfkw<fun_3>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_3.c_str()},
+    {"set_verbosity", (PyCFunction)c2py::pyfkw<fun_4>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_4.c_str()},
+    {"utest_filename", (PyCFunction)c2py::pyfkw<fun_5>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_5.c_str()},
     {nullptr, nullptr, 0, nullptr} // Sentinel
 };
 
@@ -139,9 +141,6 @@ PyInit_utils_module() {
 
   conv_table[std::type_index(typeid(c2py::py_range)).name()] =
       &c2py::wrap_pytype<c2py::py_range>;
-#define _add_type(T, N) c2py::add_type_object_to_main<T>(N, m, conv_table)
-
-#undef _add_type
 
   return m;
 }

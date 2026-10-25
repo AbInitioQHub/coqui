@@ -22,9 +22,11 @@
 #include <c2py/c2py.hpp>
 #include "IO/app_loggers.h"
 #include "methods/pproc/pproc_drivers.hpp"
+#include "methods/SCF/qp/linearized_qp.hpp"
 
 #include "python/mean_field/mf_module.hpp"
 #include "python/mean_field/mf_module.wrap.hxx"
+#include "python/utils/imag_axes_ft/iaft_module.wrap.hxx"
 
 namespace coqui_py::post_proc {
 
@@ -66,6 +68,40 @@ namespace coqui_py::post_proc {
       methods::pade(std::move(A_iw), std::move(iw_mesh), w_min, w_max, Nw, eta, is_iw_pos_only, Nfit), 
       w_grid
     );
+  }
+
+  methods::lqp::result_t
+  linearized_qp_solve(MpiHandler &mpi,
+                      nda::array_view<ComplexType, 4> F_skab,
+                      nda::array_view<ComplexType, 5> Sigma_tskab,
+                      double mu, const imag_axes_ft::IAFT &ft, int n_fit, int fit_order,
+                      bool symmetric_window, double fit_resid_tol) {
+    methods::lqp::params_t params{.n_fit = n_fit, .fit_order = fit_order,
+                                  .symmetric_window = symmetric_window,
+                                  .fit_resid_tol = fit_resid_tol};
+    return methods::lqp::to_owned(methods::lqp::linearized_qp_solve(
+        *mpi.get_mpi(), F_skab, Sigma_tskab, mu, ft, params, methods::lqp::on_failure_e::abort));
+  }
+
+  methods::lqp::ladder_result_t
+  linearized_qp_ladder(MpiHandler &mpi,
+                       nda::array_view<ComplexType, 4> F_skab,
+                       nda::array_view<ComplexType, 5> Sigma_tskab,
+                       double mu, const imag_axes_ft::IAFT &ft, int n_fit_max,
+                       double fit_resid_tol, bool symmetric_window) {
+    return methods::lqp::to_owned(methods::lqp::linearized_qp_ladder(
+        *mpi.get_mpi(), F_skab, Sigma_tskab, mu, ft, n_fit_max, fit_resid_tol, symmetric_window));
+  }
+
+  void linearized_qp_checkpoint(MpiHandler &mpi, const std::string &coqui_h5,
+                                const std::string &grp_name, long iteration,
+                                const std::string &source, int n_fit, int fit_order,
+                                bool symmetric_window, double fit_resid_tol, int n_fit_max) {
+    methods::lqp::params_t params{.n_fit = n_fit, .fit_order = fit_order,
+                                  .symmetric_window = symmetric_window,
+                                  .fit_resid_tol = fit_resid_tol};
+    methods::pproc_t::linearized_qp_checkpoint(*mpi.get_mpi(), coqui_h5, source, grp_name,
+                                               iteration, params, n_fit_max);
   }
 
 } // coqui_py

@@ -23,6 +23,7 @@ import numpy as np
 from coqui import IAFT
 
 from coqui._lib import post_proc_module as pproc_mod
+from coqui.utils.qp_input import nest_flat_qp_keys, BAND_INTERPOLATION_FLAT_QP_KEYS
 
 
 def band_interpolation(mf, params):
@@ -62,6 +63,38 @@ def band_interpolation(mf, params):
           in the checkpoint (``"scf"`` for standard MBPT, ``"embed"`` for embedding).
         - ``translate_home_cell`` *(bool, optional, default ``False``)* — if ``True``,
           translates Wannier centres to the home unit cell.
+        - ``qp_approx`` *(str, optional, default ``"qp_eqn"``)* — how quasiparticle energies
+          are obtained from a Dyson checkpoint when ``Heff_skij`` is absent. Two schemes are ,
+          are implemented: 
+
+          * ``"qp_eqn"`` — the scalar quasiparticle equation solved on the real axis, fed
+            by an analytic continuation of the *diagonal* ``Σ_aa(iω)`` (Padé). Controlled
+            by the ``qp_eqn`` block below.
+          * ``"lqp"`` — matrix linearization ``Z^1/2 (F + Σ(0) - μ) Z^1/2`` of the full
+            ``Σ(iω)`` around ``ω = 0`` on the Matsubara axis, in the KS basis; also writes
+            the pole weights ``qp_approx/Zqp_ska``. Controlled by the ``lqp`` block below.
+            This is the one-shot form of what ``run_lqsgw`` iterates.
+
+        - ``qp_eqn`` *(dict, optional)* — controls of the quasiparticle-equation schemes
+          (these do not affect ``qp_approx="lqp"``, which reads the ``lqp`` block):
+
+          * ``solver`` *(str, default ``"sc"``)* — ``"sc"``/``"sc_bisection"``
+            (bisection), ``"sc_newton"`` (secant), or ``"linearized"``, the first-order
+            Taylor expansion of the quasiparticle equation around the KS energy.
+          * ``ac_alg`` *(str, default ``"pade"``)*, ``ac_nfit`` *(int, default ``18``)* —
+            the continuation that feeds the equation and how many Matsubara points it
+            fits. ``ac_nfit`` is unrelated to ``lqp.n_fit``.
+          * ``eta`` *(float, default ``π/β``, Hartree)*, ``tol`` *(float, default
+            ``1e-8``)* — broadening and root-finder tolerance.
+
+        - ``lqp`` *(dict, optional)* — controls of the matrix linearization:
+
+          * ``n_fit`` *(int, default ``6``)* — number of lowest positive fermionic
+            Matsubara frequencies in the fit window (``2*n_fit`` symmetric nodes).
+          * ``fit_order`` *(int, default ``2*n_fit - 1``)* — highest power of ``iω``;
+            the default is the exactly-determined (interpolating) fit.
+          * ``fit_resid_tol`` *(float, default ``1e-8``)* — an exactly-determined fit
+            whose relative residual exceeds this has lost conditioning and aborts.
 
         The following keys are only used in **Mf-only mode** (no existing checkpoint):
 
@@ -71,8 +104,11 @@ def band_interpolation(mf, params):
     Returns
     -------
     None
-        Results are written to ``outdir/prefix.mbpt.h5`` under
-        ``{grp_name}/iter{N}/qp_approx/wannier_inter/``.
+        Results are written to ``outdir/prefix.mbpt.h5``: the quasiparticle Hamiltonian on the
+        IBZ mesh under ``{grp_name}/iter{N}/qp_approx/`` and the interpolated bands under
+        ``{grp_name}/iter{N}/qp_approx/wannier_inter/``. An iteration holding its own
+        ``Heff_skij`` (quasiparticle self-consistent, or the mean-field starting point) is
+        interpolated as is, with the bands under ``{grp_name}/iter{N}/wannier_inter/``.
 
     Examples
     --------
@@ -92,6 +128,7 @@ def band_interpolation(mf, params):
             ),
         })
     """
+    params = nest_flat_qp_keys(params, BAND_INTERPOLATION_FLAT_QP_KEYS, "band_interpolation")
     pproc_mod.band_interpolation(mf, json.dumps(params))
 
 
@@ -138,26 +175,12 @@ def spectral_interpolation(mf, params):
         - ``Nfit`` *(int, optional)* — number of Matsubara points for the Padé fit.
           Defaults to half the number of available fermionic frequencies.
 
-        Quasiparticle energy options (computed on the IBZ k-mesh, then Wannier-interpolated):
-
-        - ``qp_type`` *(str, optional, default ``"sc"``)* — QP equation solver.
-          ``"sc"`` (bisection), ``"sc_newton"`` (secant), or ``"linearized"``.
-        - ``qp_eta`` *(float, optional, default ``0.0001``, units: Hartree)* — broadening
-          on the real axis used when evaluating the self-energy in the QP equation.
-        - ``qp_Nfit`` *(int, optional, default ``18``)* — number of Matsubara points for
-          the Padé fit of the self-energy used in the QP equation.
-        - ``qp_tol`` *(float, optional, default ``1e-8``)* — convergence tolerance for
-          the QP root-finding algorithm.
-
     Returns
     -------
     None
         Results are written to ``outdir/prefix.mbpt.h5`` under:
 
         - ``{grp_name}/iter{N}/ac/`` — spectral function A(k,ω) (unchanged).
-        - ``{grp_name}/iter{N}/qp_approx/E_ska`` — QP energies on the IBZ k-mesh.
-        - ``{grp_name}/iter{N}/qp_approx/wannier_inter/E_ska`` — QP band structure
-          interpolated along the k-path.
 
     Examples
     --------

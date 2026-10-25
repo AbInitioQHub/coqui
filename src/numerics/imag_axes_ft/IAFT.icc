@@ -1,4 +1,21 @@
 
+namespace detail {
+  /**
+   * Abort unless `a` is contiguous in memory. Every transform below reshapes its arguments or
+   * reinterprets their data() as a matrix, which nda::reshape checks only in debug builds; on
+   * strided input a release build would silently compute garbage. 
+   * @param a    - [INPUT] argument to check
+   * @param fn   - [INPUT] IAFT function name, for the message
+   * @param name - [INPUT] argument name, for the message
+   */
+  template<nda::MemoryArray A>
+  void check_contiguous(A const& a, std::string_view fn, std::string_view name) {
+    if constexpr (not nda::has_contiguous_layout<A>)
+      utils::check(a.is_contiguous(), "iaft::{}: {} is not contiguous in memory; pass a contiguous "
+                   "array (e.g. a copy made with nda::make_regular).", fn, name);
+  }
+} // detail
+
 
 /**
  * Transformation from imaginary times to Matsubara frequencies
@@ -8,6 +25,8 @@
  */
 template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::tau_to_w(ndaArray_A &&X_ti, ndaArray_B &&X_wi, stats_e stats) const {
+  detail::check_contiguous(X_ti, "tau_to_w", "X_ti");
+  detail::check_contiguous(X_wi, "tau_to_w", "X_wi");
   static_assert(nda::get_rank<ndaArray_A> == nda::get_rank<ndaArray_B>,
                 "iaft::tau_to_w: incorrect rank of array X_wi and X_ti. ");
   size_t nt = (stats == fermion)? nt_f() : nt_b();
@@ -27,6 +46,8 @@ void IAFT::tau_to_w(ndaArray_A &&X_ti, ndaArray_B &&X_wi, stats_e stats) const {
 
 template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::tau_to_w(ndaArray_A &&X_ti, ndaArray_B &&Xw_i, stats_e stats, size_t iw) const {
+  detail::check_contiguous(X_ti, "tau_to_w", "X_ti");
+  detail::check_contiguous(Xw_i, "tau_to_w", "Xw_i");
   static_assert(nda::get_rank<ndaArray_A>-1 == nda::get_rank<ndaArray_B>,
                 "iaft::tau_to_w: incorrect rank of array Xw_i and X_ti. ");
   size_t nt = (stats == fermion)? nt_f() : nt_b();
@@ -47,6 +68,8 @@ void IAFT::tau_to_w(ndaArray_A &&X_ti, ndaArray_B &&Xw_i, stats_e stats, size_t 
  */
 template<nda::MemoryArray Array_tau_t, nda::MemoryArray Array_w_t>
 void IAFT::tau_to_w_PHsym(Array_tau_t &&X_ti_pos, Array_w_t &&X_wi_pos) const {
+  detail::check_contiguous(X_ti_pos, "tau_to_w_PHsym", "X_ti_pos");
+  detail::check_contiguous(X_wi_pos, "tau_to_w_PHsym", "X_wi_pos");
   static_assert(nda::get_rank<Array_tau_t> == nda::get_rank<Array_w_t>,
                 "iaft::tau_to_w_PHsym: incorrect rank of array X_wi and X_ti. ");
 
@@ -80,6 +103,8 @@ void IAFT::tau_to_w_PHsym(Array_tau_t &&X_ti_pos, Array_w_t &&X_wi_pos) const {
  */
 template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::w_to_tau(ndaArray_A &&X_wi, ndaArray_B &&X_ti, stats_e stats) const {
+  detail::check_contiguous(X_wi, "w_to_tau", "X_wi");
+  detail::check_contiguous(X_ti, "w_to_tau", "X_ti");
   static_assert(nda::get_rank<ndaArray_A> == nda::get_rank<ndaArray_B>,
                 "iaft::w_to_tau: incorrect rank of array X_wi and X_ti. ");
   size_t nt = (stats == fermion)? nt_f() : nt_b();
@@ -102,6 +127,8 @@ void IAFT::w_to_tau(ndaArray_A &&X_wi, ndaArray_B &&X_ti, stats_e stats) const {
  */
 template<nda::MemoryArray Array_w_t, nda::MemoryArray Array_tau_t>
 void IAFT::w_to_tau_PHsym(Array_w_t &&X_wi_pos, Array_tau_t &&X_ti_pos) const {
+  detail::check_contiguous(X_wi_pos, "w_to_tau_PHsym", "X_wi_pos");
+  detail::check_contiguous(X_ti_pos, "w_to_tau_PHsym", "X_ti_pos");
   static_assert(nda::get_rank<Array_tau_t> == nda::get_rank<Array_w_t>,
                 "iaft::w_to_tau_PHsym: incorrect rank of array X_wi and X_ti. ");
 
@@ -129,6 +156,8 @@ void IAFT::w_to_tau_PHsym(Array_w_t &&X_wi_pos, Array_tau_t &&X_ti_pos) const {
 
 template<nda::MemoryArray ndaArray_A_t, nda::MemoryArray ndaArray_B_t>
 void IAFT::w_to_tau(ndaArray_A_t &&X_wi, stats_e stats_A, ndaArray_B_t &&X_ti, stats_e stats_B) const {
+  detail::check_contiguous(X_wi, "w_to_tau", "X_wi");
+  detail::check_contiguous(X_ti, "w_to_tau", "X_ti");
   if (stats_A == stats_B) {
     w_to_tau(X_wi, X_ti, stats_A);
   } else {
@@ -162,6 +191,8 @@ void IAFT::w_to_tau(ndaArray_A_t &&X_wi, stats_e stats_A, ndaArray_B_t &&X_ti, s
  */
 template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::w_to_tau_partial(ndaArray_A&& Xw_i, ndaArray_B&& X_ti, stats_e stats, size_t iwn) const {
+  detail::check_contiguous(Xw_i, "w_to_tau_partial", "Xw_i");
+  detail::check_contiguous(X_ti, "w_to_tau_partial", "X_ti");
   static_assert(nda::get_rank<ndaArray_A> == nda::get_rank<ndaArray_B>-1,
       "iaft::w_to_tau_partial: incorrect rank of array Xw_i and X_ti. ");
   size_t nt = (stats == fermion)? nt_f() : nt_b();
@@ -185,6 +216,8 @@ void IAFT::w_to_tau_partial(ndaArray_A&& Xw_i, ndaArray_B&& X_ti, stats_e stats,
  */
 template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::tau_to_tau(ndaArray_A &&A_ti, stats_e A_stats, ndaArray_B &&B_ti) const {
+  detail::check_contiguous(A_ti, "tau_to_tau", "A_ti");
+  detail::check_contiguous(B_ti, "tau_to_tau", "B_ti");
   static_assert(nda::get_rank<ndaArray_A> == nda::get_rank<ndaArray_B>,
                 "iaft::tau_to_tau: incorrect rank of array A_ti and B_ti. ");
   stats_e B_stats = (A_stats == fermion)? boson : fermion;
@@ -202,6 +235,8 @@ void IAFT::tau_to_tau(ndaArray_A &&A_ti, stats_e A_stats, ndaArray_B &&B_ti) con
 
 template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::tau_to_tau(ndaArray_A &&A_ti, stats_e A_stats, ndaArray_B &&Bt_i, size_t it_B) const {
+  detail::check_contiguous(A_ti, "tau_to_tau", "A_ti");
+  detail::check_contiguous(Bt_i, "tau_to_tau", "Bt_i");
   static_assert(nda::get_rank<ndaArray_A>-1 == nda::get_rank<ndaArray_B>,
                 "iaft::tau_to_tau: incorrect rank of array A_ti and Bt_i. ");
   size_t nt_A = (A_stats == fermion)? nt_f() : nt_b();
@@ -224,6 +259,8 @@ void IAFT::tau_to_tau(ndaArray_A &&A_ti, stats_e A_stats, ndaArray_B &&Bt_i, siz
  */
 template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::tau_to_beta(ndaArray_A &&A_ti, ndaArray_B &&A_beta_i) const {
+  detail::check_contiguous(A_ti, "tau_to_beta", "A_ti");
+  detail::check_contiguous(A_beta_i, "tau_to_beta", "A_beta_i");
   static_assert(nda::get_rank<ndaArray_A>-1 == nda::get_rank<ndaArray_B>,
                 "iaft::tau_to_beta: incorrect rank of array A_ti and A_beta_i. ");
   utils::check(A_ti.shape(0) == nt_f(), "iaft::tau_to_beta: incorrect dimension of nt for A_ti.");
@@ -245,6 +282,8 @@ void IAFT::tau_to_beta(ndaArray_A &&A_ti, ndaArray_B &&A_beta_i) const {
  */
 template<nda::MemoryArray ndaArray_A, nda::MemoryArray ndaArray_B>
 void IAFT::tau_to_zero(ndaArray_A &&A_ti, ndaArray_B &&A_zero_i)  const {
+  detail::check_contiguous(A_ti, "tau_to_zero", "A_ti");
+  detail::check_contiguous(A_zero_i, "tau_to_zero", "A_zero_i");
   static_assert(nda::get_rank<ndaArray_A>-1 == nda::get_rank<ndaArray_B>,
                 "iaft::tau_to_zero: incorrect rank of array A_ti and A_beta_i. ");
   utils::check(A_ti.shape(0) == nt_f(), "iaft::tau_to_zero: incorrect dimension of nt for A_ti.");
@@ -260,6 +299,7 @@ void IAFT::tau_to_zero(ndaArray_A &&A_ti, ndaArray_B &&A_zero_i)  const {
 
 template<nda::MemoryArray Array_A, typename comm_t>
 void IAFT::check_leakage(Array_A &&A_ti, stats_e stats, comm_t *comm, std::string A_name) const {
+  detail::check_contiguous(A_ti, "check_leakage", "A_ti");
   if (grid_var.index() == 1) {
     // leakage checking is not available in DLR basis
     return;
@@ -309,6 +349,7 @@ void IAFT::check_leakage(Array_A &&A_ti, stats_e stats, comm_t *comm, std::strin
 
 template<nda::MemoryArray Array_A, typename comm_t>
 void IAFT::check_leakage_PHsym(Array_A &&A_ti, stats_e stats, comm_t *comm, std::string A_name) const {
+  detail::check_contiguous(A_ti, "check_leakage_PHsym", "A_ti");
   if (grid_var.index() == 1) {
     // leakage checking is not available in DLR basis
     return;

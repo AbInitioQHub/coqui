@@ -22,7 +22,8 @@ niter     = 1
 outdir    = "./"
 prefix    = "g0w0"
 div_treatment = "gygi"
-qp_type   = "sc"
-ac_alg    = "pade"
-eta       = 1e-6
-Nfit      = 26
+[evgw.qp_eqn]
+solver    = "sc"          # "sc"/"sc_bisection", "sc_newton", "spectral", "linearized"
+ac_alg    = "pade"        # the analytic continuation that feeds the equation
+eta       = 1e-6          # broadening at which the continued Sigma is evaluated
+ac_nfit   = 26            # Matsubara points it fits; -1 = all available

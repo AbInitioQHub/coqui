@@ -17,7 +17,9 @@ namespaces = ""
 #    if reject_names and reject_names matches Qname : skip X
 #    else keep X.
 #
-match_names = "coqui_py::post_proc::.*"
+# The two lqp result structs are wrapped as classes (ResultT, LadderResultT) so that the
+# linearized_qp_* functions return them directly instead of flattened tuples.
+match_names = "coqui_py::post_proc::.*|methods::lqp::(result_t|ladder_result_t)"
 reject_names = ""
 
 # If true, transform methods with no arguments into a read only property

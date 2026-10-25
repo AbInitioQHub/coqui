@@ -18,6 +18,8 @@
 
 using c2py::operator""_a;
 
+// ==================== Wrapped classes =====================
+
 // ==================== enums =====================
 
 // ==================== module classes =====================
@@ -25,7 +27,7 @@ using c2py::operator""_a;
 // ==================== module functions ====================
 
 // dmft_embed
-static auto const _c2py_fun_0 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_0 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](const coqui_py::Mf &mf, const std::string &embed_params,
        const nda::basic_array<
            std::complex<double>, 5, nda::C_layout, 'A',
@@ -59,7 +61,7 @@ static auto const _c2py_fun_0 = c2py::dispatcher_f_kw_t{c2py::cfun(
     "local_hf_potentials", "local_selfenergies")};
 
 // dmft_embed_with_projector_from_h5
-static auto const _c2py_fun_1 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_1 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](const coqui_py::Mf &mf, const std::string &embed_params,
        std::optional<std::map<
            std::string,
@@ -79,14 +81,14 @@ static auto const _c2py_fun_1 = c2py::dispatcher_f_kw_t{c2py::cfun(
     "mf", "embed_params", "local_hf_potentials", "local_selfenergies")};
 
 // downfold_1e
-static auto const _c2py_fun_2 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_2 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](const coqui_py::Mf &mf, const std::string &df_params) {
       return coqui_py::downfold_1e(mf, df_params);
     },
     "mf", "df_params")};
 
 // downfold_2e
-static auto const _c2py_fun_3 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_3 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](coqui_py::ThcCoulomb &eri, const std::string &df_params,
        std::optional<std::map<
            std::string,
@@ -94,13 +96,12 @@ static auto const _c2py_fun_3 = c2py::dispatcher_f_kw_t{c2py::cfun(
                             nda::heap_basic<nda::mem::mallocator<
                                 nda::mem::AddressSpace::Host>>>>>
            local_polarizabilities) {
-      return coqui_py::downfold_2e<coqui_py::ThcCoulomb>(
-          eri, df_params, local_polarizabilities);
+      return coqui_py::downfold_2e(eri, df_params, local_polarizabilities);
     },
     "eri", "df_params", "local_polarizabilities")};
 
 // downfold_coulomb
-static auto const _c2py_fun_4 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_4 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](coqui_py::ThcCoulomb &eri, const std::string &df_params,
        const nda::basic_array<
            std::complex<double>, 5, nda::C_layout, 'A',
@@ -120,15 +121,15 @@ static auto const _c2py_fun_4 = c2py::dispatcher_f_kw_t{c2py::cfun(
                             nda::heap_basic<nda::mem::mallocator<
                                 nda::mem::AddressSpace::Host>>>>>
            local_polarizabilities) {
-      return coqui_py::downfold_coulomb<coqui_py::ThcCoulomb>(
-          eri, df_params, projector_ksIai, band_window, kpts_crys,
-          local_polarizabilities);
+      return coqui_py::downfold_coulomb(eri, df_params, projector_ksIai,
+                                        band_window, kpts_crys,
+                                        local_polarizabilities);
     },
     "eri", "df_params", "projector_ksIai", "band_window", "kpts_crys",
     "local_polarizabilities")};
 
 // downfold_coulomb_with_projector_from_h5
-static auto const _c2py_fun_5 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_5 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](coqui_py::ThcCoulomb &eri, const std::string &df_params,
        std::optional<std::map<
            std::string,
@@ -136,13 +137,13 @@ static auto const _c2py_fun_5 = c2py::dispatcher_f_kw_t{c2py::cfun(
                             nda::heap_basic<nda::mem::mallocator<
                                 nda::mem::AddressSpace::Host>>>>>
            local_polarizabilities) {
-      return coqui_py::downfold_coulomb_with_projector_from_h5<
-          coqui_py::ThcCoulomb>(eri, df_params, local_polarizabilities);
+      return coqui_py::downfold_coulomb_with_projector_from_h5(
+          eri, df_params, local_polarizabilities);
     },
     "eri", "df_params", "local_polarizabilities")};
 
 // downfold_gloc
-static auto const _c2py_fun_6 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_6 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](const coqui_py::Mf &mf, const std::string &df_params,
        const nda::basic_array<
            std::complex<double>, 5, nda::C_layout, 'A',
@@ -162,41 +163,39 @@ static auto const _c2py_fun_6 = c2py::dispatcher_f_kw_t{c2py::cfun(
     "mf", "df_params", "projector_ksIai", "band_window", "kpts_crys")};
 
 // downfold_gloc_with_projector_from_h5
-static auto const _c2py_fun_7 = c2py::dispatcher_f_kw_t{c2py::cfun(
+static auto const fun_7 = c2py::dispatcher_f_kw_t{c2py::cfun(
     [](const coqui_py::Mf &mf, const std::string &df_params) {
       return coqui_py::downfold_gloc_with_projector_from_h5(mf, df_params);
     },
     "mf", "df_params")};
 
-static const auto _c2py_doc_0 = _c2py_fun_0.doc(R"DOC()DOC");
-static const auto _c2py_doc_1 = _c2py_fun_1.doc(R"DOC()DOC");
-static const auto _c2py_doc_2 = _c2py_fun_2.doc(R"DOC()DOC");
-static const auto _c2py_doc_3 = _c2py_fun_3.doc(R"DOC()DOC");
-static const auto _c2py_doc_4 = _c2py_fun_4.doc(R"DOC()DOC");
-static const auto _c2py_doc_5 = _c2py_fun_5.doc(R"DOC()DOC");
-static const auto _c2py_doc_6 = _c2py_fun_6.doc(R"DOC()DOC");
-static const auto _c2py_doc_7 = _c2py_fun_7.doc(R"DOC()DOC");
+static const auto doc_d_0 = fun_0.doc(R"DOC()DOC");
+static const auto doc_d_1 = fun_1.doc(R"DOC()DOC");
+static const auto doc_d_2 = fun_2.doc(R"DOC()DOC");
+static const auto doc_d_3 = fun_3.doc(R"DOC()DOC");
+static const auto doc_d_4 = fun_4.doc(R"DOC()DOC");
+static const auto doc_d_5 = fun_5.doc(R"DOC()DOC");
+static const auto doc_d_6 = fun_6.doc(R"DOC()DOC");
+static const auto doc_d_7 = fun_7.doc(R"DOC()DOC");
 //--------------------- module function table  -----------------------------
 
 static PyMethodDef module_methods[] = {
-    {"dmft_embed", (PyCFunction)c2py::pyfkw<_c2py_fun_0>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_0.c_str()},
-    {"dmft_embed_with_projector_from_h5", (PyCFunction)c2py::pyfkw<_c2py_fun_1>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_1.c_str()},
-    {"downfold_1e", (PyCFunction)c2py::pyfkw<_c2py_fun_2>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_2.c_str()},
-    {"downfold_2e", (PyCFunction)c2py::pyfkw<_c2py_fun_3>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_3.c_str()},
-    {"downfold_coulomb", (PyCFunction)c2py::pyfkw<_c2py_fun_4>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_4.c_str()},
-    {"downfold_coulomb_with_projector_from_h5",
-     (PyCFunction)c2py::pyfkw<_c2py_fun_5>, METH_VARARGS | METH_KEYWORDS,
-     _c2py_doc_5.c_str()},
-    {"downfold_gloc", (PyCFunction)c2py::pyfkw<_c2py_fun_6>,
-     METH_VARARGS | METH_KEYWORDS, _c2py_doc_6.c_str()},
-    {"downfold_gloc_with_projector_from_h5",
-     (PyCFunction)c2py::pyfkw<_c2py_fun_7>, METH_VARARGS | METH_KEYWORDS,
-     _c2py_doc_7.c_str()},
+    {"dmft_embed", (PyCFunction)c2py::pyfkw<fun_0>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_0.c_str()},
+    {"dmft_embed_with_projector_from_h5", (PyCFunction)c2py::pyfkw<fun_1>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_1.c_str()},
+    {"downfold_1e", (PyCFunction)c2py::pyfkw<fun_2>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_2.c_str()},
+    {"downfold_2e", (PyCFunction)c2py::pyfkw<fun_3>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_3.c_str()},
+    {"downfold_coulomb", (PyCFunction)c2py::pyfkw<fun_4>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_4.c_str()},
+    {"downfold_coulomb_with_projector_from_h5", (PyCFunction)c2py::pyfkw<fun_5>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_5.c_str()},
+    {"downfold_gloc", (PyCFunction)c2py::pyfkw<fun_6>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_6.c_str()},
+    {"downfold_gloc_with_projector_from_h5", (PyCFunction)c2py::pyfkw<fun_7>,
+     METH_VARARGS | METH_KEYWORDS, doc_d_7.c_str()},
     {nullptr, nullptr, 0, nullptr} // Sentinel
 };
 
@@ -243,9 +242,6 @@ PyInit_embed_module() {
 
   conv_table[std::type_index(typeid(c2py::py_range)).name()] =
       &c2py::wrap_pytype<c2py::py_range>;
-#define _add_type(T, N) c2py::add_type_object_to_main<T>(N, m, conv_table)
-
-#undef _add_type
 
   return m;
 }

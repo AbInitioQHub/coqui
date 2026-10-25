@@ -37,6 +37,7 @@
 #include "mean_field/mf_utils.hpp"
 #include "methods/ERI/mb_eri_context.h"
 #include "methods/mb_state/mb_state.hpp"
+#include "methods/SCF/qp/qp_params_utils.hpp"
 #include "methods/SCF/dca_dyson.h"
 #include "methods/SCF/simple_dyson.h"
 #include "methods/embedding/embed_t.h"
@@ -309,23 +310,28 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
       iter_solver = nullptr;
     }
     MBState mb_state(mpi, ft, output);
-    qp_params_t qp_params;
-    qp_params.mu_tolerance = mu_tol;
-    qp_params.mu_update_alg = mu_update_alg;
+    // no self-energy is added, so only the chemical-potential controls matter
+    qp_context_t qp_params{.mu_tolerance = mu_tol, .mu_update_alg = mu_update_alg,
+                           .qp_eqn = {}, .lqp = {}};
     qp_scf_loop(mb_state, eri, ft, qp_params, mb_solver_t(&hf), iter_solver.get(),
                 niter, restart, conv_thr);
 
   } else if (solver_type == "evgw") {
 
-    auto keep_scr_coulomb_fixed = io::get_value_with_default<bool>(pt,"keep_scr_coulomb_fixed", false);
-    auto qp_type = io::get_value_with_default<std::string>(pt,"qp_type","sc");
-    auto ac_alg  = io::get_value_with_default<std::string>(pt,"ac_alg","pade");
-    auto eta     = io::get_value_with_default<double>(pt,"eta", M_PI/ft.beta());
-    auto Nfit    = io::get_value_with_default<int>(pt,"Nfit",18);
-    io::tolower(ac_alg);
-    io::tolower(qp_type);
-    qp_params_t qp_params(qp_type, ac_alg, Nfit, eta, conv_thr, "evscf", keep_scr_coulomb_fixed,
-                          "fermi", mu_tol, mu_update_alg);
+    // every quasiparticle default of this driver. 
+    // [evgw.qp_eqn] input block overrides them in read_qp_block
+    qp_context_t qp_params{
+        .qp_approx = "qp_eqn", .qp_scf_mode = "evscf",
+        .keep_scr_coulomb_fixed =
+            io::get_value_with_default<bool>(pt, "keep_scr_coulomb_fixed", false),
+        .mu_tolerance = mu_tol, .mu_update_alg = mu_update_alg,
+        .qp_eqn = {.solver = "sc", .ac_nfit = 18, .eta = M_PI/ft.beta(), 
+                   .tol = conv_thr, .off_diag_mode = "fermi"},
+    };
+    read_qp_block(pt, qp_params);
+    utils::check(qp_params.qp_approx == "qp_eqn",
+                 "mbpt: solver_type = evgw requires qp_approx = qp_eqn; qp_approx = lqp is only "
+                 "implemented for qp_scf_mode = qpscf (solver_type = lqsgw).");
     if (io::get_value_with_default<bool>(pt,"iter_alg.enable", true)) {
       iter_solver = std::make_unique<iter_scf::iter_scf_t>(iter_scf::make_iter_scf(pt, 0.7, true));
     } else {
@@ -339,16 +345,43 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
 
   } else if (solver_type == "qpgw") {
 
-    auto ac_alg  = io::get_value_with_default<std::string>(pt,"ac_alg","pade");
-    auto eta     = io::get_value_with_default<double>(pt,"eta", M_PI/ft.beta());
-    auto Nfit    = io::get_value_with_default<int>(pt,"Nfit",18);
-    auto off_diag_mode = io::get_value_with_default<std::string>(pt,"off_diag_mode","fermi");
-    io::tolower(ac_alg);
-    io::tolower(off_diag_mode);
-    utils::check(off_diag_mode=="fermi" or off_diag_mode=="qp_energy",
-                 "unknown off_diag_mode: {}. Valid options are \"fermi\" and \"qp_energy\"");
-    qp_params_t qp_params("sc", ac_alg, Nfit, eta, 1e-8, "qpscf", false, off_diag_mode,
-                          mu_tol, mu_update_alg);
+    // every quasiparticle default of this driver
+    // [qpgw.qp_eqn] input block overrides them in read_qp_block
+    qp_context_t qp_params{
+        .qp_approx = "qp_eqn", .qp_scf_mode = "qpscf", .keep_scr_coulomb_fixed = false,
+        .mu_tolerance = mu_tol, .mu_update_alg = mu_update_alg,
+        .qp_eqn = {.solver = "sc", .ac_nfit = 18, .eta = M_PI/ft.beta(), 
+                   .tol = 1e-8, .off_diag_mode = "fermi"},
+    };
+    read_qp_block(pt, qp_params);
+    utils::check(qp_params.qp_approx == "qp_eqn",
+                 "mbpt: \"qpgw\" requires qp_approx = qp_eqn.");
+    if (io::get_value_with_default<bool>(pt,"iter_alg.enable", true)) {
+      iter_solver = std::make_unique<iter_scf::iter_scf_t>(iter_scf::make_iter_scf(pt));
+    } else {
+      iter_solver = nullptr;
+    }
+    solvers::scr_coulomb_t scr_eri(&ft, "rpa", div_treatment);
+    solvers::gw_t gw(&ft, div_treatment, output);
+    MBState mb_state(mpi, ft, output);
+    qp_scf_loop(mb_state, eri, ft, qp_params, mb_solver_t(&hf,&gw,&scr_eri), iter_solver.get(),
+                niter, restart, conv_thr);
+
+  } else if (solver_type == "lqsgw") {
+
+    // Linearized QP self-consistent GW (Kutepov et al. 2017). 
+    // Quasiparticle default of this driver. 
+    // the [lqsgw.lqp] input block overrides them in read_qp_block.
+    qp_context_t qp_params{
+        .qp_approx = "lqp", .qp_scf_mode = "qpscf", .keep_scr_coulomb_fixed = false,
+        .mu_tolerance = mu_tol, .mu_update_alg = mu_update_alg,
+        .lqp = {.n_fit = 6, .fit_order = -1, .symmetric_window = true, .fit_resid_tol = 1e-8}
+    };
+    read_qp_block(pt, qp_params);
+    utils::check(qp_params.qp_approx == "lqp",
+                 "mbpt: lqsgw fixes qp_approx = lqp; remove qp_approx = {} or use "
+                 "solver_type = qpgw.", qp_params.qp_approx);
+    
     if (io::get_value_with_default<bool>(pt,"iter_alg.enable", true)) {
       iter_solver = std::make_unique<iter_scf::iter_scf_t>(iter_scf::make_iter_scf(pt));
     } else {
@@ -468,16 +501,17 @@ void downfolding_1e(std::shared_ptr<mf::MF> mf, ptree const& pt) {
   MBState mb_state(ft, outdir+"/"+prefix, mf, wannier_file, trans_home_cell, false);
 
   if (qp_selfenergy) {
-    auto ac_alg  = io::get_value_with_default<std::string>(pt,"ac_alg","pade");
-    auto off_diag_mode = io::get_value_with_default<std::string>(pt,"off_diag_mode","qp_energy");
-    io::tolower(ac_alg);
-    io::tolower(off_diag_mode);
-    utils::check(off_diag_mode=="fermi" or off_diag_mode=="qp_energy",
-                 "unknown off_diag_mode: {}. Valid options are \"fermi\" and \"qp_energy\"");
-    qp_params_t qp_params("sc", ac_alg,
-                io::get_value_with_default<int>(pt,"Nfit",30),
-                io::get_value_with_default<double>(pt,"eta", M_PI/ft.beta()),
-                1e-8, "qpscf", false, off_diag_mode);
+    // Quasiparticle default of the downfolding drivers
+    // The [<block>.qp_eqn] input block overrides them in read_qp_block
+    qp_context_t qp_params{
+        .qp_approx = "qp_eqn",
+        .qp_eqn = {.solver = "sc", .ac_nfit = 30, .eta = M_PI/ft.beta(), 
+                   .tol = 1e-8, .off_diag_mode = "qp_energy"},
+    };
+    read_qp_block(pt, qp_params);
+    utils::check(qp_params.qp_approx == "qp_eqn",
+                 "mbpt: the quasiparticle embedding scheme requires qp_approx = qp_eqn; "
+                 "qp_approx = lqp is not implemented for downfolding.");
     embed.downfolding(mb_state, pt, &qp_params);
   } else {
     embed.downfolding(mb_state, pt);
@@ -747,11 +781,13 @@ void hf_downfold(eri_t &eri, ptree const& pt) {
  *  - force_real: false. If true, forces the 2-electron interaction tensor to be real. 
  *  - factorization_type: "cholesky", Type of factorization. {choices: "none", "cholesky", "cholesky_high_memory", "choleksy_from_4index", "thc"}
  *  - thresh: 1e-6. Threshold used if factorization is requested.
- *  Parameters used by quasiparticle algorithm:
- *  - ac_alg: Algorithm for analytic continuation, default:pade {choices: pade}
- *  - eta: Smearing parameter: default:1e-6
- *  - Nfit: Number of terms in AC fit, default: 30
- *  - off_diag_mode: Off diagonal treatment, default: qp_energy. {choices: fermi, qp_energy} 
+ *  Quasiparticle approximation, in the nested block [<block>.qp_eqn] (read by read_qp_block):
+ *  - solver: scalar QP-equation solver, default: sc
+ *  - ac_alg: analytic continuation, default: pade {choices: pade}
+ *  - ac_nfit: number of terms in the AC fit, default: 30
+ *  - eta: broadening [Ha], default: pi/beta
+ *  - tol: tolerance of the QP-equation solver, default: 1e-8
+ *  - off_diag_mode: off-diagonal treatment, default: qp_energy {choices: fermi, qp_energy}
  */
 template<typename eri_t>
 void gw_downfold(eri_t &eri, ptree &pt) {
@@ -794,17 +830,17 @@ void gw_downfold(eri_t &eri, ptree &pt) {
                              io::get_value_with_default<double>(pt, "thresh", 1e-6));
 
   // one body hamiltonian
-  auto ac_alg  = io::get_value_with_default<std::string>(pt,"ac_alg","pade");
-  auto off_diag_mode = io::get_value_with_default<std::string>(pt,"off_diag_mode","qp_energy");
-  io::tolower(ac_alg);
-  io::tolower(off_diag_mode);
-  utils::check(off_diag_mode=="fermi" or off_diag_mode=="qp_energy",
-               "unknown off_diag_mode: {}. Valid options are \"fermi\" and \"qp_energy\"");
-  qp_params_t qp_params(
-      "sc", ac_alg,
-      io::get_value_with_default<int>(pt,"Nfit",30),
-      io::get_value_with_default<double>(pt,"eta", M_PI/ft.beta()),
-      1e-8, "qpscf", false, off_diag_mode);
+  // Quasiparticle default of the downfolding drivers
+  // The [<block>.qp_eqn] input block overrides them in read_qp_block
+  qp_context_t qp_params{
+      .qp_approx = "qp_eqn",
+      .qp_eqn = {.solver = "sc", .ac_nfit = 30, .eta = M_PI/ft.beta(), 
+                 .tol = 1e-8, .off_diag_mode = "qp_energy"},
+  };
+  read_qp_block(pt, qp_params);
+  utils::check(qp_params.qp_approx == "qp_eqn",
+               "mbpt: the quasiparticle embedding scheme requires qp_approx = qp_eqn; "
+               "qp_approx = lqp is not implemented for downfolding.");
   embed_t embed(*mf, wannier_file, trans_home_cell);
   pt.put("update_dc", true);
   pt.put("dc_type", "gw");

@@ -1,3 +1,11 @@
+"""
+Full-frequency G0W0 of SrVO3, followed by the Wannier-interpolated spectral function A(k, w)
+along a k-path.
+
+The checkpoint it writes, svo.gw.mbpt.h5, is post-processed by 02b_qp_bands.py (quasiparticle
+band structures) and 02c_lqp_renormalization.py (quasiparticle renormalization).
+"""
+
 from mpi4py import MPI
 import coqui
 
@@ -37,7 +45,7 @@ gw_params = {
 }
 coqui.run_gw(params=gw_params, h_int = svo_thc)
 
-# Wannier interpolation for G0W0
+# Wannier interpolation of the G0W0 spectral function
 winter_params = {
     "outdir": "./",
     "prefix": "svo.gw",
@@ -53,20 +61,15 @@ winter_params = {
     )
 }
 coqui.post_proc.spectral_interpolation(svo_mf, winter_params)
-# extract QP energies and interpolate to k-path
-coqui.post_proc.band_interpolation(svo_mf, winter_params)
 
 if mpi.root():
     fig, ax = plt.subplots(1, figsize=(7, 5.5), dpi=100)
 
     # Plot spectral function A(k, ω)
     coqui.post_proc.spectral_plot(ax, coqui_h5="svo.gw.mbpt.h5", iteration=1, calc_type="mbpt")
-    # Plot QP band structure
-    coqui.post_proc.band_plot(ax, coqui_h5="svo.gw.mbpt.h5", iteration=1, color="tab:blue", label="qpGW")
     ax.axhline(y=0, color = 'black', linestyle = '-', linewidth=2.0, alpha=0.5)
 
     ax.set_ylim(-4, 4)
-    ax.legend(loc=4, fontsize=12)
     plt.tight_layout()
     plt.savefig("svo.gw.png", format="png")
 

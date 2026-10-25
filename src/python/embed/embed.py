@@ -23,6 +23,7 @@ import numpy as np
 
 from h5 import HDFArchive
 import coqui._lib.embed_module as embed_cxx
+from coqui.utils.qp_input import nest_flat_qp_keys, MBPT_FLAT_QP_KEYS
 
 
 def combine_impurities(C_ksIai, imp_dims):
@@ -138,6 +139,7 @@ def downfold_coulomb(h_int, params, *, projector_info=None, local_polarizabiliti
 
 
 def downfold_1e(mf, params):
+    params = nest_flat_qp_keys(params, MBPT_FLAT_QP_KEYS, "downfold_1e")
     embed_cxx.downfold_1e(mf, json.dumps(params))
 
 

@@ -18,6 +18,6 @@ limitations under the License.
 ==========================================================================
 """
 
-from .dispersion_plot import band_plot, spectral_plot
+from .dispersion_plot import band_plot, band_plot_from_spectral_interpolation, spectral_plot
 
-__all__ = ["band_plot", "spectral_plot"]
+__all__ = ["band_plot", "band_plot_from_spectral_interpolation", "spectral_plot"]

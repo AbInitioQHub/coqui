@@ -36,6 +36,7 @@
 #include "methods/SCF/scf_common.hpp"
 #include "numerics/ac/ac_context.h"
 #include "methods/pproc/pproc_t.h"
+#include "methods/SCF/qp/qp_params_utils.hpp"
 #include "mean_field/symmetry/unfold_bz.h"
 #include "hamiltonian/one_body_hamiltonian.hpp"
 
@@ -134,6 +135,18 @@ namespace methods {
         write_mf_data(*mf, ft, *psp.get(), scf_output);
       }
 
+      // Quasiparticle defaults of band_interpolation kernel
+      auto make_qp_params = [&pt](double beta) {
+        qp_context_t qp_params{
+            .qp_approx = "qp_eqn",
+            .qp_eqn = {.solver = "sc", .ac_nfit = 18, .eta = M_PI/beta, .tol = 1e-8,
+                       .off_diag_mode = "fermi"},
+            .lqp = {.n_fit = 6, .fit_order = -1, .symmetric_window = true,
+                    .fit_resid_tol = 1e-8}};
+        read_qp_block(pt, qp_params);
+        return qp_params;
+      };
+
       // Check if a QP solution exist already. 
       // If not, compute QP energies on the IBZ k-mesh from dynamic self-energy and write to the checkpoint file.
       bool heff_exists = false;
@@ -143,11 +156,18 @@ namespace methods {
         auto grp = h5::group(file).open_group(grp_name);
         if (iteration == -1) h5::read(grp, "final_iter", iteration);
         auto iter_grp = grp.open_group("iter"+std::to_string(iteration));
-        // Check if Heff_skij dataset exists
-        if (iter_grp.has_dataset("Heff_skij") or (iter_grp.has_subgroup("qp_approx") and iter_grp.open_group("qp_approx").has_dataset("Heff_skij"))) {
-          heff_exists = true;
-        }
         h5::read(h5::group(file), "imaginary_fourier_transform/beta", beta);
+        // A QP-SCF iteration (or the mean-field starting point) stores Heff_skij itself; a
+        // Dyson-SCF one may hold qp_approx/ from an earlier post-processing run, reused only if
+        // it answers the request (qp_approx_reusable)
+        if (iter_grp.has_dataset("Heff_skij")) {
+          heff_exists = true;
+          app_log(1, "  {}/iter{} holds its own Heff_skij (a quasiparticle self-consistent iteration\n"
+                     "  or the mean-field starting point): interpolating it as is. The qp_approx,\n"
+                     "  qp_eqn and lqp settings do not apply.", grp_name, iteration);
+        } else {
+          heff_exists = pproc_t::qp_approx_reusable(iter_grp, make_qp_params(beta));
+        }
       }
       std::array<double,3> buffer = {(heff_exists)? 1.0 : 0.0, double(iteration), beta};
       mpi->comm.broadcast_n(buffer.data(), buffer.size(), 0);
@@ -155,15 +175,9 @@ namespace methods {
       iteration = static_cast<int>(buffer[1]);
       beta = buffer[2];
       if (!heff_exists) {
-        // Compute QP energies from dynamic self-energy on IBZ 
-        qp_params_t qp_params;
-        qp_params.ac_alg  = io::get_value_with_default<std::string>(pt,"ac_alg","pade");
-        qp_params.qp_type = io::get_value_with_default<std::string>(pt, "qp_type", "sc");
-        qp_params.eta     = io::get_value_with_default<double>(pt, "qp_eta", M_PI/beta);
-        qp_params.Nfit    = io::get_value_with_default<int>(pt, "qp_Nfit", 18);
-        qp_params.tol     = io::get_value_with_default<double>(pt, "qp_tol", 1e-8);
-
-        pp.compute_qp_on_ibz_kmesh(*mf, qp_params, grp_name, iteration); 
+        // Compute QP energies from dynamic self-energy on IBZ
+        auto qp_params = make_qp_params(beta);
+        pp.qp_approx_from_dyson(qp_params, grp_name, iteration); 
       }
 
       pp.wannier_interpolation(*mf, pt, wannier_file, "quasiparticle", grp_name, iteration, trans_home_cell);

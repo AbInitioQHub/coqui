@@ -189,7 +189,12 @@ TEST_CASE("downfold_1e_mb_qp", "[methods][embed][df_1e]") {
                                                       solvers::mb_solver_t(&hf,&gw,&scr_eri),
                                                       &iter_sol, 1, true, 1e-9, false);
 
-      qp_params_t qp_params("sc", "pade", 18, 1e-8, 1e-8, "qpscf", false, "qp_energy");
+      qp_context_t qp_params{.qp_approx = "qp_eqn", .qp_scf_mode = "qpscf",
+                             .keep_scr_coulomb_fixed = false, .mu_tolerance = 1e-9,
+                             .mu_update_alg = "bisection",
+                             .qp_eqn = {.solver = "sc", .ac_nfit = 18, .eta = 1e-8, .tol = 1e-8,
+                                        .off_diag_mode = "qp_energy"},
+                             .lqp = {}};   // unused: qp_approx = qp_eqn
       embed_t embed_1e(*mf, wannier_file, true);
       ptree pt_1e;
       pt_1e.put("update_dc", true);
@@ -755,7 +760,12 @@ TEST_CASE("downfold_1e_mb_qp", "[methods][embed][df_1e]") {
                                                         solvers::mb_solver_t(&hf,&gw,&scr_eri),
                                                         &iter_sol, 1, true, 1e-9, false);
 
-        qp_params_t qp_params("sc", "pade", 18, 1e-8, 1e-8, "qpscf", false, "qp_energy");
+        qp_context_t qp_params{.qp_approx = "qp_eqn", .qp_scf_mode = "qpscf",
+                               .keep_scr_coulomb_fixed = false, .mu_tolerance = 1e-9,
+                               .mu_update_alg = "bisection",
+                               .qp_eqn = {.solver = "sc", .ac_nfit = 18, .eta = 1e-8, .tol = 1e-8,
+                                          .off_diag_mode = "qp_energy"},
+                               .lqp = {}};   // unused: qp_approx = qp_eqn
         embed_t embed(*mf, wannier_file, true);
         ptree pt_1e;
         pt_1e.put("update_dc", true);
@@ -823,7 +833,12 @@ TEST_CASE("downfold_1e_mb_qp", "[methods][embed][df_1e]") {
                                                         &iter_sol, 1, true, 1e-9, false);
         mpi->comm.barrier();
 
-        qp_params_t qp_params("sc", "pade", 18, 1e-8, 1e-8, "qpscf", false, "qp_energy");
+        qp_context_t qp_params{.qp_approx = "qp_eqn", .qp_scf_mode = "qpscf",
+                               .keep_scr_coulomb_fixed = false, .mu_tolerance = 1e-9,
+                               .mu_update_alg = "bisection",
+                               .qp_eqn = {.solver = "sc", .ac_nfit = 18, .eta = 1e-8, .tol = 1e-8,
+                                          .off_diag_mode = "qp_energy"},
+                               .lqp = {}};   // unused: qp_approx = qp_eqn
         mpi->comm.barrier();
         embed_t embed(*mf, wannier_file, true);
         ptree pt_1e;

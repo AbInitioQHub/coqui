@@ -105,7 +105,7 @@ namespace methods {
   }
 
   void embed_t::downfolding(MBState &mb_state, ptree const& pt,
-                            qp_params_t *qp_params, std::string format_type) {
+                            qp_context_t *qp_params, std::string format_type) {
 
     std::string filename = mb_state.coqui_prefix + ".mbpt.h5";
     utils::check(std::filesystem::exists(filename),
@@ -511,7 +511,7 @@ namespace methods {
     print_downfold_mb_timers();
   }
 
-  void embed_t::downfold_mb_solution_qp_impl(MBState &mb_state, qp_params_t &qp_params,
+  void embed_t::downfold_mb_solution_qp_impl(MBState &mb_state, qp_context_t &qp_params,
                                              bool update_dc, std::string dc_type,
                                              bool force_real, std::string format_type) {
     using math::shm::make_shared_array;
@@ -633,6 +633,11 @@ namespace methods {
                      "This implies that your previous \"downfold_1e\" iteration does not finish properly. Please check!",
                      gw_iter, weiss_f_iter);
         auto qp_grp = iter_grp.open_group("qp_approx");
+        utils::check(qp_grp.has_dataset("MO_skia"),
+                     "embed_t::dmft_embed_qp_impl: \"scf/iter{}/qp_approx\" no longer holds the "
+                     "QPGW results of \"downfold_1e\" (MO_skia is missing): a quasiparticle "
+                     "post-processing run (band_interpolation, lqp_from_dyson_scf) has replaced "
+                     "the group since. Rerun \"downfold_1e\".", gw_iter);
         nda::h5_read(qp_grp, "E_ska", E_ska);
         nda::h5_read(qp_grp, "MO_skia", MO_skia);
         if (qp_grp.has_dataset("Vcorr_skab"))
@@ -1244,7 +1249,7 @@ namespace methods {
                                 long weiss_b_iter, imag_axes_ft::IAFT &ft,
                                 double mu,
                                 sArray_t<Array_view_4D_t> &sMO_skia, sArray_t<Array_view_3D_t> &sE_ska,
-                                qp_params_t &qp_params, bool force_real, std::string format_type)
+                                qp_context_t &qp_params, bool force_real, std::string format_type)
   -> std::tuple<nda::array<ComplexType, 4>, nda::array<ComplexType, 4>, nda::array<ComplexType, 5>> {
     app_log(2, "Evaluating double counting self-energy with Gloc coming from "
                "\"{}/iter{}\"", dc_src_grp, dc_iter);
@@ -1412,7 +1417,7 @@ namespace methods {
                                    long weiss_b_iter, imag_axes_ft::IAFT &ft,
                                    double mu,
                                    sArray_t<Array_view_4D_t> &sMO_skia, sArray_t<Array_view_3D_t> &sE_ska,
-                                   qp_params_t &qp_params, bool force_real, std::string format_type)
+                                   qp_context_t &qp_params, bool force_real, std::string format_type)
   -> std::tuple<nda::array<ComplexType, 4>, nda::array<ComplexType, 4>, nda::array<ComplexType, 5>> {
     h5::file file(prefix+".mbpt.h5", 'r');
     auto grp = h5::group(file);

@@ -19,6 +19,9 @@
  */
 
 
+#include <optional>
+#include <algorithm>
+#include <filesystem>
 #include "mpi3/communicator.hpp"
 #include "nda/nda.hpp"
 #include "nda/linalg.hpp"
@@ -690,57 +693,78 @@ namespace methods {
     app_log(1, "####### wannier interpolation routines end #######\n");
   }
 
-  void pproc_t::compute_qp_on_ibz_kmesh(mf::MF &mf, const qp_params_t &qp_params, 
-                                        std::string grp_name, long iter) {
+  void pproc_t::qp_approx_from_dyson(const qp_context_t &qp_params, std::string grp_name,
+                                     long iter) {
+    std::string filename = _scf_output + ".mbpt.h5";
+    app_log(1, "Computing quasiparticle energies from dynamic self-energy");
+    app_log(1, "---------------------------------------------------------");
+    app_log(1, "  QP approximation       = {}", qp_params.qp_approx);
 
+    // each scheme reads the Dyson iteration into node-shared memory and writes qp_approx/
+    if (qp_params.qp_approx == "lqp") {
+      // matrix linearization of Sigma(iw) around w = 0 in the KS basis (methods::lqp)
+      linearized_qp_checkpoint(_context, filename, "mesh", grp_name, iter, qp_params.lqp, 0);
+    } else {
+      // analytic continuation of the diagonal Sigma_aa(iw) and a scalar quasiparticle equation on
+      // the real axis
+      qp_eqn_from_dyson_impl(filename, grp_name, iter, qp_params.qp_eqn);
+    }
+    app_log(1, "####### QP energies on IBZ k-mesh done #######\n");
+  }
+
+  void pproc_t::qp_eqn_from_dyson_impl(std::string const& filename, std::string const& grp_name,
+                                       long iter, qp_eqn::params_t const& params) {
     using math::shm::make_shared_array;
     using Array_view_4D_t = nda::array_view<ComplexType, 4>;
     using Array_view_5D_t = nda::array_view<ComplexType, 5>;
-
-    std::string filename = _scf_output + ".mbpt.h5";
+    // Checked here rather than left to the dispatch below, which would otherwise fall through
+    // to bisection and report a scheme the user did not ask for.
+    auto const& sol = params.solver;
+    utils::check(sol == "sc" or sol == "sc_bisection" or sol == "sc_newton" or sol == "linearized",
+                 "pproc_t::qp_approx_from_dyson: unsupported qp_eqn.solver {}. Supported here: "
+                 "sc, sc_bisection, sc_newton, linearized{}", sol,
+                 (sol == "spectral")? " (spectral is only available in the QP-SCF loop)." : ".");
     auto FT = imag_axes_ft::read_iaft(filename, false);
-
-    long ns  = mf.nspin();
-    long nk  = mf.nkpts_ibz();
-    long nb  = mf.nbnd();
     long nts = FT.nt_f();
     long nw  = FT.nw_f();
 
-    app_log(1, "Computing quasiparticle energies from dynamic self-energy");
-    app_log(1, "---------------------------------------------------------");
-    app_log(1, "  QP solver              = {}", qp_params.qp_type);
-    app_log(1, "  AC algorithm           = {}", qp_params.ac_alg);
-    app_log(1, "  Nfit                   = {}", qp_params.Nfit);
-    app_log(1, "  eta                    = {}", qp_params.eta);
-    app_log(1, "  Number of spins        = {}", ns);
-    app_log(1, "  Number of IBZ k-points = {}", nk);
-    app_log(1, "  Number of bands        = {}\n", nb);
+    // iteration and dimensions from the dataset shapes: the global root reads, then broadcasts
+    std::array<long, 4> dims = {0, 0, 0, iter};          // ns, nk, nb, iter
+    if (_context.comm.root()) {
+      h5::file file(filename, 'r');
+      auto grp = h5::group(file).open_group(grp_name);
+      if (iter == -1) h5::h5_read(grp, "final_iter", dims[3]);
+      auto info = h5::array_interface::get_dataset_info(
+          grp.open_group("iter" + std::to_string(dims[3])), "F_skij");
+      dims[0] = info.lengths[0]; dims[1] = info.lengths[1]; dims[2] = info.lengths[2];
+    }
+    _context.comm.broadcast_n(dims.data(), 4, 0);
+    long ns = dims[0], nk = dims[1], nb = dims[2];
+    iter = dims[3];
 
-    // --- Read mu, F_skij + H0, and Sigma_tskij in a single file open ---
+    // F (with H0) and Sigma(tau): one copy per node, read by each node's root
     double mu = 0.0;
     auto sFhf_skij    = make_shared_array<Array_view_4D_t>(_context, {ns, nk, nb, nb});
     auto sSigma_tskij = make_shared_array<Array_view_5D_t>(_context, {nts, ns, nk, nb, nb});
-
     if (_context.node_comm.root()) {
       h5::file file(filename, 'r');
-      auto root_grp = h5::group(file);
-      // Read ``iter`` only for root process. 
-      // Be careful that this value is not broadcast to other processes. 
-      if (iter == -1) h5::h5_read(root_grp.open_group(grp_name), "final_iter", iter);
-      auto iter_grp = root_grp.open_group(grp_name + "/iter" + std::to_string(iter));
-
+      auto iter_grp = h5::group(file).open_group(grp_name + "/iter" + std::to_string(iter));
       h5::h5_read(iter_grp, "mu", mu);
-
       auto Fhf_loc = sFhf_skij.local();
       nda::h5_read(iter_grp, "F_skij", Fhf_loc);
       nda::array<ComplexType, 4> H0_skij;
-      nda::h5_read(root_grp.open_group("system"), "H0_skij", H0_skij);
+      nda::h5_read(h5::group(file).open_group("system"), "H0_skij", H0_skij);
       Fhf_loc += H0_skij;
-
       auto Sigma_loc = sSigma_tskij.local();
       nda::h5_read(iter_grp, "Sigma_tskij", Sigma_loc);
     }
     _context.node_comm.broadcast_n(&mu, 1, 0);
+    sFhf_skij.node_sync(); sSigma_tskij.node_sync();
+
+    app_log(1, "  qp_eqn from {} ({}/iter{}):\n"
+               "    solver = {}, ac_alg = {}, ac_nfit = {}, eta = {}, tol = {}\n"
+               "    {} spin(s), {} k-point(s), {} bands", filename, grp_name, iter, params.solver,
+            params.ac_alg, params.ac_nfit, params.eta, params.tol, ns, nk, nb);
 
     // --- Combined round-robin: diagonalize F, rotate Sigma to MO diagonal, FT, AC+QP, reconstruct H_QP ---
     // Each (s,k) is handled end-to-end so Sigma_tska never needs a global all-reduce.
@@ -786,21 +810,21 @@ namespace methods {
       FT.tau_to_w(Sigma_ta, Sigma_wa, imag_axes_ft::fermion);
 
       // D: AC + QP equation for each band
-      analyt_cont::AC_t AC(qp_params.ac_alg);
-      AC.init(iw_mesh, Sigma_wa, qp_params.Nfit);
+      analyt_cont::AC_t AC(params.ac_alg);
+      AC.init(iw_mesh, Sigma_wa, params.ac_nfit);
 
       for (long ia = 0; ia < nb; ++ia) {
         double eps = E_ska(is, ik, ia);
         double E_qp;
-        if (qp_params.qp_type == "linearized") {
-          E_qp = qp_eqn_linearized(eps, AC, ia, mu, eps, qp_params.eta);
-        } else if (qp_params.qp_type == "sc_newton") {
-          auto [E_qp_v, res, conv] = qp_eqn_secant(eps, AC, ia, mu, eps, 400, qp_params.tol, qp_params.eta);
+        if (params.solver == "linearized") {
+          E_qp = qp_eqn_linearized(eps, AC, ia, mu, eps, params.eta);
+        } else if (params.solver == "sc_newton") {
+          auto [E_qp_v, res, conv] = qp_eqn_secant(eps, AC, ia, mu, eps, 400, params.tol, params.eta);
           if (!conv)
-            app_warning("pproc_t::compute_qp_on_ibz_kmesh: secant fails at (s={},k={},a={}); res={}", is, ik, ia, res);
+            app_warning("pproc_t::qp_approx_from_dyson: secant fails at (s={},k={},a={}); res={}", is, ik, ia, res);
           E_qp = E_qp_v;
-        } else {
-          auto [E_qp_v, res] = qp_eqn_bisection(eps, AC, ia, mu, eps, qp_params.tol, qp_params.eta);
+        } else {   // "sc" / "sc_bisection", the default
+          auto [E_qp_v, res] = qp_eqn_bisection(eps, AC, ia, mu, eps, params.tol, params.eta);
           E_qp = E_qp_v;
         }
         E_qp_ska(is, ik, ia) = E_qp;
@@ -824,14 +848,214 @@ namespace methods {
     if (_context.comm.root()) {
       h5::file file(filename, 'a');
       auto iter_grp = h5::group(file).open_group(grp_name+"/iter"+std::to_string(iter));
-      auto qp_grp = iter_grp.has_subgroup("qp_approx") ?
-                    iter_grp.open_group("qp_approx") : iter_grp.create_group("qp_approx");
+      // qp_approx/ holds one QP result and belongs to its writer: it is created fresh
+      // (create_group replaces an existing group), so nothing of an earlier run survives
+      auto qp_grp = iter_grp.create_group("qp_approx");
       nda::h5_write(qp_grp, "E_ska",    E_qp_ska,           false);
       nda::h5_write(qp_grp, "Heff_skij", sHeff_skij.local(), false);
       h5::h5_write(qp_grp, "mu", mu);
+      h5::h5_write(qp_grp, "scheme", std::string("qp_eqn"));
+      // the controls this result was computed with, compared by qp_approx_reusable
+      auto pg = qp_grp.create_group("qp_eqn");
+      h5::h5_write(pg, "solver",  params.solver);
+      h5::h5_write(pg, "ac_alg",  params.ac_alg);
+      h5::h5_write(pg, "ac_nfit", params.ac_nfit);
+      h5::h5_write(pg, "eta",     params.eta);
+      h5::h5_write(pg, "tol",     params.tol);
     }
     _context.comm.barrier();
-    app_log(1, "####### QP energies on IBZ k-mesh done #######\n");
+  }
+
+
+  void pproc_t::linearized_qp_checkpoint(utils::mpi_context_t<mpi3::communicator>& mpi,
+                                         std::string const& filename, std::string const& source,
+                                         std::string const& grp_name, long iter,
+                                         lqp::params_t const& params, int n_fit_max) {
+    using math::shm::make_shared_array;
+    utils::check(source == "mesh" or source == "interpolated",
+                 "pproc_t.cpp::linearized_qp_checkpoint: source must be \"mesh\" or "
+                 "\"interpolated\", "
+                 "got \"{}\".", source);
+    // The two use cases differ only in the group <in> the inputs are read from, and the results
+    // go to <in>/qp_approx/ + <in>/qp_approx/lqp/ in both:
+    //   "mesh"        : <in> = {grp}/iter{N}, the Dyson solution {F_skij, Sigma_tskij} on the
+    //                   k-points of the SCF calculation (KS basis; H0 is added from system/H0_skij)
+    //   "interpolated": <in> = {grp}/iter{N}/wannier_inter, the Wannier-interpolated Dyson
+    //                   solution {F_skab, Sigma_tskab} (Wannier basis, interpolated k-points,
+    //                   H0 included)
+    // mu is {grp}/iter{N}/mu in both.
+    bool on_mesh = (source == "mesh");
+    std::string in_sub    = (on_mesh)? "" : "wannier_inter";
+    std::string F_key     = (on_mesh)? "F_skij" : "F_skab";
+    std::string Sigma_key = (on_mesh)? "Sigma_tskij" : "Sigma_tskab";
+    std::string Heff_key  = (on_mesh)? "Heff_skij" : "Heff_skab";
+    // every rank checks: h5::file throws rather than aborts on a missing file
+    utils::check(std::filesystem::exists(filename),
+                 "pproc_t.cpp::linearized_qp_checkpoint: {} does not exist.", filename);
+    auto FT = imag_axes_ft::read_iaft(filename, false);
+    long nt = FT.nt_f();
+
+    // iteration and dimensions from the dataset shapes: the global root reads, then broadcasts
+    std::array<long, 4> dims = {0, 0, 0, iter};          // ns, nk, norb, iter
+    if (mpi.comm.root()) {
+      h5::file file(filename, 'r');
+      auto root_grp = h5::group(file);
+      utils::check(root_grp.has_subgroup(grp_name),
+                   "pproc_t.cpp::linearized_qp_checkpoint: no group \"{}\" in {}.", grp_name,
+                   filename);
+      auto grp = root_grp.open_group(grp_name);
+      if (iter == -1) {
+        utils::check(grp.has_dataset("final_iter"),
+                     "pproc_t.cpp::linearized_qp_checkpoint: no {}/final_iter in {}; pass the "
+                     "iteration explicitly.", grp_name, filename);
+        h5::h5_read(grp, "final_iter", dims[3]);
+      }
+      std::string iter_key = "iter" + std::to_string(dims[3]);
+      utils::check(grp.has_subgroup(iter_key),
+                   "pproc_t.cpp::linearized_qp_checkpoint: no {}/{} in {}.", grp_name, iter_key,
+                   filename);
+      auto iter_grp = grp.open_group(iter_key);
+      // the inputs must exist: a read failing on the root alone would leave the others waiting
+      utils::check(on_mesh or iter_grp.has_subgroup(in_sub),
+                   "pproc_t.cpp::linearized_qp_checkpoint: {}/{}/wannier_inter is missing in {} "
+                   "(written by spectral_interpolation).", grp_name, iter_key, filename);
+      auto in_grp = iter_grp.open_group(in_sub);           // "" opens iter_grp itself
+      for (std::string key : {F_key, Sigma_key})
+        utils::check(in_grp.has_key(key),
+                     "pproc_t.cpp::linearized_qp_checkpoint: dataset {} is missing in {}/{}{} "
+                     "of {}.", key, grp_name, iter_key, (on_mesh)? "" : "/" + in_sub, filename);
+      utils::check(iter_grp.has_key("mu"),
+                   "pproc_t.cpp::linearized_qp_checkpoint: dataset mu is missing in {}/{} of {}.",
+                   grp_name, iter_key, filename);
+      auto info = h5::array_interface::get_dataset_info(in_grp, F_key);
+      dims[0] = info.lengths[0]; dims[1] = info.lengths[1]; dims[2] = info.lengths[2];
+    }
+    mpi.comm.broadcast_n(dims.data(), 4, 0);
+    long ns = dims[0], nk = dims[1], norb = dims[2];
+    iter = dims[3];
+    std::string iter_path = grp_name + "/iter" + std::to_string(iter);
+
+    // F (with H0) and Sigma(tau): one copy per node, read by each node's root
+    double mu = 0.0;
+    auto sF_skab      = make_shared_array<nda::array_view<ComplexType, 4>>(mpi, {ns, nk, norb, norb});
+    auto sSigma_tskab = make_shared_array<nda::array_view<ComplexType, 5>>(mpi, {nt, ns, nk, norb, norb});
+    if (mpi.node_comm.root()) {
+      h5::file file(filename, 'r');
+      auto iter_grp = h5::group(file).open_group(iter_path);
+      auto in_grp = iter_grp.open_group(in_sub);
+      h5::h5_read(iter_grp, "mu", mu);
+      auto F_loc = sF_skab.local();
+      auto Sigma_loc = sSigma_tskab.local();
+      nda::h5_read(in_grp, F_key, F_loc);
+      nda::h5_read(in_grp, Sigma_key, Sigma_loc);
+      if (on_mesh) {     // the interpolated F includes H0
+        nda::array<ComplexType, 4> H0_skij;
+        nda::h5_read(h5::group(file).open_group("system"), "H0_skij", H0_skij);
+        F_loc += H0_skij;
+      }
+    }
+    mpi.node_comm.broadcast_n(&mu, 1, 0);
+    sF_skab.node_sync(); sSigma_tskab.node_sync();
+
+    app_log(1, "  Linearized QP from {} (source = {}, {}):\n"
+               "    {} = {}, {} spin(s), {} k-point(s), {} orbitals",
+            filename, source, iter_path, (n_fit_max > 0)? "ladder up to n_fit" : "n_fit",
+            (n_fit_max > 0)? n_fit_max : params.n_fit, ns, nk, norb);
+
+    // one fit, or the ladder whose last accepted fit is the result
+    std::optional<lqp::shared_ladder_result_t> lad;
+    std::optional<lqp::shared_result_t> single;
+    if (n_fit_max > 0) {
+      lad.emplace(lqp::linearized_qp_ladder(mpi, sF_skab.local(), sSigma_tskab.local(), mu, FT,
+                                            n_fit_max, params.fit_resid_tol,
+                                            params.symmetric_window));
+    } else {
+      single.emplace(lqp::linearized_qp_solve(mpi, sF_skab.local(), sSigma_tskab.local(), mu, FT,
+                                              params, lqp::on_failure_e::abort));
+    }
+    auto const& res = (lad)? lad->last : *single;
+
+    if (mpi.comm.root()) {
+      h5::file file(filename, 'a');
+      auto iter_grp = h5::group(file).open_group(iter_path);
+      // top = <in>/qp_approx/ (energies, Heff), diag = <in>/qp_approx/lqp/ (diagnostics, controls).
+      // qp_approx/ holds one QP result and belongs to its writer: it is created fresh
+      // (create_group replaces an existing group), so nothing of an earlier run survives.
+      auto in_grp = iter_grp.open_group(in_sub);
+      auto top  = in_grp.create_group("qp_approx");
+      auto diagnositc_grp = top.create_group("lqp");
+      nda::h5_write(top, "E_ska", res.E_ska, false);
+      nda::h5_write(top, Heff_key, res.Hqp_skab.local(), false);
+      nda::h5_write(top, "Zqp_ska", res.Zqp_ska, false);
+      h5::h5_write(top, "mu", mu);
+      h5::h5_write(top, "scheme", std::string("lqp"));
+      nda::h5_write(diagnositc_grp, "Z_skab", res.Z_skab.local(), false);
+      nda::h5_write(diagnositc_grp, "V_skab", res.V_skab.local(), false);
+      nda::h5_write(diagnositc_grp, "min_eig_Zinv_sk", res.min_eig_Zinv_sk, false);
+      nda::h5_write(diagnositc_grp, "resid_sk", res.resid_sk, false);
+      nda::h5_write(diagnositc_grp, "anti_herm_A_sk", res.anti_herm_A_sk, false);
+      nda::h5_write(diagnositc_grp, "anti_herm_B_sk", res.anti_herm_B_sk, false);
+      nda::h5_write(diagnositc_grp, "anti_herm_Sigma_sk", res.anti_herm_Sigma_sk, false);
+      nda::h5_write(diagnositc_grp, "sumrule_sk", res.sumrule_sk, false);
+      nda::h5_write(diagnositc_grp, "status_sk", res.status_sk, false);
+      h5::h5_write(diagnositc_grp, "n_fit", res.n_fit);
+      h5::h5_write(diagnositc_grp, "fit_order", res.fit_order);
+      h5::h5_write(diagnositc_grp, "symmetric_window", params.symmetric_window);
+      h5::h5_write(diagnositc_grp, "fit_resid_tol", params.fit_resid_tol);
+      if (lad) {
+        auto lg = diagnositc_grp.create_group("ladder");
+        nda::h5_write(lg, "err_fit_sk", lad->err_fit_sk, false);
+        nda::h5_write(lg, "dHqp_sk", lad->dHqp_sk, false);
+        nda::h5_write(lg, "resid_history", lad->resid_history, false);
+        h5::h5_write(lg, "n_accepted", lad->n_accepted);
+        h5::h5_write(lg, "n_fit_cap", lad->n_fit_cap);
+        h5::h5_write(lg, "stopped_resid", lad->stopped_resid);
+      }
+    }
+    mpi.comm.barrier();
+  }
+
+  bool pproc_t::qp_approx_reusable(h5::group iter_grp, qp_context_t const& requested) {
+    if (not iter_grp.has_subgroup("qp_approx")) return false;
+    auto qp_grp = iter_grp.open_group("qp_approx");
+    if (not qp_grp.has_dataset("Heff_skij")) return false;
+    auto reject = [](std::string const& reason) {
+      app_log(1, "  The existing qp_approx/ is not reused ({}): recomputing it.", reason);
+      return false;
+    };
+    std::string scheme;
+    if (qp_grp.has_dataset("scheme")) h5::h5_read(qp_grp, "scheme", scheme);
+    if (scheme.empty() or not qp_grp.has_subgroup(scheme))
+      return reject("written without its parameters, by an earlier CoQui version");
+    if (scheme != requested.qp_approx)
+      return reject(std::format("qp_approx = {}, requested {}", scheme, requested.qp_approx));
+
+    // every control the result depends on must equal the request
+    auto pg = qp_grp.open_group(scheme);
+    std::string mismatch;
+    auto same = [&](std::string const& key, auto const& value) {
+      std::decay_t<decltype(value)> stored{};
+      if (pg.has_dataset(key)) h5::h5_read(pg, key, stored);
+      if (pg.has_dataset(key) and stored == value) return true;
+      mismatch = (pg.has_dataset(key))?
+                 std::format("{}.{} = {}, requested {}", scheme, key, stored, value) :
+                 std::format("{}.{} not stored", scheme, key);
+      return false;
+    };
+    if (scheme == "qp_eqn") {
+      auto const& q = requested.qp_eqn;
+      bool equal = same("solver", q.solver) and same("ac_alg", q.ac_alg) and
+                   same("ac_nfit", q.ac_nfit) and same("eta", q.eta) and same("tol", q.tol);
+      return (equal)? true : reject(mismatch);
+    }
+    auto const& l = requested.lqp;
+    // fit_order is stored resolved: -1 is #nodes - 1, with 2 n_fit nodes in a symmetric window
+    int fit_order = (l.fit_order >= 0)? l.fit_order : ((l.symmetric_window)? 2*l.n_fit : l.n_fit) - 1;
+    bool equal = same("n_fit", l.n_fit) and same("fit_order", fit_order) and
+                 same("symmetric_window", l.symmetric_window) and
+                 same("fit_resid_tol", l.fit_resid_tol);
+    // no failed point to check: linearized_qp_checkpoint aborts on one
+    return (equal)? true : reject(mismatch);
   }
 
   void pproc_t::spectral_interpolation(mf::MF &mf, ptree const& pt,
@@ -1091,5 +1315,6 @@ namespace methods {
       math::nda::redistribute(buffer2_diag, GS_diag);
       return GS_diag;
    }
+
 
 } // methods

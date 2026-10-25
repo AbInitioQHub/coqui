@@ -21,6 +21,7 @@ limitations under the License.
 import json
 
 from coqui._lib.mbpt_module import mbpt as mbpt_cxx
+from coqui.utils.qp_input import nest_flat_qp_keys, MBPT_FLAT_QP_KEYS
 
 
 def _run_mbpt(solver_type, params, h_int,
@@ -250,14 +251,21 @@ def run_evgw(params, h_int,
         - ``keep_scr_coulomb_fixed`` *(bool, optional, default ``False``)* — if
           ``True``, the screened Coulomb interaction W is held fixed at the 
           first iteration (evGW0); if ``False``, W is updated each iteration (evGW).
-        - ``ac_alg`` *(str, optional, default ``"pade"``)* — analytic continuation
-          algorithm used to extract quasiparticle energies from the Matsubara
-          self-energy. Currently only ``"pade"`` is implemented. 
-        - ``eta`` *(float, optional, default ``π/beta``, units: Hartree)* —
-          broadening for the analytic continuation.
-        - ``Nfit`` *(int, optional, default ``18``)* — number of Matsubara
-          frequencies used for the Padé fit. Set ``-1`` to use all Matsubara frequencies 
-          on a DLR mesh. 
+        - ``qp_eqn`` *(dict, optional)* — controls of the quasiparticle equation, which is
+          solved on the real axis after an analytic continuation of the diagonal
+          ``Σ_aa(iω)``:
+
+          * ``solver`` *(str, default ``"sc"``)* — ``"sc"``/``"sc_bisection"``
+            (bisection), ``"sc_newton"`` (secant), ``"spectral"`` (peak of the spectral
+            function) or ``"linearized"`` (first-order Taylor expansion of ``Σ(ω)``
+            around ``ε_KS``, a different approximation rather than a cheaper solver).
+          * ``ac_alg`` *(str, default ``"pade"``)* — the continuation that feeds the
+            equation. Currently only ``"pade"`` is implemented.
+          * ``ac_nfit`` *(int, default ``18``)* — Matsubara points it fits; ``-1`` uses
+            all of them on a DLR mesh.
+          * ``eta`` *(float, default ``π/beta``, Hartree)* — broadening at which the
+            continued self-energy is evaluated.
+          * ``tol`` *(float, default ``conv_thr``)* — convergence tolerance of the solver.
 
     h_int : ThcCoulomb or CholCoulomb
         Primary Coulomb interaction object.
@@ -289,6 +297,7 @@ def run_evgw(params, h_int,
             h_int=thc,
         )
     """
+    params = nest_flat_qp_keys(params, MBPT_FLAT_QP_KEYS, "run_evgw")
     _run_mbpt("evgw", params, h_int,
               h_int_hf = h_int_hf, h_int_hartree = h_int_hartree, h_int_exchange = h_int_exchange,
               projector_info = None, local_polarizabilities = None)
@@ -308,19 +317,25 @@ def run_qpgw(params, h_int,
     params : dict
         Accepts all keys documented in ``run_hf``, plus:
 
-        - ``ac_alg`` *(str, optional, default ``"pade"``)* — analytic continuation
-          algorithm used to extract quasiparticle energies from the Matsubara
-          self-energy.
-        - ``eta`` *(float, optional, default ``π/beta``, units: Hartree)* —
-          broadening for the analytic continuation.
-        - ``Nfit`` *(int, optional, default ``18``)* — number of Matsubara
-          frequencies used for the Padé fit. Set ``-1`` to use all Matsubara 
-          frequencies on a DLR mesh. 
-        - ``off_diag_mode`` *(str, optional, default ``"fermi"``)* — frequency at
-          which off-diagonal self-energy matrix elements are evaluated when
-          constructing the qpGW Hamiltonian. ``"fermi"`` evaluates at the Fermi
-          level; ``"qp_energy"`` evaluates at the quasiparticle energy of each
-          state.
+        - ``qp_eqn`` *(dict, optional)* — controls of the quasiparticle equation, which is
+          solved on the real axis after an analytic continuation of the diagonal
+          ``Σ_aa(iω)``:
+
+          * ``solver`` *(str, default ``"sc"``)* — ``"sc"``/``"sc_bisection"``
+            (bisection), ``"sc_newton"`` (secant), ``"spectral"`` (peak of the spectral
+            function) or ``"linearized"`` (first-order Taylor expansion of ``Σ(ω)``
+            around ``ε_KS``, a different approximation rather than a cheaper solver).
+          * ``ac_alg`` *(str, default ``"pade"``)* — the continuation that feeds the
+            equation. Currently only ``"pade"`` is implemented.
+          * ``ac_nfit`` *(int, default ``18``)* — Matsubara points it fits; ``-1`` uses
+            all of them on a DLR mesh.
+          * ``eta`` *(float, default ``π/beta``, Hartree)* — broadening at which the
+            continued self-energy is evaluated.
+          * ``tol`` *(float, default ``1e-8``)* — convergence tolerance of the solver.
+          * ``off_diag_mode`` *(str, default ``"fermi"``)* — frequency at which
+            off-diagonal self-energy matrix elements are evaluated when constructing the
+            qpGW Hamiltonian. ``"fermi"`` evaluates at the Fermi level; ``"qp_energy"``
+            at the quasiparticle energy of each state.
 
     h_int : ThcCoulomb or CholCoulomb
         Primary Coulomb interaction object.
@@ -348,10 +363,62 @@ def run_qpgw(params, h_int,
         run_qpgw(
             {"beta": 200, "niter": 5, "prefix": "svo.qpgw",
              "iaft": {"prec": "medium"},
-             "off_diag_mode": "fermi"},
+             "qp_eqn": {"off_diag_mode": "fermi"}},
             h_int=thc,
         )
     """
+    params = nest_flat_qp_keys(params, MBPT_FLAT_QP_KEYS, "run_qpgw")
     _run_mbpt("qpgw", params, h_int,
+              h_int_hf = h_int_hf, h_int_hartree = h_int_hartree, h_int_exchange = h_int_exchange,
+              projector_info = None, local_polarizabilities = None)
+
+
+def run_lqsgw(params, h_int,
+              h_int_hf = None, h_int_hartree = None, h_int_exchange = None):
+    """
+    Run a linearized quasiparticle self-consistent GW (LQSGW) calculation.
+
+    Per iteration the dynamic GW self-energy is expanded about zero frequency on the
+    Matsubara axis, ``Σ(iω) ≈ A + iω B``, and the quasiparticle Hamiltonian is
+    ``Z^1/2 (H0 + V_HF + A - μ) Z^1/2 + μ`` with ``Z = (1 - B)^-1``. No analytic
+    continuation is involved. The loop is closed with the unit-weight Green's function
+    of that Hamiltonian (Kutepov, Oudovenko and Kotliar, CPC 219, 407 (2017), Eq. 23).
+
+    This is a different approximation from ``qp_eqn.solver="linearized"`` of :func:`run_qpgw`
+    / :func:`run_evgw`, which Taylor-expands the diagonal quasiparticle equation around
+    the KS energy on the real axis.
+
+    Parameters
+    ----------
+    params : dict
+        Same keys as :func:`run_qpgw` for ``beta``, ``niter``, ``prefix``/``output``,
+        ``iaft``, ``iter_alg``, ``conv_thr``, ``restart``, ``div_treatment``; plus
+
+        - ``lqp`` *(dict, optional)* — controls of the linearization of ``Σ(iω)``:
+
+          * ``n_fit`` *(int, default ``6``)* — number of lowest positive fermionic
+            Matsubara frequencies in the fit window (``2*n_fit`` symmetric nodes).
+          * ``fit_order`` *(int, default ``2*n_fit - 1``)* — highest power of ``iω``; the
+            default is an exactly-determined interpolation.
+          * ``fit_resid_tol`` *(float, default ``1e-8``)* — an exactly-determined fit with
+            a larger relative residual has lost conditioning and aborts.
+    h_int, h_int_hf, h_int_hartree, h_int_exchange
+        As in :func:`run_qpgw`.
+
+    Returns
+    -------
+    None
+        Results are written to ``outdir/prefix.mbpt.h5``.
+
+    Examples
+    --------
+    ::
+
+        from coqui.mbpt import run_lqsgw
+
+        run_lqsgw({"beta": 200, "niter": 20, "conv_thr": 1e-5, "prefix": "svo.lqsgw",
+                   "lqp": {"n_fit": 6, "fit_order": -1}}, h_int=thc)
+    """
+    _run_mbpt("lqsgw", params, h_int,
               h_int_hf = h_int_hf, h_int_hartree = h_int_hartree, h_int_exchange = h_int_exchange,
               projector_info = None, local_polarizabilities = None)
