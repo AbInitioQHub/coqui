@@ -43,22 +43,9 @@ namespace methods {
        _Timer() {}
 
     void gw_t::print_thc_gw_timers() {
-      app_log(2, "\n  THC-GW timers");
-      app_log(2, "  -------------");
+      app_log(2, "\n  THC-GW self-energy timers");
+      app_log(2, "  -------------------------");
       app_log(2, "    Total:                   {0:.3f} sec", _Timer.elapsed("TOTAL"));
-      if (_Timer.elapsed("EVALUATE_PI_K") > 0.0) {
-        app_log(2, "    Evaluate Pi (k):         {0:.3f} sec", _Timer.elapsed("EVALUATE_PI_K"));
-        app_log(2, "      - Alloc:               {0:.3f} sec", _Timer.elapsed("PI_ALLOC_K"));
-        app_log(2, "      - Gij -> Guv:          {0:.3f} sec", _Timer.elapsed("PI_PRIM_TO_AUX"));
-        app_log(2, "      - Hadamard product:    {0:.3f} sec", _Timer.elapsed("PI_HADPROD_K"));
-      } else if (_Timer.elapsed("EVALUATE_PI_R") > 0.0) {
-        app_log(2, "    Evaluate Pi (R):         {0:.3f} sec", _Timer.elapsed("EVALUATE_PI_R"));
-        app_log(2, "      - Alloc:               {0:.3f} sec", _Timer.elapsed("PI_ALLOC_R"));
-        app_log(2, "      - Gij -> Guv:          {0:.3f} sec", _Timer.elapsed("PI_PRIM_TO_AUX"));
-        app_log(2, "      - FT:                  {0:.3f} sec", _Timer.elapsed("PI_FT_R"));
-        app_log(2, "      - Hadamard product:    {0:.3f} sec", _Timer.elapsed("PI_HADPROD_R"));
-      }
-      app_log(2, "    Evaluate W:              {0:.3f} sec", _Timer.elapsed("EVALUATE_W"));
       if (_Timer.elapsed("EVALUATE_SIGMA_K") > 0.0) {
         app_log(2, "    Evaluate Sigma (K):      {0:.3f} sec", _Timer.elapsed("EVALUATE_SIGMA_K"));
         app_log(2, "      - Alloc:               {0:.3f} sec", _Timer.elapsed("SIGMA_ALLOC_K"));
@@ -74,9 +61,8 @@ namespace methods {
         app_log(2, "      - Hadamard product:    {0:.3f} sec", _Timer.elapsed("SIGMA_HADPROD_R"));
         app_log(2, "      - Sigma_uv -> Sigma_ij {0:.3f} sec", _Timer.elapsed("SIGMA_AUX_TO_PRIM"));
       }
-      app_log(2, "    Imaginary FT tau->w:     {0:.3f} sec", _Timer.elapsed("IMAG_FT_TtoW"));
-      app_log(2, "    Imaginary FT w->tau:     {0:.3f} sec", _Timer.elapsed("IMAG_FT_WtoT"));
-      app_log(2, "      - FT_REDISTRIBUTE:     {0:.3f} sec\n", _Timer.elapsed("FT_REDISTRIBUTE"));
+      app_log(2, "");
+      app_log_flush();
     }
 
     void gw_t::print_thc_rpa_timers() {
@@ -128,4 +114,3 @@ namespace methods {
 
   } // solvers
 } // methods
-

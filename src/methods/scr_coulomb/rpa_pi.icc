@@ -1,6 +1,9 @@
 #ifndef COQUI_RPA_PI_ICC
 #define COQUI_RPA_PI_ICC
 
+#include <algorithm>
+#include <chrono>
+
 #include "configuration.hpp"
 #include "nda/nda.hpp"
 #include "nda/h5.hpp"
@@ -62,21 +65,37 @@ namespace solvers {
                "    - processor grid for Pi: (t, q, P, Q) = ({}, {}, {}, {})\n",
                ntpools, 1, np_P, np_Q);
 
+    using progress_clock = std::chrono::steady_clock;
+    auto setup_start = progress_clock::now();
+    app_log(2, "    - [P] setup output distribution: started");
+    app_log_flush();
     _Timer.start("PI_ALLOC_R");
     auto dPi_tqPQ = make_distributed_array<local_Array_4D_t>(
         mpi->comm, {ntpools, 1, np_P, np_Q}, {nt_half, nqpts_ibz, Np, Np}, {1, 1, 1, 1});
     auto [t_origin, q_origin, P_origin, Q_origin] = dPi_tqPQ.origin();
     auto [nt_loc, nq_loc, NP_loc, NQ_loc] = dPi_tqPQ.local_shape();
+    app_log(2, "    - [P] setup output distribution: completed in {:.1f} s",
+            std::chrono::duration<double>(progress_clock::now() - setup_start).count());
+    app_log_flush();
 
     // prepare Fourier transform matrices between k-space and R-space
+    setup_start = progress_clock::now();
+    app_log(2, "    - [P] setup Fourier coefficient matrices: started");
+    app_log_flush();
     math::shm::shared_array<nda::array_view<ComplexType,2>> sf_Rk(*mpi, {nkpts,nkpts});
     utils::k_to_R_coefficients(mpi->comm, nda::range(nkpts), MF->kpts(), MF->lattv(), MF->kp_grid(), sf_Rk);
     auto f_Rk = sf_Rk.local();
     math::shm::shared_array<nda::array_view<ComplexType,2>> sf_qR(*mpi,{nqpts_ibz,nkpts});
     utils::R_to_k_coefficients(mpi->comm, nda::range(nkpts), MF->Qpts_ibz(), MF->lattv(), MF->kp_grid(), sf_qR);
     auto f_qR = sf_qR.local();
+    app_log(2, "    - [P] setup Fourier coefficient matrices: completed in {:.1f} s",
+            std::chrono::duration<double>(progress_clock::now() - setup_start).count());
+    app_log_flush();
 
     // Setup t_intra_comm
+    setup_start = progress_clock::now();
+    app_log(2, "    - [P] setup auxiliary work buffers: started");
+    app_log_flush();
     mpi3::communicator t_intra_comm = mpi->comm.split(t_origin, mpi->comm.rank());
     utils::check(t_intra_comm.size()==np_P*np_Q, "t_intra_comm.size() = {} != np_P*np_Q", t_intra_comm.size());
 
@@ -91,6 +110,9 @@ namespace solvers {
     utils::check(dGp_sRPQ.local_shape()[2] == NP_loc, "dGp_sRPQ.local_shape[2] != NP_loc");
     utils::check(dGp_sRPQ.local_shape()[3] == NQ_loc, "dGp_sRPQ.local_shape[3] != NQ_loc");
     _Timer.stop("PI_ALLOC_R");
+    app_log(2, "    - [P] setup auxiliary work buffers: completed in {:.1f} s",
+            std::chrono::duration<double>(progress_clock::now() - setup_start).count());
+    app_log_flush();
 
     auto Pi_tqPQ_loc  = dPi_tqPQ.local();
     auto Gp_sRPQ_loc  = dGp_sRPQ.local();
@@ -98,13 +120,40 @@ namespace solvers {
     auto buf_skPQ_loc = dbuf_skPQ.local();
 
     auto had_prod2 = nda::map([](ComplexType x, ComplexType y) { return (x * y); });
+    auto progress_start = progress_clock::now();
+    const size_t progress_stride = std::max<size_t>(1, (nt_loc + 9) / 10);
+    double prim_to_aux_seconds = 0.0;
+    double unfold_seconds = 0.0;
+    double k_to_R_seconds = 0.0;
+    double hadamard_seconds = 0.0;
+    double R_to_q_seconds = 0.0;
+    auto begin_stage = [&](size_t it, char const *stage) {
+      if (it == 0) {
+        app_log(2, "      - [P] first local tau {}: started", stage);
+        app_log_flush();
+      }
+      return progress_clock::now();
+    };
+    auto finish_stage = [&](size_t it, char const *stage, auto const &start, double &total) {
+      double elapsed = std::chrono::duration<double>(progress_clock::now() - start).count();
+      total += elapsed;
+      if (it == 0) {
+        app_log(2, "      - [P] first local tau {}: completed in {:.1f} s", stage, elapsed);
+        app_log_flush();
+      }
+    };
+    app_log(2, "    - [P] root time-slice shard: global offset {}, {} local slices", t_origin, nt_loc);
+    app_log_flush();
 
     for (size_t it=0; it<nt_loc; it++) {
       // setup Gp
+      auto stage_start = begin_stage(it, "G(+tau) primary -> auxiliary");
       _Timer.start("PI_PRIM_TO_AUX");
       thc_solver_comm::primary_to_aux(0, 0, G_tskij(it+t_origin,nda::ellipsis{}), dbuf_skPQ, thc, MF->kp_to_ibz(), MF->kp_trev());
       //thc_solver_comm::setup_G_thc(it+t_origin, G_tskij, dbuf_skPQ, thc, false,  MF->kp_to_ibz(), MF->kp_trev());
       _Timer.stop("PI_PRIM_TO_AUX");
+      finish_stage(it, "G(+tau) primary -> auxiliary", stage_start, prim_to_aux_seconds);
+      stage_start = begin_stage(it, "G(+tau) symmetry unfold/copy");
       for (size_t ik=0; ik<nkpts; ++ik) {
         if (kp_trev(ik)) {
           Gp_sRPQ_loc(all,ik,all,all) = nda::conj(buf_skPQ_loc(all,kp_trev_pair(ik),all,all));
@@ -112,7 +161,9 @@ namespace solvers {
           Gp_sRPQ_loc(all,ik,all,all) = buf_skPQ_loc(all,ik,all,all);
         }
       }
+      finish_stage(it, "G(+tau) symmetry unfold/copy", stage_start, unfold_seconds);
       if (nkpts!=1) {
+        stage_start = begin_stage(it, "G(+tau) k -> R GEMM");
         _Timer.start("PI_FT_R");
         for (size_t is=0; is<ns; ++is) {
           auto GpR_2D = nda::reshape(Gp_sRPQ_loc(is, nda::ellipsis{}),
@@ -121,14 +172,18 @@ namespace solvers {
           GpR_2D = X_R_PQ;
         }
         _Timer.stop("PI_FT_R");
+        finish_stage(it, "G(+tau) k -> R GEMM", stage_start, k_to_R_seconds);
       }
 
       // setup Gn
+      stage_start = begin_stage(it, "G(-tau) primary -> auxiliary");
       _Timer.start("PI_PRIM_TO_AUX");
       thc_solver_comm::primary_to_aux(0, 0, G_tskij(G_tskij.shape(0)-it-t_origin-1,nda::ellipsis{}),
                                       dbuf_skPQ, thc, MF->kp_to_ibz(), MF->kp_trev());
       //thc_solver_comm::setup_G_thc(it+t_origin, G_tskij, dbuf_skPQ, thc, true, MF->kp_to_ibz(), MF->kp_trev()); // G_PQ(t)
       _Timer.stop("PI_PRIM_TO_AUX");
+      finish_stage(it, "G(-tau) primary -> auxiliary", stage_start, prim_to_aux_seconds);
+      stage_start = begin_stage(it, "G(-tau) symmetry unfold/copy");
       for (size_t ik=0; ik<nkpts; ++ik) {
         if (kp_trev(ik)) {
           Gn_sRPQ_loc(all,ik,all,all) = nda::conj(buf_skPQ_loc(all,kp_trev_pair(ik),all,all));
@@ -136,7 +191,9 @@ namespace solvers {
           Gn_sRPQ_loc(all,ik,all,all) = buf_skPQ_loc(all,ik,all,all);
         }
       }
+      finish_stage(it, "G(-tau) symmetry unfold/copy", stage_start, unfold_seconds);
       if (nkpts!=1) {
+        stage_start = begin_stage(it, "G(-tau) k -> R GEMM");
         _Timer.start("PI_FT_R");
         for (size_t is=0; is<ns; ++is) {
           auto GnR_2D = nda::reshape(Gn_sRPQ_loc(is, nda::ellipsis{}),
@@ -145,9 +202,11 @@ namespace solvers {
           GnR_2D = X_R_PQ;
         }
         _Timer.stop("PI_FT_R");
+        finish_stage(it, "G(-tau) k -> R GEMM", stage_start, k_to_R_seconds);
       }
 
       // Hadamard product
+      stage_start = begin_stage(it, "Hadamard product");
       _Timer.start("PI_HADPROD_R");
       auto GG_RPQ = Gp_sRPQ_loc(0, nda::ellipsis{});
       auto Gn_RPQ = Gn_sRPQ_loc(0, nda::ellipsis{});
@@ -161,21 +220,43 @@ namespace solvers {
       }
       GG_RPQ *= sp_factor;
       _Timer.stop("PI_HADPROD_R");
+      finish_stage(it, "Hadamard product", stage_start, hadamard_seconds);
 
       if (nkpts != 1) {
         // FT back to q-space
+        stage_start = begin_stage(it, "R -> irreducible-q GEMM");
         _Timer.start("PI_FT_R");
         auto Piq_2D = nda::reshape(Pi_tqPQ_loc(it,nda::ellipsis{}),
                                    shape_t<2>{nqpts_ibz, NP_loc*NQ_loc});
         auto GGR_2D = nda::reshape(GG_RPQ, shape_t<2>{nkpts, NP_loc*NQ_loc});
         nda::blas::gemm(f_qR, GGR_2D, Piq_2D);
         _Timer.stop("PI_FT_R");
+        finish_stage(it, "R -> irreducible-q GEMM", stage_start, R_to_q_seconds);
       } else {
         Pi_tqPQ_loc(it,nda::ellipsis{}) = GG_RPQ;
       }
+
+      const size_t done = it + 1;
+      if (done == 1 or done == nt_loc or done % progress_stride == 0) {
+        const double elapsed = std::chrono::duration<double>(progress_clock::now() - progress_start).count();
+        const double eta = (done < nt_loc)? elapsed * double(nt_loc - done) / double(done) : 0.0;
+        app_log(2, "    - [P] root time-slice shard {}/{} ({:.0f}%): elapsed {:.1f} s, ETA {:.1f} s",
+                done, nt_loc, 100.0 * double(done) / double(nt_loc), elapsed, eta);
+        app_log_flush();
+      }
     } // it
+    app_log(2, "    - [P] root shard stage totals: primary -> auxiliary {:.1f} s; "
+               "symmetry unfold/copy {:.1f} s; k -> R GEMM {:.1f} s; "
+               "Hadamard {:.1f} s; R -> irreducible-q GEMM {:.1f} s",
+            prim_to_aux_seconds, unfold_seconds, k_to_R_seconds,
+            hadamard_seconds, R_to_q_seconds);
+    app_log(2, "    - [P] root shard compute complete; entering final synchronization");
+    app_log_flush();
     dPi_tqPQ.communicator()->barrier();
     _Timer.stop("EVALUATE_PI_R");
+    app_log(2, "    - [P] R-space polarization complete in {:.1f} s\n",
+            std::chrono::duration<double>(progress_clock::now() - progress_start).count());
+    app_log_flush();
     return dPi_tqPQ;
   }
 
@@ -319,8 +400,15 @@ namespace solvers {
     auto Pi_qtPQ = dPi_qtPQ.local();
     Pi_qtPQ() = 0.0;
 
+    using progress_clock = std::chrono::steady_clock;
+    auto progress_start = progress_clock::now();
+    const size_t total_work = size_t(nqpts) * ns * nkpts;
+    const size_t progress_stride = std::max<size_t>(1, (total_work + 9) / 10);
+    app_log(2, "  - [P] k-space convolution: {} q/spin/k work units", total_work);
+    app_log_flush();
+
     _Timer.start("PI_HADPROD_K");
-    for (size_t qsk = 0; qsk < nqpts*ns*nkpts; ++qsk) {
+    for (size_t qsk = 0; qsk < total_work; ++qsk) {
       // qskt = iq*ns*nkpts + is*nkpts + ik
       size_t iq = qsk / (ns*nkpts);
       size_t is = (qsk / nkpts) % ns;
@@ -331,8 +419,20 @@ namespace solvers {
       auto Gp_kmq = Gp_sktPQ_c(is, ikmq, nda::ellipsis{});
       auto Pi = Pi_qtPQ(iq, nda::ellipsis{});
       Pi += had_prod2(Gp_kmq, Gn_k);
+
+      const size_t done = qsk + 1;
+      if (done == 1 or done == total_work or done % progress_stride == 0) {
+        const double elapsed = std::chrono::duration<double>(progress_clock::now() - progress_start).count();
+        const double eta = (done < total_work)? elapsed * double(total_work - done) / double(done) : 0.0;
+        app_log(2, "  - [P] k-space convolution {}/{} ({:.0f}%): elapsed {:.1f} s, ETA {:.1f} s",
+                done, total_work, 100.0 * double(done) / double(total_work), elapsed, eta);
+        app_log_flush();
+      }
     }
     _Timer.stop("PI_HADPROD_K");
+    app_log(2, "  - [P] k-space convolution complete in {:.1f} s\n",
+            std::chrono::duration<double>(progress_clock::now() - progress_start).count());
+    app_log_flush();
   }
 
   auto scr_coulomb_t::eval_Pi_rpa_active(const nda::ArrayOfRank<5> auto &G_tskij, THC_ERI auto &thc,
