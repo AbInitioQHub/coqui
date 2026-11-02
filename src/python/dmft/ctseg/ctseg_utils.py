@@ -272,13 +272,12 @@ def post_process_sigma(solver, **post_proc_params):
         F_known_moments = make_zero_tail(F_iw, n_moments=1)
         for i, bl in enumerate(F_iw.indices):
             F_iw[bl].set_from_fourier(solver.results.F_tau[bl], F_known_moments[i])
-        F_iw << make_hermitian(F_iw)
         if post_proc_params['degenerate_blk']:
             F_iw << modest.symmetrize(F_iw, post_proc_params['degenerate_blk'])
 
-        for block, fw in F_iw:
-            for iw in fw.mesh:
-                solver.Sigma_iw[block][iw] = fw[iw] / solver.G_iw[block][iw]
+        # Sigma = F G^{-1} as a matrix product within each block. F is not hermitian
+        # (F(-iw)^dagger = G Sigma, not Sigma G), so only Sigma is made hermitian below.
+        solver.Sigma_iw << F_iw * inverse(solver.G_iw)
     solver.Sigma_iw << make_hermitian(solver.Sigma_iw)
     if post_proc_params['degenerate_blk']:
         solver.Sigma_iw << modest.symmetrize(solver.Sigma_iw, post_proc_params['degenerate_blk'])
