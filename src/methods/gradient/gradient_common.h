@@ -24,6 +24,8 @@
 
 #include <string>
 
+#include <boost/dynamic_bitset.hpp>
+
 #include "nda/nda.hpp"
 
 #include "mean_field/MF.hpp"
@@ -31,16 +33,19 @@
 
 namespace methods {
 
-nda::array<ComplexType, 2> eval_grad_1e(std::shared_ptr<mf::MF> mf,
+nda::array<ComplexType, 2> eval_grad_1e(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                                        std::shared_ptr<mf::MF> mf,
                                         const nda::MemoryArrayOfRank<4> auto &D_skij);
 
-nda::array<ComplexType, 2> eval_grad_pulay(std::shared_ptr<mf::MF> mf,
+nda::array<ComplexType, 2> eval_grad_pulay(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                                           std::shared_ptr<mf::MF> mf,
                                            const imag_axes_ft::IAFT &FT,
                                            const nda::MemoryArrayOfRank<4> auto &S_skij,
                                            const nda::MemoryArrayOfRank<5> auto &G_tskij,
                                            double mu);
 
-nda::array<ComplexType, 2> eval_grad_pulay(std::shared_ptr<mf::MF> mf,
+nda::array<ComplexType, 2> eval_grad_pulay(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                                           std::shared_ptr<mf::MF> mf,
                                            const nda::MemoryArrayOfRank<4> auto &D_skij,
                                            const nda::MemoryArrayOfRank<4> auto &F_skij,
                                            const nda::MemoryArrayOfRank<4> auto &S_skij,
@@ -76,14 +81,15 @@ ComplexType eval_grad_pulay(int iatom, int direction, std::shared_ptr<mf::MF> mf
                             const nda::MemoryArrayOfRank<4> auto &DE_skij);
 
 template<typename data_type>
-void print_mbpt_gradient(const nda::array<data_type, 2> &gradient,
-                          std::shared_ptr<mf::MF> mf,
-                          const std::string& str, bool bohr = true);
+void print_mbpt_gradient(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                         const nda::array<data_type, 2> &gradient,
+                         std::shared_ptr<mf::MF> mf,
+                         const std::string& str, bool bohr = true);
 
 template<typename communicator_t, typename data_type>
 void write_mbpt_gradient(communicator_t &comm,
-                          const nda::array<data_type, 2> &gradient,
-                          const std::string &output, long iter);
+                         const nda::array<data_type, 2> &gradient,
+                         const std::string &output, long iter);
 
 } // namespace methods
 

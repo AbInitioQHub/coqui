@@ -26,7 +26,8 @@ namespace methods {
 
   namespace solvers {
 
-    nda::array<ComplexType, 2> hf_gradient_t::evaluate(const nda::MemoryArrayOfRank<4> auto &D_skij,
+    nda::array<ComplexType, 2> hf_gradient_t::evaluate(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                                                       const nda::MemoryArrayOfRank<4> auto &D_skij,
                                                        Cholesky_ERI auto &&chol)
     {
       // http://patorjk.com/software/taag/#p=display&f=Calvin%20S&t=COQUI%20chol-hf-gradient
@@ -51,7 +52,7 @@ namespace methods {
       app_log(1, "  - npol:              {}", _npol);
       app_log(1, "\n");
 
-      nda::array<ComplexType, 2> tmp_grad_2e = eval_grad_2e(D_skij, chol);
+      nda::array<ComplexType, 2> tmp_grad_2e = eval_grad_2e(grad_atom_direction_mask, D_skij, chol);
 
       _Timer.stop("TOTAL");
 
@@ -61,34 +62,42 @@ namespace methods {
       return tmp_grad_2e;
     }
 
-    nda::array<ComplexType, 2> hf_gradient_t::eval_grad_2e(const nda::MemoryArrayOfRank<4> auto &D_skij,
+    nda::array<ComplexType, 2> hf_gradient_t::eval_grad_2e(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                                                           const nda::MemoryArrayOfRank<4> auto &D_skij,
                                                            Cholesky_ERI auto && chol)
     {
       auto tmp_grad_2e = nda::array<ComplexType, 2>::zeros({_natoms, 3});
-      tmp_grad_2e = eval_grad_coulomb(D_skij, chol) + eval_grad_exchange(D_skij, chol);
+      tmp_grad_2e = eval_grad_coulomb(grad_atom_direction_mask, D_skij, chol) +
+                    eval_grad_exchange(grad_atom_direction_mask, D_skij, chol);
       return tmp_grad_2e;
     }
 
-    nda::array<ComplexType, 2> hf_gradient_t::eval_grad_coulomb(const nda::MemoryArrayOfRank<4> auto &D_skij,
+    nda::array<ComplexType, 2> hf_gradient_t::eval_grad_coulomb(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                                                                const nda::MemoryArrayOfRank<4> auto &D_skij,
                                                                 Cholesky_ERI auto && chol)
     {
       auto dm_total = eval_dm_total(D_skij);
       auto tmp_grad_coulomb = nda::array<ComplexType, 2>::zeros({_natoms, 3});
       for (int iatom = 0; iatom < _natoms; ++iatom) {
         for (int direction = 0; direction < 3; ++direction) {
-          tmp_grad_coulomb(iatom, direction) += eval_grad_coulomb(iatom, direction, dm_total, chol);
+          if (grad_atom_direction_mask[iatom * 3 + direction]) {
+            tmp_grad_coulomb(iatom, direction) += eval_grad_coulomb(iatom, direction, dm_total, chol);
+          }
         }
       }
       return tmp_grad_coulomb;
     }
 
-    nda::array<ComplexType, 2> hf_gradient_t::eval_grad_exchange(const nda::MemoryArrayOfRank<4> auto &D_skij,
+    nda::array<ComplexType, 2> hf_gradient_t::eval_grad_exchange(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                                                                 const nda::MemoryArrayOfRank<4> auto &D_skij,
                                                                  Cholesky_ERI auto && chol)
     {
       auto tmp_grad_exchange = nda::array<ComplexType, 2>::zeros({_natoms, 3});
       for (int iatom = 0; iatom < _natoms; ++iatom) {
         for (int direction = 0; direction < 3; ++direction) {
-          tmp_grad_exchange(iatom, direction) += eval_grad_exchange(iatom, direction, D_skij, chol);
+          if (grad_atom_direction_mask[iatom * 3 + direction]) {
+            tmp_grad_exchange(iatom, direction) += eval_grad_exchange(iatom, direction, D_skij, chol);
+          }
         }
       }
       return tmp_grad_exchange;
@@ -262,17 +271,17 @@ namespace methods {
     using Arrv3D = nda::array_view<ComplexType, 3>;
     using Arrv4D = nda::array_view<ComplexType, 4>;
 
-    template Arr2D hf_gradient_t::evaluate(const Arr4D&, chol_reader_t&);
-    template Arr2D hf_gradient_t::evaluate(const Arrv4D&, chol_reader_t&);
+    template Arr2D hf_gradient_t::evaluate(const boost::dynamic_bitset<>&, const Arr4D&, chol_reader_t&);
+    template Arr2D hf_gradient_t::evaluate(const boost::dynamic_bitset<>&, const Arrv4D&, chol_reader_t&);
 
-    template Arr2D hf_gradient_t::eval_grad_2e(const Arr4D&, chol_reader_t&);
-    template Arr2D hf_gradient_t::eval_grad_2e(const Arrv4D&, chol_reader_t&);
+    template Arr2D hf_gradient_t::eval_grad_2e(const boost::dynamic_bitset<>&, const Arr4D&, chol_reader_t&);
+    template Arr2D hf_gradient_t::eval_grad_2e(const boost::dynamic_bitset<>&, const Arrv4D&, chol_reader_t&);
 
-    template Arr2D hf_gradient_t::eval_grad_coulomb(const Arr4D&, chol_reader_t&);
-    template Arr2D hf_gradient_t::eval_grad_coulomb(const Arrv4D&, chol_reader_t&);
+    template Arr2D hf_gradient_t::eval_grad_coulomb(const boost::dynamic_bitset<>&, const Arr4D&, chol_reader_t&);
+    template Arr2D hf_gradient_t::eval_grad_coulomb(const boost::dynamic_bitset<>&, const Arrv4D&, chol_reader_t&);
 
-    template Arr2D hf_gradient_t::eval_grad_exchange(const Arr4D&, chol_reader_t&);
-    template Arr2D hf_gradient_t::eval_grad_exchange(const Arrv4D&, chol_reader_t&);
+    template Arr2D hf_gradient_t::eval_grad_exchange(const boost::dynamic_bitset<>&, const Arr4D&, chol_reader_t&);
+    template Arr2D hf_gradient_t::eval_grad_exchange(const boost::dynamic_bitset<>&, const Arrv4D&, chol_reader_t&);
 
     template Arr3D hf_gradient_t::eval_dm_total(const Arr4D&);
     template Arr3D hf_gradient_t::eval_dm_total(const Arrv4D&);

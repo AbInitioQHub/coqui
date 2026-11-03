@@ -24,17 +24,23 @@
 
 #include <string>
 
+#include "boost/dynamic_bitset.hpp"
+
 #include "methods/mb_state/mb_state.hpp"
 #include "methods/SCF/mb_solver_t.h"
 #include "numerics/imag_axes_ft/iaft_utils.hpp"
+#include "utilities/parser.h"
 
 namespace methods
 {
 
 template<typename dyson_type, typename eri_t, typename corr_solver_t>
-void evaluate_gradient(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri_t,
+void evaluate_gradient(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                       MBState &mb_state, dyson_type &dyson, eri_t &mb_eri_t,
                        const imag_axes_ft::IAFT &FT, solvers::mb_solver_t<corr_solver_t> mb_solver,
                        const std::string &solver_type, const std::string &input_grp, int input_iter);
+
+boost::dynamic_bitset<> parse_gradient_input(std::shared_ptr<mf::MF> mf, std::string &str);
 
 } // namespace methods
 

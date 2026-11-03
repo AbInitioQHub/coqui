@@ -36,9 +36,10 @@ namespace methods
 {
 
 template<typename dyson_type, typename eri_t, typename corr_solver_t>
-void evaluate_gradient(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri_t, const imag_axes_ft::IAFT &FT,
-                       solvers::mb_solver_t<corr_solver_t> mb_solver, const std::string &solver_type,
-                       const std::string &input_grp, int input_iter)
+void evaluate_gradient(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                       MBState &mb_state, dyson_type &dyson, eri_t &mb_eri_t,
+                       const imag_axes_ft::IAFT &FT, solvers::mb_solver_t<corr_solver_t> mb_solver,
+                       const std::string &solver_type, const std::string &input_grp, int input_iter)
 {
   utils::TimerManager Timer;
   auto mpi = mb_eri_t.corr_eri->get().mpi();
@@ -86,14 +87,24 @@ void evaluate_gradient(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri_t, co
   auto grad_2e = nda::array<ComplexType, 2>::zeros({mf->number_of_atoms(), 3});
   auto grad_pulay = nda::array<ComplexType, 2>::zeros({mf->number_of_atoms(), 3});
   auto grad_elec = nda::array<ComplexType, 2>::zeros({mf->number_of_atoms(), 3});
+  auto grad_nuc = nda::array<ComplexType, 2>::zeros({mf->number_of_atoms(), 3});
   auto grad_total = nda::array<ComplexType, 2>::zeros({mf->number_of_atoms(), 3});
 
+  for (int iatom = 0; iatom < mf->number_of_atoms(); ++iatom) {
+    for (int direction = 0; direction < 3; ++direction) {
+      if (grad_atom_direction_mask[iatom * 3 + direction]) {
+        grad_nuc(iatom, direction) = mf->nuclear_gradient()(iatom, direction);
+      }
+    }
+  }
+
+
   Timer.start("PULAY");
-  grad_pulay = eval_grad_pulay(mf, FT, dyson.sS_skij().local(), sG_tskij.local(), mu);
+  grad_pulay = eval_grad_pulay(grad_atom_direction_mask, mf, FT, dyson.sS_skij().local(), sG_tskij.local(), mu);
   Timer.stop("PULAY");
 
   Timer.start("ONE_ELECTRON");
-  grad_1e = eval_grad_1e(mf, sDm_skij.local());
+  grad_1e = eval_grad_1e(grad_atom_direction_mask, mf, sDm_skij.local());
   Timer.stop("ONE_ELECTRON");
 
   Timer.start("TWO_ELECTRON");
@@ -103,12 +114,12 @@ void evaluate_gradient(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri_t, co
     if constexpr (std::is_same_v<decltype(mb_eri_t.hf_eri), std::optional<std::reference_wrapper<chol_reader_t>>>) {
       if (mb_eri_t.hf_eri != std::nullopt) {
         solvers::hf_gradient_t hf_grad(mf);
-        grad_2e = hf_grad.evaluate(sDm_skij.local(), mb_eri_t.hf_eri->get());
+        grad_2e = hf_grad.evaluate(grad_atom_direction_mask, sDm_skij.local(), mb_eri_t.hf_eri->get());
       }
     } else if constexpr(std::is_same_v<decltype(mb_eri_t.corr_eri), std::optional<std::reference_wrapper<chol_reader_t>>>) {
       if (mb_eri_t.corr_eri != std::nullopt) {
         solvers::hf_gradient_t hf_grad(mf);
-        grad_2e = hf_grad.evaluate(sDm_skij.local(), mb_eri_t.corr_eri->get());
+        grad_2e = hf_grad.evaluate(grad_atom_direction_mask, sDm_skij.local(), mb_eri_t.corr_eri->get());
       }
     }
   }
@@ -116,13 +127,13 @@ void evaluate_gradient(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri_t, co
   Timer.stop("TWO_ELECTRON");
 
   grad_elec = grad_1e + grad_2e + grad_pulay;
-  grad_total = grad_elec + mf->nuclear_gradient();
-  print_mbpt_gradient(mf->nuclear_gradient(), mf, "GRAD_NUC");
-  print_mbpt_gradient(grad_1e, mf, "GRAD_1ELECTRON");
-  print_mbpt_gradient(grad_2e, mf, "GRAD_2ELECTRON");
-  print_mbpt_gradient(grad_pulay, mf, "GRAD_PULAY");
-  print_mbpt_gradient(grad_elec, mf, "GRAD_ELEC");
-  print_mbpt_gradient(grad_total, mf, "GRAD_TOTAL");
+  grad_total = grad_elec + grad_nuc;
+  print_mbpt_gradient(grad_atom_direction_mask, grad_nuc, mf, "GRAD_NUC");
+  print_mbpt_gradient(grad_atom_direction_mask, grad_1e, mf, "GRAD_1ELECTRON");
+  print_mbpt_gradient(grad_atom_direction_mask, grad_2e, mf, "GRAD_2ELECTRON");
+  print_mbpt_gradient(grad_atom_direction_mask, grad_pulay, mf, "GRAD_PULAY");
+  print_mbpt_gradient(grad_atom_direction_mask, grad_elec, mf, "GRAD_ELEC");
+  print_mbpt_gradient(grad_atom_direction_mask, grad_total, mf, "GRAD_TOTAL");
 
   Timer.start("WRITE");
   write_mbpt_gradient(mpi->comm, grad_total, mb_state.coqui_prefix, input_iter);
@@ -141,8 +152,65 @@ void evaluate_gradient(MBState &mb_state, dyson_type &dyson, eri_t &mb_eri_t, co
   app_log(1, "####### Gradient routines end #######\n");
 }
 
+boost::dynamic_bitset<> parse_gradient_input(std::shared_ptr<mf::MF> mf, std::string &str)
+{
+  const std::string all_directions = "xyz";
+  auto grad_atom_direction_mask = boost::dynamic_bitset<> (mf->number_of_atoms() * 3, 0);
+  io::tolower(str);
+  auto results = utils::split(str, ";");
+
+  for (const auto &result : results) {
+
+    auto parts = utils::split(result, " \n\t");
+    if (parts.empty()) {
+      continue;
+    }
+    utils::check(parts.size() == 1 or parts.size() == 2,
+                 "Invalid input for gradient evaluation: {}.", result);
+    if (parts.size() == 1) {
+      parts.push_back(all_directions);
+    }
+    for (int i = 0; i < parts[1].size(); ++i) {
+      const auto c = parts[1][i];
+      utils::check(all_directions.find(c) != std::string::npos,
+                   "Invalid input for gradient evaluation: {}.", result);
+      utils::check(parts[1].find(c) == i,
+                   "Duplicate direction for gradient evaluation: {}.", result);
+    }
+
+    if (parts[0] == "false" or parts[0] == "none") {
+      grad_atom_direction_mask.reset();
+      continue;
+    }
+
+    int start = 0;
+    int end = mf->number_of_atoms();
+
+    if (parts[0] != "true" and parts[0] != "all") {
+      const auto [ptr, ec] = std::from_chars(parts[0].data(), parts[0].data() + parts[0].size(), start);
+      utils::check(ptr == parts[0].data() + parts[0].size() and ec == std::errc{},
+                   "Invalid input for gradient evaluation: {}.", result);
+      utils::check(start >= 0 and start < mf->number_of_atoms(),
+                   "Atom index out of range: {}.", result);
+      end = start + 1;
+    }
+
+    for (int iatom = start; iatom < end; ++iatom) {
+      for (const auto &c : parts[1]) {
+        const auto offset = all_directions.find(c);
+        grad_atom_direction_mask.set(iatom * 3 + offset);
+      }
+    }
+
+  }
+
+  return grad_atom_direction_mask;
+}
+
+
 #define MBPT_GRAD_INST(HF, HARTREE, EXCHANGE, CORR)\
-template void evaluate_gradient(MBState&, \
+template void evaluate_gradient(const boost::dynamic_bitset<>&, \
+                                MBState&, \
                                 simple_dyson&, \
                                 mb_eri_t<HF, HARTREE, EXCHANGE, CORR>&, \
                                 const imag_axes_ft::IAFT&, \

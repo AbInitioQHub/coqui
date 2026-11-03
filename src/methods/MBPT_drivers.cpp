@@ -195,10 +195,12 @@ void mbpt(std::string solver_type, eri_t &eri, ptree const& pt)
              iter_solver.get(), niter, restart, conv_thr, const_mu,
              greens_func_source, greens_func_iteration, 
              io::get_value_with_default<bool>(pt, "eval_thermodynamics", false));
-    if (io::get_value_with_default<bool>(pt, "eval_grad", false)) {
+    auto eval_grad = io::get_value_with_default<std::string>(pt, "eval_grad", "false");
+    auto grad_atom_direction_mask = parse_gradient_input(mf, eval_grad);
+    if (grad_atom_direction_mask.any()) {
       if constexpr (std::is_same_v<decltype(eri.hf_eri), std::optional<std::reference_wrapper<chol_reader_t>>> or
                     std::is_same_v<decltype(eri.corr_eri), std::optional<std::reference_wrapper<chol_reader_t>>>) {
-        evaluate_gradient(mb_state, dyson, eri, ft, mb_solver_t(&hf), solver_type, "scf", -1);
+        evaluate_gradient(grad_atom_direction_mask, mb_state, dyson, eri, ft, mb_solver_t(&hf), solver_type, "scf", -1);
       }
     }
 

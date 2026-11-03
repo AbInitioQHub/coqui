@@ -22,6 +22,8 @@
 #ifndef COQUI_HF_GRADIENT_T_H
 #define COQUI_HF_GRADIENT_T_H
 
+#include "boost/dynamic_bitset.hpp"
+
 #include "mpi3/communicator.hpp"
 #include "mean_field/MF.hpp"
 #include "methods/ERI/detail/concepts.hpp"
@@ -40,16 +42,20 @@ namespace methods {
 
     ~hf_gradient_t() = default;
 
-    nda::array<ComplexType, 2> evaluate(const nda::MemoryArrayOfRank<4> auto &D_skij,
+    nda::array<ComplexType, 2> evaluate(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                                        const nda::MemoryArrayOfRank<4> auto &D_skij,
                                         Cholesky_ERI auto && chol);
 
-    nda::array<ComplexType, 2> eval_grad_2e(const nda::MemoryArrayOfRank<4> auto &D_skij,
+    nda::array<ComplexType, 2> eval_grad_2e(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                                            const nda::MemoryArrayOfRank<4> auto &D_skij,
                                             Cholesky_ERI auto && chol);
 
-    nda::array<ComplexType, 2> eval_grad_coulomb(const nda::MemoryArrayOfRank<4> auto &D_skij,
+    nda::array<ComplexType, 2> eval_grad_coulomb(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                                                 const nda::MemoryArrayOfRank<4> auto &D_skij,
                                                  Cholesky_ERI auto && chol);
 
-    nda::array<ComplexType, 2> eval_grad_exchange(const nda::MemoryArrayOfRank<4> auto &D_skij,
+    nda::array<ComplexType, 2> eval_grad_exchange(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                                                  const nda::MemoryArrayOfRank<4> auto &D_skij,
                                                   Cholesky_ERI auto && chol);
 
     nda::array<ComplexType, 3> eval_dm_total(const nda::MemoryArrayOfRank<4> auto &D_skij);

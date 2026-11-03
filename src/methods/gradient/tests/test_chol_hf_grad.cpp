@@ -70,15 +70,18 @@ namespace bdft_tests {
     auto grad_elec = nda::array<ComplexType, 2>::zeros({mf->number_of_atoms(), 3});
     auto grad_total = nda::array<ComplexType, 2>::zeros({mf->number_of_atoms(), 3});
     solvers::hf_gradient_t hf_grad(mf);
-    grad_1e = eval_grad_1e(mf, mb_state.sDm_skij.value().local());
-    grad_2e = hf_grad.eval_grad_2e(mb_state.sDm_skij.value().local(), eri.hf_eri->get());
-    grad_pulay = eval_grad_pulay(mf, mb_state.sDm_skij.value().local(), mb_state.sF_skij.value().local(),
+    grad_1e = eval_grad_1e(boost::dynamic_bitset<>(mf->number_of_atoms() * 3, 1),
+                           mf, mb_state.sDm_skij.value().local());
+    grad_2e = hf_grad.eval_grad_2e(boost::dynamic_bitset<>(mf->number_of_atoms() * 3, 1),
+                                   mb_state.sDm_skij.value().local(), eri.hf_eri->get());
+    grad_pulay = eval_grad_pulay(boost::dynamic_bitset<>(mf->number_of_atoms() * 3, 1),
+                                 mf, mb_state.sDm_skij.value().local(), mb_state.sF_skij.value().local(),
                                  dyson.sS_skij().local(), dyson.sH0_skij().local(), false);
     grad_elec = grad_1e + grad_2e + grad_pulay;
     grad_total = grad_elec + mf->nuclear_gradient();
-    print_mbpt_gradient(mf->nuclear_gradient(), mf, "GRAD_NUC");
-    print_mbpt_gradient(grad_elec, mf, "GRAD_ELEC");
-    print_mbpt_gradient(grad_total, mf, "GRAD_TOTAL");
+    print_mbpt_gradient(boost::dynamic_bitset<>(mf->number_of_atoms() * 3, 1), mf->nuclear_gradient(), mf, "GRAD_NUC");
+    print_mbpt_gradient(boost::dynamic_bitset<>(mf->number_of_atoms() * 3, 1), grad_elec, mf, "GRAD_ELEC");
+    print_mbpt_gradient(boost::dynamic_bitset<>(mf->number_of_atoms() * 3, 1), grad_total, mf, "GRAD_TOTAL");
 
     auto grad_total_ref = nda::array<ComplexType, 2>::zeros({mf->number_of_atoms(), 3});
     h5::file file(outdir + "/" + prefix + ".h5", 'r');

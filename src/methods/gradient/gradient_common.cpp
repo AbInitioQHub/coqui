@@ -24,22 +24,29 @@
 
 #include "gradient_common.h"
 
+#include <format>
+
 #include "IO/app_loggers.h"
 
 namespace methods {
 
-nda::array<ComplexType, 2> eval_grad_1e(std::shared_ptr<mf::MF> mf, const nda::MemoryArrayOfRank<4> auto &D_skij)
+nda::array<ComplexType, 2> eval_grad_1e(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                                        std::shared_ptr<mf::MF> mf,
+                                        const nda::MemoryArrayOfRank<4> auto &D_skij)
 {
   auto grad_1e = nda::array<ComplexType, 2>::zeros({mf->number_of_atoms(), 3});
   for (int iatom = 0; iatom < mf->number_of_atoms(); ++iatom) {
     for (int direction = 0; direction < 3; ++direction) {
-      grad_1e(iatom, direction) += eval_grad_1e(iatom, direction, mf, D_skij);
+      if (grad_atom_direction_mask[iatom * 3 + direction]) {
+        grad_1e(iatom, direction) += eval_grad_1e(iatom, direction, mf, D_skij);
+      }
     }
   }
   return grad_1e;
 }
 
-nda::array<ComplexType, 2> eval_grad_pulay(std::shared_ptr<mf::MF> mf,
+nda::array<ComplexType, 2> eval_grad_pulay(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                                           std::shared_ptr<mf::MF> mf,
                                            const imag_axes_ft::IAFT &FT,
                                            const nda::MemoryArrayOfRank<4> auto &S_skij,
                                            const nda::MemoryArrayOfRank<5> auto &G_tskij,
@@ -49,13 +56,16 @@ nda::array<ComplexType, 2> eval_grad_pulay(std::shared_ptr<mf::MF> mf,
   auto grad_pulay = nda::array<ComplexType, 2>::zeros({mf->number_of_atoms(), 3});
   for (int iatom = 0; iatom < mf->number_of_atoms(); ++iatom) {
     for (int direction = 0; direction < 3; ++direction) {
-      grad_pulay(iatom, direction) += eval_grad_pulay(iatom, direction, mf, DE_skij);
+      if (grad_atom_direction_mask[iatom * 3 + direction]) {
+        grad_pulay(iatom, direction) += eval_grad_pulay(iatom, direction, mf, DE_skij);
+      }
     }
   }
   return grad_pulay;
 }
 
-nda::array<ComplexType, 2> eval_grad_pulay(std::shared_ptr<mf::MF> mf,
+nda::array<ComplexType, 2> eval_grad_pulay(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                                           std::shared_ptr<mf::MF> mf,
                                            const nda::MemoryArrayOfRank<4> auto &D_skij,
                                            const nda::MemoryArrayOfRank<4> auto &F_skij,
                                            const nda::MemoryArrayOfRank<4> auto &S_skij,
@@ -66,7 +76,9 @@ nda::array<ComplexType, 2> eval_grad_pulay(std::shared_ptr<mf::MF> mf,
   auto grad_pulay = nda::array<ComplexType, 2>::zeros({mf->number_of_atoms(), 3});
   for (int iatom = 0; iatom < mf->number_of_atoms(); ++iatom) {
     for (int direction = 0; direction < 3; ++direction) {
-      grad_pulay(iatom, direction) += eval_grad_pulay(iatom, direction, mf, DE_skij);
+      if (grad_atom_direction_mask[iatom * 3 + direction]) {
+        grad_pulay(iatom, direction) += eval_grad_pulay(iatom, direction, mf, DE_skij);
+      }
     }
   }
   return grad_pulay;
@@ -222,8 +234,9 @@ ComplexType eval_grad_pulay(int iatom, int direction, std::shared_ptr<mf::MF> mf
 }
 
 template<typename data_type>
-void print_mbpt_gradient(const nda::array<data_type, 2>& gradient, std::shared_ptr<mf::MF> mf,
-                          const std::string &str, bool bohr)
+void print_mbpt_gradient(const boost::dynamic_bitset<> &grad_atom_direction_mask,
+                         const nda::array<data_type, 2>& gradient, std::shared_ptr<mf::MF> mf,
+                         const std::string &str, bool bohr)
 {
   double factor;
   std::string unit;
@@ -240,11 +253,15 @@ void print_mbpt_gradient(const nda::array<data_type, 2>& gradient, std::shared_p
   app_log(1, "   {:<5} | {:<5} | {:>20} | {:>20} | {:>20}", "id", "nuc", "X" + unit, "Y" + unit, "Z" + unit);
   app_log(1, "  --------------------------------------------------------------------------------------");
   for (int iatom = 0; iatom < mf->number_of_atoms(); ++iatom) {
-    app_log(1, "   {:<5} | {:<5} | {:>+20.10f} | {:>+20.10f} | {:>+20.10f}",
-      iatom, mf->atomic_id(iatom),
-      nda::real(gradient(iatom, 0) * factor),
-      nda::real(gradient(iatom, 1) * factor),
-      nda::real(gradient(iatom, 2) * factor));
+    auto format_gradient = [&](int direction) -> std::string {
+      if (grad_atom_direction_mask[iatom * 3 + direction]) {
+        return std::format("{:>+.10f}", nda::real(gradient(iatom, direction)) * factor);
+      } else {
+        return "";
+      }
+    };
+    app_log(1, "   {:<5} | {:<5} | {:>20} | {:>20} | {:>20}",
+      iatom, mf->atomic_id(iatom), format_gradient(0), format_gradient(1), format_gradient(2));
   }
   app_log(1, "  --------------------------------------------------------------------------------------");
   app_log(1, "\n");
@@ -274,13 +291,17 @@ using Arr5D = nda::array<ComplexType, 5>;
 using Arrv4D = nda::array_view<ComplexType, 4>;
 using Arrv5D = nda::array_view<ComplexType, 5>;
 
-template Arr2D eval_grad_1e(std::shared_ptr<mf::MF>, const Arr4D&);
-template Arr2D eval_grad_1e(std::shared_ptr<mf::MF>, const Arrv4D&);
+template Arr2D eval_grad_1e(const boost::dynamic_bitset<>&, std::shared_ptr<mf::MF>, const Arr4D&);
+template Arr2D eval_grad_1e(const boost::dynamic_bitset<>&, std::shared_ptr<mf::MF>, const Arrv4D&);
 
-template Arr2D eval_grad_pulay(std::shared_ptr<mf::MF>, const imag_axes_ft::IAFT&, const Arr4D&, const Arr5D&, double);
-template Arr2D eval_grad_pulay(std::shared_ptr<mf::MF>, const imag_axes_ft::IAFT&, const Arrv4D&, const Arrv5D&, double);
-template Arr2D eval_grad_pulay(std::shared_ptr<mf::MF>, const Arr4D&, const Arr4D&, const Arr4D&, const Arr4D&, bool);
-template Arr2D eval_grad_pulay(std::shared_ptr<mf::MF>, const Arrv4D&, const Arrv4D&, const Arrv4D&, const Arrv4D&, bool);
+template Arr2D eval_grad_pulay(const boost::dynamic_bitset<>&, std::shared_ptr<mf::MF>,
+                               const imag_axes_ft::IAFT&, const Arr4D&, const Arr5D&, double);
+template Arr2D eval_grad_pulay(const boost::dynamic_bitset<>&, std::shared_ptr<mf::MF>,
+                               const imag_axes_ft::IAFT&, const Arrv4D&, const Arrv5D&, double);
+template Arr2D eval_grad_pulay(const boost::dynamic_bitset<>&, std::shared_ptr<mf::MF>,
+                               const Arr4D&, const Arr4D&, const Arr4D&, const Arr4D&, bool);
+template Arr2D eval_grad_pulay(const boost::dynamic_bitset<>&, std::shared_ptr<mf::MF>,
+                               const Arrv4D&, const Arrv4D&, const Arrv4D&, const Arrv4D&, bool);
 
 template Arr4D eval_DE(std::shared_ptr<mf::MF>, const imag_axes_ft::IAFT&, const Arr4D&, const Arr5D&, double);
 template Arr4D eval_DE(std::shared_ptr<mf::MF>, const imag_axes_ft::IAFT&, const Arrv4D&, const Arrv5D&, double);
@@ -296,10 +317,10 @@ template ComplexType eval_grad_pulay(int, int, std::shared_ptr<mf::MF>, const Ar
 template ComplexType eval_grad_pulay(int, int, std::shared_ptr<mf::MF>, const Arr4D&);
 template ComplexType eval_grad_pulay(int, int, std::shared_ptr<mf::MF>, const Arrv4D&);
 
-template void print_mbpt_gradient(const nda::array<RealType, 2>&, std::shared_ptr<mf::MF>,
-                                  const std::string&, bool);
-template void print_mbpt_gradient(const nda::array<ComplexType, 2> &, std::shared_ptr<mf::MF>,
-                                  const std::string&, bool);
+template void print_mbpt_gradient(const boost::dynamic_bitset<>&, const nda::array<RealType, 2>&,
+                                  std::shared_ptr<mf::MF>, const std::string&, bool);
+template void print_mbpt_gradient(const boost::dynamic_bitset<>&, const nda::array<ComplexType, 2> &,
+                                  std::shared_ptr<mf::MF>, const std::string&, bool);
 
 template void write_mbpt_gradient(mpi3::communicator&, const nda::array<RealType, 2>&, const std::string&, long);
 template void write_mbpt_gradient(mpi3::communicator&, const nda::array<ComplexType, 2>&, const std::string&, long);
