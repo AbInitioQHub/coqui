@@ -90,11 +90,7 @@ namespace methods {
 
     _Timer.start("EMBED_READ");
     auto [gw_iter, weiss_f_iter, weiss_b_iter, embed_iter] = chkpt::read_input_iterations(filename);
-    utils::check(weiss_f_iter == weiss_b_iter,
-                 "embed_t::dmft_embed_impl: inconsistent downfolding iterations "
-                 "for fermionic ({}) and bosonic ({}) Weiss fields in {}",
-                 weiss_f_iter, weiss_b_iter, filename);
-    long embed_out_iter = (embed_iter > 0) ? embed_iter+1 : 1;
+    long embed_out_iter = (embed_iter > 0) ? embed_iter+1 : weiss_f_iter;
     _Timer.stop("EMBED_READ");
 
     ft.metadata_log();
