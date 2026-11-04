@@ -252,7 +252,12 @@ namespace methods {
         -> nda::array<ComplexType, 4>;
 
     template<THC_ERI thc_t, nda::ArrayOfRank<5> B_t>
+    // Replicated compatibility wrapper.
     auto downfold_Vq(thc_t &thc, const B_t &B_qIPab)
+        -> nda::array<ComplexType, 5>;
+
+    template<THC_ERI thc_t, nda::ArrayOfRank<5> B_t>
+    auto downfold_Vq_root(thc_t &thc, const B_t &B_qIPab)
         -> nda::array<ComplexType, 5>;
 
     auto downfold_cholesky(THC_ERI auto &thc, const projector_boson_t &proj_boson,
@@ -274,8 +279,14 @@ namespace methods {
         -> nda::array<ComplexType, 5>;
 
     template<THC_ERI thc_t, nda::MemoryArray Array_4D_t, typename communicator_t, nda::ArrayOfRank<5> B_t>
+    // Replicated compatibility wrapper.
     auto downfold_Wq(thc_t &thc, memory::darray_t<Array_4D_t, communicator_t> &dW_wqPQ,
                      const B_t &B_qIPab)
+    -> nda::array<ComplexType, 6>;
+
+    template<THC_ERI thc_t, nda::MemoryArray Array_4D_t, typename communicator_t, nda::ArrayOfRank<5> B_t>
+    auto downfold_Wq_root(thc_t &thc, memory::darray_t<Array_4D_t, communicator_t> &dW_wqPQ,
+                          const B_t &B_qIPab)
     -> nda::array<ComplexType, 6>;
 
     template<THC_ERI thc_t, nda::ArrayOfRank<5> B_t>

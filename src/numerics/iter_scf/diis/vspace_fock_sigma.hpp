@@ -46,6 +46,7 @@ public:
         inited_S = true;
         inited_mu = true;
     }
+    FockSigma(FockSigma&&) noexcept = default;
 
     FockSigma(const Array_4D& Fock_, const Array_5D& Sigma_, const double mu_) : 
        _Fock(Fock_), _Sigma(Sigma_), _mu(mu_) {
@@ -63,6 +64,7 @@ public:
         inited_mu = true;
       return *this;
     }
+    FockSigma& operator=(FockSigma&&) noexcept = default;
 
     ComplexType dot_prod(const FockSigma& rhs) const {
       utils::check(inited_F, "FockSigma: Fock matrix is not initialized");
@@ -73,25 +75,15 @@ public:
       auto vec_F= nda::reshape(_Fock, std::array<long, 1>{Fdim});
       auto vec_S= nda::reshape(_Sigma, std::array<long, 1>{Sdim});
 */
-      auto matvec_F= nda::reshape(_Fock, std::array<long, 2>{Fdim, 1});
-      auto matvec_S= nda::reshape(_Sigma, std::array<long, 2>{Sdim, 1});
-
-      auto rFock = rhs.get_fock();
-      auto rSigma = rhs.get_sigma();
+      const auto& rFock = rhs.get_fock();
+      const auto& rSigma = rhs.get_sigma();
       size_t rFdim = std::reduce(rFock.shape().begin(), rFock.shape().end(), 1, std::multiplies<size_t>());
       size_t rSdim = std::reduce(rSigma.shape().begin(), rSigma.shape().end(), 1, std::multiplies<size_t>());
-/*
-      auto vec_rF= nda::reshape(rFock, std::array<long, 1>{rFdim});
-      auto vec_rS= nda::reshape(rSigma, std::array<long, 1>{rSdim});
-*/
-      auto matvec_rF= nda::reshape(rFock, std::array<long, 2>{rFdim, 1});
-      auto matvec_rS= nda::reshape(rSigma, std::array<long, 2>{rSdim, 1});
-      //return nda::blas::dotc(vec_F,vec_rF) + nda::blas::dotc(vec_S,vec_rS);
-      nda::array<ComplexType, 2> res1(1,1);
-      nda::array<ComplexType, 2> res2(1,1);
-      nda::blas::gemm(nda::make_regular(nda::conj(nda::transpose(matvec_F))), matvec_rF, res1);
-      nda::blas::gemm(nda::make_regular(nda::conj(nda::transpose(matvec_S))), matvec_rS, res2);
-      return res1(0,0) + res2(0,0);
+      auto vec_rF = nda::reshape(rFock, std::array<long, 1>{static_cast<long>(rFdim)});
+      auto vec_rS = nda::reshape(rSigma, std::array<long, 1>{static_cast<long>(rSdim)});
+      auto vec_F = nda::reshape(_Fock, std::array<long, 1>{static_cast<long>(Fdim)});
+      auto vec_S = nda::reshape(_Sigma, std::array<long, 1>{static_cast<long>(Sdim)});
+      return nda::blas::dotc(vec_F, vec_rF) + nda::blas::dotc(vec_S, vec_rS);
     }
 
     const Array_4D& get_fock() const {
@@ -112,13 +104,25 @@ public:
         _Fock = F_;
         inited_F = true;
     }
+    void set_fock(Array_4D&& F_) {
+        _Fock = std::move(F_);
+        inited_F = true;
+    }
     void set_sigma(Array_5D& S_) {
         _Sigma = S_;
+        inited_S = true;
+    }
+    void set_sigma(Array_5D&& S_) {
+        _Sigma = std::move(S_);
         inited_S = true;
     }
     void set_fock_sigma(Array_4D& F_, Array_5D& S_) {
         set_fock(F_);
         set_sigma(S_);
+    }
+    void set_fock_sigma(Array_4D&& F_, Array_5D&& S_) {
+        set_fock(std::move(F_));
+        set_sigma(std::move(S_));
     }
 
     void set_zero() {
@@ -157,8 +161,12 @@ public:
     void add(FockSigma&& a, ComplexType c) {
         utils::check(inited_F, "FockSigma: Fock matrix is not initialized");
         utils::check(inited_S, "FockSigma: Sigma is not initialized");
-        _Fock += c * a.get_fock();
-        _Sigma += c * a.get_sigma();
+        const auto& aFock = a.get_fock();
+        const auto& aSigma = a.get_sigma();
+        utils::check(_Fock.shape() == aFock.shape(), "FockSigma::add: incompatible Fock shapes");
+        utils::check(_Sigma.shape() == aSigma.shape(), "FockSigma::add: incompatible Sigma shapes");
+        for (size_t i = 0; i < _Fock.size(); ++i) _Fock.data()[i] += c * aFock.data()[i];
+        for (size_t i = 0; i < _Sigma.size(); ++i) _Sigma.data()[i] += c * aSigma.data()[i];
     }
 
     void read_from_file(std::string filename, const size_t vec_number) {
@@ -215,48 +223,44 @@ void commutator_t(Array_G& C_t, const imag_axes_ft::IAFT *FT,
     size_t nk = G_t.shape()[2];
     size_t nao = G_t.shape()[3];
     size_t nw = FT->nw_f();
-    nda::array<ComplexType, 5> G_w(nw,ns,nk,nao,nao);
-    nda::array<ComplexType, 5> Sigma_w(nw,ns,nk,nao,nao);
-    // G_w is filled
-    FT->tau_to_w(G_t, G_w, imag_axes_ft::fermion);
-    // Sigma_t is filled
-    auto Sigma_t = FS_t.get_sigma();
-    auto Fock = FS_t.get_fock();
-    // Sigma_w is filled
-    FT->tau_to_w(Sigma_t, Sigma_w, imag_axes_ft::fermion);
-
-    nda::array<ComplexType, 4> Dm(ns,nk,nao,nao);
-    FT->tau_to_beta(G_t, Dm);
-
-    nda::array<ComplexType, 5> C_w(nw, ns, nk, nao, nao);
-    C_w () = 0;
+    const auto& Sigma_t = FS_t.get_sigma();
+    const auto& Fock = FS_t.get_fock();
     C_t = nda::array<ComplexType, 5>(nt,ns,nk,nao,nao); // To make sure an array of appropriate size is ready
     C_t () = 0;
+
+    // Stream the frequency axis. The former implementation materialized full
+    // G(w), Sigma(w), and C(w) arrays simultaneously on the global root.
+    nda::array<ComplexType, 4> G_wskij(ns,nk,nao,nao);
+    nda::array<ComplexType, 4> Sigma_wskij(ns,nk,nao,nao);
+    nda::array<ComplexType, 4> C_wskij(ns,nk,nao,nao);
 
     nda::array<ComplexType, 2> I1(nao, nao);
     nda::array<ComplexType, 2> I2(nao, nao);
 
-    for(size_t iw = 0; iw < nw; iw++)
-    for(size_t s = 0; s < ns; s++)
-    for(size_t k = 0; k < nk; k++) {
-        long wn = FT->wn_mesh()(iw);
-        ComplexType omega_mu = FT->omega(wn) + mu;
-        auto S_sk = S(s,k,all,all);
-        auto F_sk = Fock(s,k,all,all);
-        auto H0_sk = H0(s,k,all,all);
-        auto G_wsk = G_w(iw,s,k,all,all);
-        auto Sigma_wsk = Sigma_w(iw,s,k,all,all);
+    app_log(2, "DIIS: Streaming commutator residual over {} frequencies", nw);
+    for(size_t iw = 0; iw < nw; iw++) {
+        FT->tau_to_w(G_t, G_wskij, imag_axes_ft::fermion, iw);
+        FT->tau_to_w(Sigma_t, Sigma_wskij, imag_axes_ft::fermion, iw);
+        for(size_t s = 0; s < ns; s++)
+        for(size_t k = 0; k < nk; k++) {
+            long wn = FT->wn_mesh()(iw);
+            ComplexType omega_mu = FT->omega(wn) + mu;
+            auto S_sk = S(s,k,all,all);
+            auto F_sk = Fock(s,k,all,all);
+            auto H0_sk = H0(s,k,all,all);
+            auto G_wsk = G_wskij(s,k,all,all);
+            auto Sigma_wsk = Sigma_wskij(s,k,all,all);
 
-        nda::array<ComplexType, 2> G0inv_Sigma_wsk = nda::make_regular(omega_mu * S_sk - H0_sk - F_sk - Sigma_wsk);
-        nda::array_view<ComplexType, 2> C_wsk = C_w(iw,s,k,all,all);
-        I1() = 0;
-        I2() = 0;
-        nda::blas::gemm(G_wsk, G0inv_Sigma_wsk, I1);
-        nda::blas::gemm(G0inv_Sigma_wsk, G_wsk, I2);
-        C_wsk = nda::make_regular(I1 - I2);
+            nda::array<ComplexType, 2> G0inv_Sigma_wsk = nda::make_regular(omega_mu * S_sk - H0_sk - F_sk - Sigma_wsk);
+            auto C_wsk = C_wskij(s,k,all,all);
+            nda::blas::gemm(G_wsk, G0inv_Sigma_wsk, I1);
+            nda::blas::gemm(G0inv_Sigma_wsk, G_wsk, I2);
+            C_wsk = I1 - I2;
+        }
+        FT->w_to_tau_partial(C_wskij, C_t, imag_axes_ft::fermion, iw);
+        if ((iw + 1) == nw || (iw + 1) % std::max<size_t>(size_t{1}, nw / 10) == 0)
+            app_log(2, "DIIS: Commutator frequencies {}/{}", iw + 1, nw);
     }
-
-    FT->w_to_tau(C_w, C_t, imag_axes_ft::fermion);
 }
 
 

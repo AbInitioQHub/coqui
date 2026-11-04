@@ -34,18 +34,25 @@ using get_value_t = typename std::decay_t<A>::value_type;
 /*
  * Some concepts
  */
+// A collection of rank-local rectangular blocks. Unlike DistributedArray,
+// this concept does not claim that the blocks originate from a regular
+// processor grid or have a uniform algorithmic block size.
 template <typename A>
-concept DistributedArray = requires(A const& a) {
+concept BlockDistributedArray = requires(A const& a) {
   { ::nda::MemoryArray<typename std::decay_t<A>::Array_t> };
   { std::decay_t<A>::rank > 0 };
   { std::is_scalar<get_value_t<A>>::value };
   { a.communicator() };
-  { a.grid() };
   { a.local() };
   { a.local_shape() } -> ::nda::StdArrayOfLong;
   { a.global_shape() } -> ::nda::StdArrayOfLong;
-  { a.block_size() } -> ::nda::StdArrayOfLong;
   { a.origin() } -> ::nda::StdArrayOfLong;
+};
+
+template <typename A>
+concept DistributedArray = BlockDistributedArray<A> and requires(A const& a) {
+  { a.grid() };
+  { a.block_size() } -> ::nda::StdArrayOfLong;
 };
 
 template <typename A>
