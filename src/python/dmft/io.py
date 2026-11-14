@@ -25,7 +25,172 @@ import numpy as np
 from coqui import app_log
 
 
+# Keys of an impurity block that are agnostic to the solver type; they stay at the top level of
+# the block, every other key is the solver's and goes under its 'solver' table.
+SOLVER_AGNOSTIC_KEYS = frozenset({
+  'solver', 'init_imp_results', 'set_sigma_infty_to_dc', 'degenerate_blk',
+  'degenerate_blk_thresh', 'causal_projection', 'chemical_potential'})
+# The same for the 'chemical_potential' table: every other key there is a solver-specific
+# parameter of the search and goes under 'solver.mu_search'.
+CHEMICAL_POTENTIAL_AGNOSTIC_KEYS = frozenset({'tolerance'})
+
+
+def convert_legacy_impurity_block(imp_block, index):
+  """
+  Convert an impurity block in a legacy layout to the current one for backward compatibility.
+
+  Legacy layout (flat CT-SEG block; the search's solver keys inside ``chemical_potential``)::
+
+      {
+        "init_imp_results": "dc",
+        "degenerate_blk": [[0, 1]],
+        "n_cycles": 2000000,
+        "n_warmup_cycles": 6000,
+        "length_cycle": 60,
+        "screen_j": True,
+        "chemical_potential": {"tolerance": 0.1,
+                               "n_cycles": 100000}
+      }
+
+  Current layout::
+
+      {
+        "init_imp_results": "dc",
+        "degenerate_blk": [[0, 1]],
+        "solver": {
+          "type": "ctseg",
+          "n_cycles": 2000000,
+          "n_warmup_cycles": 6000,
+          "length_cycle": 60,
+          "screen_j": True,
+          "mu_search": {
+            "n_cycles": 100000}
+          },
+        "chemical_potential": {"tolerance": 0.1}
+      }
+
+  The current layout follows three rules: 
+  1) only solver-agnostic parameters (``SOLVER_AGNOSTIC_KEYS``) stay at the top level of the block; 
+  2) every solver-specific parameter goes under the ``solver`` table, whose ``type`` names the backend; 
+  3) solver-specific parameters of the chemical-potential search go under the ``mu_search`` table 
+     inside ``solver``, so that ``chemical_potential`` holds solver-agnostic parameters only
+     (``CHEMICAL_POTENTIAL_AGNOSTIC_KEYS``, i.e. ``tolerance``).
+
+  The legacy layout is converted, always assuming the solver type is CT-SEG. 
+  """
+  block = dict(imp_block)
+  # solver-specific keys at the top level of the block: the legacy flat layout, or a mistake
+  solver_keys = [key for key in block if key not in SOLVER_AGNOSTIC_KEYS]
+  if 'solver' not in block:
+    moved = {key: block.pop(key) for key in solver_keys}
+    block['solver'] = {'type': 'ctseg', **moved}
+    app_log(1, f" [WARNING] impurity block {index} has no 'solver' table (legacy layout):\n"
+               f"  treating {sorted(moved)} as CT-SEG solver parameters. Move them under the\n"
+               f"  impurity's 'solver' table with type = \"ctseg\".\n")
+  elif solver_keys:
+    raise KeyError(f"io::convert_legacy_impurity_block: impurity block {index} has key(s) {sorted(solver_keys)} "
+                   f"beside its 'solver' table; solver-agnostic keys are "
+                   f"{sorted(SOLVER_AGNOSTIC_KEYS)}, solver parameters go under 'solver'")
+  if not isinstance(block['solver'], dict) or 'type' not in block['solver']:
+    raise KeyError(f"io::convert_legacy_impurity_block: impurity block {index}: the 'solver' table needs a "
+                   f"'type' (e.g. \"ctseg\")")
+  mu_block = block.get('chemical_potential')
+  if isinstance(mu_block, dict):
+    # solver-specific keys inside the table: the legacy layout of the search parameters
+    search = {key: value for key, value in mu_block.items()
+              if key not in CHEMICAL_POTENTIAL_AGNOSTIC_KEYS}
+    if search:
+      if 'mu_search' in block['solver']:
+        raise KeyError(f"io::convert_legacy_impurity_block: impurity block {index} has solver parameters of "
+                       f"the chemical-potential search both in 'chemical_potential' "
+                       f"({sorted(search)}, legacy layout) and in 'solver.mu_search'; keep "
+                       f"'solver.mu_search' only")
+      block['chemical_potential'] = {key: value for key, value in mu_block.items()
+                                     if key in CHEMICAL_POTENTIAL_AGNOSTIC_KEYS}
+      block['solver'] = dict(block['solver'], mu_search=search)
+      app_log(1, f" [WARNING] impurity block {index}: 'chemical_potential' carries solver "
+                 f"parameters\n  {sorted(search)} (legacy layout); treating them as the "
+                 f"'solver.mu_search' table.\n  'chemical_potential' holds 'tolerance' only; "
+                 f"move the others under 'solver.mu_search'.\n")
+  return block
+
+
 def convert_gw_edmft_params(gw_edmft_params: dict):
+    """
+    Parse the input parameters of the GW+EDMFT workflow and organize them into 
+    parameters of each stage.
+
+    Input example::
+
+        gw_edmft_params ={
+          "niter": 2,
+          "gw_iter_per_loop": 1,
+          "edmft_iter_per_loop": 1,
+          "outdir": "./",
+          "prefix": "svo",
+          "screen_type": "gw_edmft",
+          "div_treatment": "gygi",
+          "wannier_file": "svo.mlwf.h5",
+          "iter_alg": {"alg": "damping", "mixing": 0.4, "edmft_mixing": 0.2},
+          "edmft": {
+            "chkpt_h5": "./svo.dmft.h5",
+            "impurity": {
+              "init_imp_results": "dc",
+              "solver": {
+                "type": "ctseg", "n_cycles": 2000000, ...
+              }
+            }
+          }
+        }
+
+    Output structure, for that input::
+
+        {
+          "niter": 2,
+          "gw_iter_per_loop": 1,
+          "edmft_iter_per_loop": 1,
+          "wannier_file": "svo.mlwf.h5",
+          
+          # The GW stage
+          "gw": {"outdir": "./", "prefix": "svo", "restart": True, "niter": 1,
+                 "screen_type": "gw_edmft", "div_treatment": "gygi",
+                 "iter_alg": {"alg": "damping", "mixing": 0.4}},
+          
+          # The local W stage
+          "wloc": {"outdir": "./", "prefix": "svo", "screen_type": "gw_edmft",
+                   "div_treatment": "gygi", "output_in_tau": True},
+          
+          # The local G stage
+          "gloc": {"outdir": "./", "prefix": "svo"},
+          
+          # The embedding (upfolding) stage
+          "dmft_embed": {"outdir": "./", "prefix": "svo", "corr_only": True,
+                         "iter_alg": {"enable": False}},
+          
+          # The EDMFT stage
+          "edmft": {
+            "restart": True,
+            "chkpt_h5": "./svo.dmft.h5",
+            "iter_alg": {"alg": "damping", "mixing": 0.2, "mix_in_first_iter": True},
+            "impurity": [
+              {
+                "init_imp_results": "dc",
+                "solver": {"type": "ctseg", "n_cycles": 2000000, ...}
+              }
+            ]
+          }
+        }
+
+    - ``gw`` is absent when ``gw_iter_per_loop == 0``. A top-level ``iaft`` lands in ``edmft``
+      (it is the impurity mesh); ``edmft.impurity`` is always a list, one block per impurity;
+      every other key of ``edmft`` and of the top level is copied through unchanged.
+    
+    - With ``edmft_iter_per_loop == 0`` and ``gw_iter_per_loop == 1``, ``niter`` and
+      ``gw_iter_per_loop`` are swapped so that the GW-only run still writes the ``embed`` data.
+    
+    - ``restart = False`` is not implemented and the GW checkpoint ``{outdir}/{prefix}.mbpt.h5``
+      must exist; both are errors here, before anything runs.
+    """
     gw_edmft_group = deepcopy(gw_edmft_params)
 
     # Copy top-level gw_edmft settings
@@ -115,105 +280,40 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
         'iter_alg': {'enable': False} 
     }
 
-    # Convert 'edmft' section to 'impurity' (with nested 'impurity' -> 'solver')
     if 'edmft' not in gw_edmft_group:
         raise KeyError("Missing 'edmft' section in 'gw_edmft' parameters to specify the EDMFT part of the workflow.")
     edmft_section = gw_edmft_group.pop('edmft')
-    
-    gw_edmft_params['impurity'] = {
-        'restart': restart, 
+    gw_edmft_params['edmft'] = {
+        'restart': restart,
         'iter_alg': edmft_iter_params,
         'chkpt_h5': edmft_section.pop('chkpt_h5', outdir+"/"+prefix+".mbpt.h5")
     }
 
+    # a top-level 'iaft' is the impurity mesh, so it belongs to the EDMFT section
     if 'iaft' in gw_edmft_group:
-        iaft_params = gw_edmft_group.pop('iaft')
-        gw_edmft_params['impurity']['iaft'] = iaft_params
-  
-    # Convert 'impurity' (new) to 'solver' (old)
+        gw_edmft_params['edmft']['iaft'] = gw_edmft_group.pop('iaft')
+
+    # One block per impurity (a single dict is one impurity), in the nested layout
     if 'impurity' in edmft_section:
-        solver_list = edmft_section.pop('impurity')
-        if not isinstance(solver_list, list):
-            solver_list = [solver_list]
-    
-        for solver_params in solver_list:
-            if 'degenerate_blk' in solver_params:
-                solver_params['degenerate_blk'] = [np.array(x) for x in solver_params['degenerate_blk']]
-        
-        gw_edmft_params['impurity']['solver'] = solver_list
+        impurity_blocks = edmft_section.pop('impurity')
+        if not isinstance(impurity_blocks, list):
+            impurity_blocks = [impurity_blocks]
+        impurity_blocks = [convert_legacy_impurity_block(imp_block=block, index=index)
+                           for index, block in enumerate(impurity_blocks)]
+        for block in impurity_blocks:
+            if 'degenerate_blk' in block:
+                block['degenerate_blk'] = [np.array(x) for x in block['degenerate_blk']]
+        gw_edmft_params['edmft']['impurity'] = impurity_blocks
 
     # Copy any remaining keys in the edmft section
     for key, value in edmft_section.items():
-        gw_edmft_params['impurity'][key] = value
+        gw_edmft_params['edmft'][key] = value
 
     # Copy any remaining keys in the top-level gw_edmft section
     for key, value in gw_edmft_group.items():
         gw_edmft_params[key] = value
 
     return gw_edmft_params
-
-
-def _check_config_reuse(solver_params):
-    """
-    Validate and normalize, in place, the CT-SEG configuration-reuse keys of one impurity block
-    with ``reuse_config`` on. Warm-ups are per rank and are not divided by the rank count.
-    """
-    def _restart_warmup(value, key):
-        if value is None or int(value) < 1:
-            raise ValueError(
-                f"io::_normalize_solver_params_list: reuse_config = True requires {key} >= 1 "
-                f"(warm-up cycles of a solve that starts from a stored configuration); "
-                f"got {value!r}."
-            )
-        return int(value)
-
-    solver_params['restart_n_warmup_cycles'] = _restart_warmup(
-        solver_params.get('restart_n_warmup_cycles'), 'restart_n_warmup_cycles')
-    mu_params = solver_params.get('chemical_potential')
-    if mu_params:
-        mu_params['restart_n_warmup_cycles'] = _restart_warmup(
-            mu_params.get('restart_n_warmup_cycles', solver_params['restart_n_warmup_cycles']),
-            'chemical_potential.restart_n_warmup_cycles')
-
-    try:
-        import triqs_ctseg
-        has_reuse = hasattr(triqs_ctseg, 'ConfigDataT')
-    except ImportError:
-        has_reuse = False
-    if not has_reuse:
-        raise ImportError(
-            "io::_normalize_solver_params_list: reuse_config = True requires a TRIQS/ctseg build "
-            "that can restart from a saved configuration (triqs_ctseg.ConfigDataT)."
-        )
-
-
-# Need to be careful with non-ct-qmc solver
-def _normalize_solver_params_list(solver_params_list, comm_size):
-    """
-    Scale Monte-Carlo cycle counts by MPI communicator size.
-    """
-    assert isinstance(solver_params_list, list), "solver_params_list must be a list of dictionaries."
-    normalized_list = []
-    for solver_params in solver_params_list:
-        solver_params_norm = deepcopy(solver_params)
-
-        mu_params = solver_params_norm.get('chemical_potential')
-        if mu_params: 
-            mu_params.setdefault('n_cycles', int(solver_params_norm['n_cycles']*0.05))
-            mu_params['n_cycles'] = int(mu_params['n_cycles']/comm_size) 
-            mu_params.setdefault('n_warmup_cycles', int(solver_params_norm['n_warmup_cycles']))
-            mu_params.setdefault('length_cycle', int(solver_params_norm['length_cycle']))
-
-        solver_params_norm['n_cycles'] = int(solver_params_norm['n_cycles']/comm_size)
-        solver_params_norm['n_warmup_cycles'] = int(solver_params_norm['n_warmup_cycles'])
-        solver_params_norm['length_cycle'] = int(solver_params_norm['length_cycle'])
-
-        if solver_params_norm.get('reuse_config', False):
-            _check_config_reuse(solver_params_norm)
-
-        normalized_list.append(solver_params_norm)
-
-    return normalized_list
 
 
 def print_title_box(name, box_width=19):
@@ -241,21 +341,42 @@ def print_degenerate_blks(deg_blks, gf_struct):
         app_log(1, f"Shell {i}: {subset}\n")
 
 
-def save_impurities(dmft_grp, *, solver_results=None, solver_inputs=None, impurity_index=-1, iteration=-1,
-                    chkpt_impurity_index=None):
+def save_impurities(dmft_grp, *, impurity_results=None, impurity_inputs=None, solver_data=None,
+                    impurity_index=-1, iteration=-1, chkpt_impurity_index=None):
     """
-    Save impurity solver results and/or inputs to an HDF5 group.
+    Write the impurity groups of one DMFT iteration, ``dmft_grp/iter{iteration}/impurity_{i}/``.
+
+    Each impurity group holds up to three subgroups, one per kind of data:
+
+    - ``inputs/``: what the workflow handed to the impurity solver (the local Green's function
+      and interactions, the Weiss fields, ``h0``, ``delta_iw``, ...); written from
+      ``impurity_inputs``.
+    - ``results/``: the workflow's results of the impurity, the arrays of the solver contract
+      (``Sigma_infty``, ``Sigma_iw_data``, ``G_iw_data``, ``Pi_iw_data``, ``W_iw_data``,
+      ``orbital_occupations``, ``density``) and what the loop adds to them (``mu_imp``, the
+      double-counting terms, ``convergence``); written from ``impurity_results`` and loaded back
+      on restart.
+    - ``solver_results/``: the backend-native objects of the solve (for CT-SEG, the TRIQS
+      containers); written from ``solver_data``, replaced as a whole on every write, and never
+      loaded back.
+
+    The three lists are indexed alike, one entry per impurity, and `impurity_index` selects the
+    same entry of each.
 
     Parameters
     ----------
-    dmft_grp : h5py.Group
-        The HDF5 group where the DMFT data will be stored.
-    solver_results : list, optional
-        A list of dictionaries containing solver results for each impurity.
-    solver_inputs : list, optional
-        A list of dictionaries containing solver inputs for each impurity.
+    dmft_grp : h5 group
+        The ``dmft`` group of the checkpoint.
+    impurity_results : list of dict, optional
+        One dict per impurity, for ``results/``.
+    impurity_inputs : list of dict, optional
+        One dict per impurity, for ``inputs/``.
+    solver_data : list of dict, optional
+        One dict per impurity, for ``solver_results/``. An entry that is an empty dict removes
+        the subgroup of its impurity; an entry that is ``None`` leaves it untouched.
     impurity_index : int, optional
-        The index of the impurity to save. If -1, save all impurities. Default is -1.
+        The entry of the lists (`impurity_results`, `impurity_inputs`, `solver_data`) to save.
+        If -1, save all impurities. Default is -1.
     iteration : int, optional
         The DMFT iteration number. If -1, determine the iteration automatically. Default is -1.
     chkpt_impurity_index : int, optional
@@ -267,21 +388,24 @@ def save_impurities(dmft_grp, *, solver_results=None, solver_inputs=None, impuri
     Raises
     ------
     ValueError
-        If neither `solver_results` nor `solver_inputs` is provided.
-        If `solver_results` and `solver_inputs` are provided but have different lengths.
+        If neither `impurity_results` nor `impurity_inputs` is provided.
+        If the given lists have different lengths.
         If `impurity_index` is out of range.
         If `chkpt_impurity_index` is given together with `impurity_index = -1`, or is negative.
 
     Notes
     -----
-    - If `iteration` is -1, the function attempts to determine the iteration number
-      from the `dmft_grp` keys. If no iteration information is found, it defaults to 1.
-    - The function creates a new group for the specified iteration and stores the
-      impurity data under subgroups named `impurity_<index>`.
-    - Backward compatibility is maintained for older keys like "final_iteration".
+    - If `iteration` is -1, the iteration is ``final_iter + 1`` read from `dmft_grp` (the legacy
+      key ``final_iteration`` is accepted); without either key it defaults to 1.
+    - The function creates the group of the iteration if needed and stores the impurity data
+      under subgroups named `impurity_<index>`.
+    - The restart marker ``dmft_grp/final_iter`` is read but never written here: it records
+      the progress of the GW+EDMFT loop and is written by the loop's own writers in
+      ``dmft_state``, so rewriting the impurities of an earlier iteration, as
+      ``solve_impurities_from_chkpt`` does, does not change where a later restart resumes.
     """
-    if solver_results is None and solver_inputs is None:
-        raise ValueError("Either solver_results or solver_inputs must be provided.")
+    if impurity_results is None and impurity_inputs is None:
+        raise ValueError("Either impurity_results or impurity_inputs must be provided.")
 
     if iteration == -1:
         if "final_iter" in dmft_grp.keys():
@@ -293,14 +417,14 @@ def save_impurities(dmft_grp, *, solver_results=None, solver_inputs=None, impuri
         else:
             iteration = 1
 
-    if solver_results is not None and solver_inputs is not None:
-        if len(solver_results) != len(solver_inputs):
-            raise ValueError("solver_results and solver_inputs must have the same length.")
-        num_impurities = len(solver_results)
-    elif solver_results is not None:
-        num_impurities = len(solver_results)
-    else:
-        num_impurities = len(solver_inputs)
+    given = {name: lst for name, lst in (('impurity_results', impurity_results),
+                                         ('impurity_inputs', impurity_inputs),
+                                         ('solver_data', solver_data)) if lst is not None}
+    lengths = {name: len(lst) for name, lst in given.items()}
+    if len(set(lengths.values())) != 1:
+        raise ValueError(f"io::save_impurities: the lists must have the same length, one entry "
+                         f"per impurity; got {lengths}.")
+    num_impurities = next(iter(lengths.values()))
 
     if impurity_index == -1:
         impurity_list = np.arange(num_impurities)
@@ -312,7 +436,6 @@ def save_impurities(dmft_grp, *, solver_results=None, solver_inputs=None, impuri
         raise ValueError(f"io::save_impurities: chkpt_impurity_index {chkpt_impurity_index} needs "
                          f"a single impurity_index >= 0 and must be non-negative "
                          f"(got impurity_index {impurity_index}).")
-
     if f"iter{iteration}" not in dmft_grp.keys():
         dmft_grp.create_group(f"iter{iteration}")
     iter_grp = dmft_grp[f"iter{iteration}"]
@@ -322,59 +445,49 @@ def save_impurities(dmft_grp, *, solver_results=None, solver_inputs=None, impuri
         if f"impurity_{grp_i}" not in iter_grp.keys():
             iter_grp.create_group(f"impurity_{grp_i}")
         imp_grp = iter_grp[f"impurity_{grp_i}"]
-        if solver_results is not None:
-            _write_impurity_results(imp_grp, solver_results[imp_i])
-        if solver_inputs is not None:
-            _write_impurity_inputs(imp_grp, solver_inputs[imp_i])
+        if impurity_results is not None:
+            _write_impurity_results(imp_grp, impurity_results[imp_i])
+        if impurity_inputs is not None:
+            _write_impurity_inputs(imp_grp, impurity_inputs[imp_i])
+        if solver_data is not None and solver_data[imp_i] is not None:
+            _write_solver_results(imp_grp, solver_data[imp_i])
 
-    # FIXME this is beyond the save_impurities responsibility since this will affect the restart behavior of the DMFT SCF loop. 
-    dmft_grp["final_iter"] = iteration
+    return iteration
+
+
+_REQUIRED_RESULT_KEYS = ('Sigma_infty', 'Sigma_iw_data', 'G_iw_data', 'orbital_occupations',
+                         'density')
 
 
 def _write_impurity_results(h5_grp, impurity_results):
     """
-    Write impurity solver results to an HDF5 group.
-
-    Parameters
-    ----------
-    h5_grp : h5py.Group
-        The HDF5 group where the impurity results will be stored.
-    impurity_results : dict
-        A dictionary containing the impurity solver results. It should include
-        both optional and mandatory keys.
-
-    Notes
-    -----
-    - The function creates a subgroup named "results" within `h5_grp` if it does not exist.
-    - Optional keys (e.g., raw numpy arrays on IR mesh) are stored if present in `impurity_results`.
-    - Mandatory keys (e.g., TRIQS objects) are always expected to be present in `impurity_results`.
+    Write impurity results to ``results/`` of ``h5_grp``: every key whose value is not None
+    (h5 cannot store None). The arrays of the solver contract are required.
     """
     if "results" not in h5_grp.keys():
         h5_grp.create_group("results")
     res_grp = h5_grp["results"]
+    missing = [key for key in _REQUIRED_RESULT_KEYS if impurity_results.get(key) is None]
+    if missing:
+        raise KeyError(f"io::_write_impurity_results: missing required result key(s) {missing}")
+    for key, value in impurity_results.items():
+        if value is not None:
+            res_grp[key] = value
 
-    # ----- optional keys (raw numpy arrays on IR mesh) -----
-    # "_data" appendices imply raw numpy arrays on IR mesh
-    optional_keys = [
-        'gf_struct', 'mu_imp', 'convergence', 'density',
-        'G_iw_data', 'Sigma_iw_data',
-        'Pi_iw_data', 'W_iw_data',
-        'Sigma_infty_dc', 'Sigma_iw_dc_data', 'Pi_iw_dc_data',
-        'restarted_from_config', 'config_source_iter', 'warmup_trace'
-    ]
-    for key in optional_keys:
-        # h5 cannot store None: an optional key that is absent or None is not written
-        if impurity_results.get(key) is not None:
-            res_grp[key] = impurity_results[key]
 
-    # ----- mandatory TRIQS objects directly from the solver -----
-    mandatory_keys = [
-        'Sigma_infty', 'G_iw', 'Sigma_iw',
-        'Pi_iw', 'W_iw', 'Chi_iw',
-        'orbital_occupations', 'average_order', 'average_sign'
-    ]
-    for key in mandatory_keys:
-        res_grp[key] = impurity_results[key]
+def _write_solver_results(h5_grp, solver_data):
+    """
+    Replace ``solver_results/`` of ``h5_grp`` (an impurity group) with the backend-native
+    objects of ``solver_data``; an empty dict removes the group.
+    """
+    if "solver_results" in h5_grp.keys():
+        del h5_grp["solver_results"]
+    if not solver_data:
+        return
+    h5_grp.create_group("solver_results")
+    grp = h5_grp["solver_results"]
+    for key, value in solver_data.items():
+        grp[key] = value
 
 
 def _write_impurity_inputs(h5_grp, impurity_inputs):
@@ -389,6 +502,9 @@ def _write_impurity_inputs(h5_grp, impurity_inputs):
     inp_grp['g_weiss_iw'] = impurity_inputs['g_weiss_iw']
     inp_grp['delta_iw'] = impurity_inputs['delta_iw']
     inp_grp['h0'] = impurity_inputs['h0']
+    for key in ('screen_type', 'degenerate_blk', 'occupations_sab'):
+        if impurity_inputs.get(key) is not None:
+            inp_grp[key] = impurity_inputs[key]
 
 
 def resolve_dmft_iteration(h5_filename, iteration):
@@ -423,14 +539,14 @@ def read_impurity_chkpt(h5_filename, iteration=-1, *, read="both", impurity_indi
     Returns
     -------
     Depending on `read`:
-        - "results" → list of solver_results
-        - "inputs"  → list of solver_inputs
-        - "both"    → (solver_results, solver_inputs)
+        - "results" → list of impurity_results
+        - "inputs"  → list of impurity_inputs
+        - "both"    → (impurity_results, impurity_inputs)
     """
     app_log(2, f"Reading impurity checkpoint file: {h5_filename}")
     assert read in {"results", "inputs", "both"}, \
         "Argument 'read' must be one of {'results', 'inputs', 'both'}."
-    solver_results, solver_inputs = [], []
+    impurity_results, impurity_inputs = [], []
     res_tmp, inp_tmp = {}, {}
     num_impurities = -1
 
@@ -460,13 +576,13 @@ def read_impurity_chkpt(h5_filename, iteration=-1, *, read="both", impurity_indi
                     res_grp = iter_grp[f"impurity_{i}/results"]
                     res_tmp = read_all_keys(res_grp)
                     mpi.bcast(res_tmp)
-                    solver_results.append(res_tmp)
+                    impurity_results.append(res_tmp)
 
                 if read in {"inputs", "both"}:
                     inp_grp = iter_grp[f"impurity_{i}/inputs"]
                     inp_tmp = read_all_keys(inp_grp)
                     mpi.bcast(inp_tmp)
-                    solver_inputs.append(inp_tmp)
+                    impurity_inputs.append(inp_tmp)
     else:
         num_impurities = mpi.bcast(num_impurities)
 
@@ -479,28 +595,33 @@ def read_impurity_chkpt(h5_filename, iteration=-1, *, read="both", impurity_indi
         for _ in impurity_indices:
             if read in {"results", "both"}:
                 res_tmp = mpi.bcast(res_tmp)
-                solver_results.append(res_tmp)
+                impurity_results.append(res_tmp)
             if read in {"inputs", "both"}:
                 inp_tmp = mpi.bcast(inp_tmp)
-                solver_inputs.append(inp_tmp)
+                impurity_inputs.append(inp_tmp)
 
     mpi.barrier()
 
     if read == "results":
-        return solver_results
+        return impurity_results
     elif read == "inputs":
-        return solver_inputs
+        return impurity_inputs
     else:
-        return solver_results, solver_inputs
+        return impurity_results, impurity_inputs
 
 
-def update_impurity_results_from_chkpt(solver_results, h5_filename, iteration=-1):
+# TRIQS solver objects that CT-SEG wrote under results/ before the impurity-solver interface;
+# they belong to solver_results/ now and are never loaded back into Res.
+_LEGACY_SOLVER_RESULT_KEYS = ('G_iw', 'Sigma_iw', 'Pi_iw', 'W_iw', 'Chi_iw')
+
+
+def update_impurity_results_from_chkpt(impurity_results, h5_filename, iteration=-1):
     """
     Update impurity solver results from a checkpoint file.
 
     Parameters
     ----------
-    solver_results : list of dict
+    impurity_results : list of dict
         A list of dictionaries containing the current solver results for each impurity.
         This will be updated with the data read from the checkpoint file.
     h5_filename : str
@@ -555,13 +676,19 @@ def update_impurity_results_from_chkpt(solver_results, h5_filename, iteration=-1
                 f"Loading impurity results from checkpoint '{h5_filename}' "
                 f"at DMFT iteration {iteration}.\n"
             )
-            for imp_index, res in enumerate(solver_results):
+            for imp_index, res in enumerate(impurity_results):
                 imp_grp = ar[f'dmft/iter{iteration}/impurity_{imp_index}/results']
-                res_tmp.update(read_all_keys(imp_grp))
+                loaded = read_all_keys(imp_grp)
+                legacy = sorted(set(loaded) & set(_LEGACY_SOLVER_RESULT_KEYS))
+                if legacy:
+                    app_log(1, f"Checkpoint impurity {imp_index}: the solver objects {legacy} under "
+                               f"results/ belong to solver_results/ since the impurity-solver\n"
+                               f"  interface; they are not loaded (the native arrays are).\n")
+                res_tmp.update({key: value for key, value in loaded.items() if key not in legacy})
                 res_tmp = mpi.bcast(res_tmp)
                 res.update(res_tmp)
     else:
-        for imp_index, res in enumerate(solver_results):
+        for imp_index, res in enumerate(impurity_results):
             res_tmp = mpi.bcast(res_tmp)
             res.update(res_tmp)
 

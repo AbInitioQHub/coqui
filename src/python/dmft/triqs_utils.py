@@ -42,6 +42,7 @@ This module relies on the TRIQS ecosystem, in particular:
 - `triqs.utility.mpi` for parallelism
 """
 import numpy as np
+from dataclasses import dataclass
 from itertools import product
 
 from triqs.gfs import (
@@ -50,7 +51,9 @@ from triqs.gfs import (
 )
 from triqs.operators import c_dag, c, Operator, util
 from triqs.operators.util.extractors import block_matrix_from_op, extract_U_dict2, dict_to_matrix
+import triqs_modest as modest
 import coqui.dmft as coqui_dmft
+from coqui import app_log
 
 
 def get_c_to_solver_mapping(solver_struct):
@@ -237,106 +240,75 @@ def to_block2_gf(Diw_ir, iaft, gf_struct, mesh_iw):
     return Block2Gf(names, names, gf_array)
 
 
-def to_triqs_containers(h0, delta_iw, Vimp, u_weiss_iw, iaft, 
-                        gf_struct, triqs_iw_mesh, 
-                        density_hamiltonian, real_hamiltonian=True,
-                        screen_j_in_u_dd=False):
+def delta_block_gf(delta_wsab, iaft, gf_struct, mesh_f, *, force_real=True):
     """
-    Convert raw CoQui outputs (NumPy arrays) into TRIQS containers 
-    (e.g. `triqs.operators.many_body_operator`, `BlockGf`, and `Block2Gf`).
-
-    This function provides a bridge between CoQui’s raw many-body data and 
-    TRIQS’ Green’s function representation. It constructs the one-particle and 
-    two-particle objects required for TRIQS-based impurity solvers or DMFT-like 
-    workflows.
+    Convert the hybridization function Delta(iw) to a TRIQS ``BlockGf``.
 
     Parameters
     ----------
-    h0 : np.ndarray
-        One-particle Hamiltonian matrix in the impurity subspace.
-    delta_iw : np.ndarray
-        Hybridization function Δ(iωₙ) on the Matsubara frequency axis, in raw array form.
-    Vimp : np.ndarray
-        Bare Coulomb interaction tensor in the impurity basis.
-    u_weiss_iw : np.ndarray
-        Dynamical screened interaction U(iωₙ) from cRPA or EDMFT preprocessing, 
-        given as raw arrays on the Matsubara axis.
-    iaft : object
-        Imaginary-time/frequency transform kernel (e.g. IR/IAFT object) used for 
-        Fourier transforms between τ and iωₙ.
-    gf_struct : dict
-        Block structure of Green’s functions, mapping orbital/spin indices to block labels.
-    triqs_iw_mesh : dict
-        Dictionary of TRIQS mesh objects:
-        - `"fermion"` : Matsubara mesh for fermionic objects (Δ, G).
-        - `"boson"`   : Matsubara mesh for bosonic objects (U).
-    density_hamiltonian : bool
-        Whether to use the density-density approximation for the Coulomb interaction. 
-        This will also enforce the non-interacting Hamiltonian to density operator only. 
-        Currently must be `True`. Non-density-density interactions are not implemented.
-    real_hamiltonian : bool, optional
-        If `True`, enforce the bare Hamiltonian (h0, Vimp) to be real-valued. 
-        Default is `True`.
-    screen_j_in_u_dd : bool, optional
-        If `True`, modify the same spin density-density dynamic screening with screening J.
+    delta_wsab : np.ndarray
+        Delta(iw) of shape ``(niw, nspin, norb, norb)`` on the fermionic sampling frequencies
+        of ``iaft``.
+    iaft : IAFT
+    gf_struct : list of (str, int)
+        The block structure, one ``(name, size)`` per block, e.g. ``[("up_0", 1), ("down_0", 1)]``.
+    mesh_f : triqs.gf.MeshDLRImFreq
+        The fermionic Matsubara mesh of the result.
+    force_real : bool, optional
+        Drop the imaginary part on the tau axis. Default ``True``.
 
     Returns
     -------
-    h0 : triqs.operators.many_body_operator
-        One-particle Hamiltonian in TRIQS operator form.
-    delta_iw : triqs.gfs.BlockGf
-        Hybridization function Δ(iωₙ) as a TRIQS block Green’s function.
-    h_int : triqs.operators.many_body_operator
-        Local interaction Hamiltonian in density-density approximation.
-    u_weiss_iw : triqs.gfs.Block2Gf
-        Dynamical screened interaction U(iωₙ) as a TRIQS two-particle block Green’s function.
-
-    Notes
-    -----
-    - This conversion assumes the density-density approximation for Coulomb 
-      interactions; a full four-index mapping is not yet implemented.
+    triqs.gf.BlockGf
+        Delta(iw) on ``mesh_f``, one block per entry of ``gf_struct``.
     """
-
-    assert density_hamiltonian, (
-        "Convertion to non-density-density Hamiltonian is not implemented yet."
-    )
-
-    h0 = h0_operator(h0, gf_struct, force_real=real_hamiltonian)
-    h_int = h_int_density_density(Vimp, gf_struct, force_real=real_hamiltonian)
-
-    if "fermion" not in triqs_iw_mesh:
-        triqs_iw_mesh['fermion'] = MeshDLRImFreq(
-            beta=iaft.beta, statistic='Fermion',
-            w_max=triqs_iw_mesh['dlr_wmax'], eps=triqs_iw_mesh['dlr_eps'], symmetrize=True
-        )
-    if "boson" not in triqs_iw_mesh:
-        triqs_iw_mesh['boson'] = MeshDLRImFreq(
-            beta=iaft.beta, statistic='Boson',
-            w_max=triqs_iw_mesh['dlr_wmax'], eps=triqs_iw_mesh['dlr_eps'], symmetrize=True
-        )
-
-
-    if real_hamiltonian:
-        # FT to tau space and enforce to real values
-        delta_tau = iaft.w_to_tau(delta_iw, 'f')
+    if force_real:
+        delta_tau = iaft.w_to_tau(delta_wsab, 'f')
         delta_tau.imag = 0.0
-        delta_iw_gf = to_block_gf(iaft.tau_to_w(delta_tau, 'f'), iaft,
-                                  gf_struct, triqs_iw_mesh["fermion"])
-    else:
-        delta_iw_gf = to_block_gf(delta_iw, iaft,
-                                  gf_struct, triqs_iw_mesh["fermion"])
+        delta_wsab = iaft.tau_to_w(delta_tau, 'f')
+    return to_block_gf(delta_wsab, iaft, gf_struct, mesh_f)
 
-    # u_iw_s1s2 has dimension of (niw, nspin, nspin, nbnd, nbnd)
-    u_iw_s1s2 = coqui_dmft.dynamic_4idx_u_to_dd_basis(
-        u_weiss_iw, nspin=2, screen_j=screen_j_in_u_dd
-    )
 
-    u_weiss_iw_gf = to_block2_gf(
-        u_iw_s1s2.real if real_hamiltonian else u_iw_s1s2,
-        iaft, gf_struct, triqs_iw_mesh["boson"]
-    )
+def h_int_operator(v_abcd, gf_struct, *, kind="density", force_real=True):
+    """
+    Build the static interaction operator of an impurity from 4-index Coulomb tensor.
 
-    return h0, delta_iw_gf, h_int, u_weiss_iw_gf
+    Currently assume no spin-dependent. 
+
+    Parameters
+    ----------
+    v_abcd : np.ndarray
+        The static Coulomb tensor of shape ``(norb, norb, norb, norb)`` in the product basis
+        (``v_abcd <-> c^dag_b c^dag_c c_d c_a``).
+    gf_struct : list of (str, int)
+        The block structure, one ``(name, size)`` per block; the operator is written in the
+        block names of ``gf_struct``.
+    kind : types of Coulomb interactions, optional 
+        - ``"density"``: the density-density only;
+        - ``"kanamori"``: Hubbard-Kanamori form; 
+        - ``"full"``: the general 4-index Coulomb Hamiltonian;
+        Default ``"density"``.
+    force_real : bool, optional
+        Drop the imaginary part of the tensor. Default ``True``.
+
+    Returns
+    -------
+    triqs.operators.Operator
+        The interaction operator.
+
+    Raises
+    ------
+    ValueError
+        For an unknown ``kind``.
+    """
+    if kind == "density":
+        return h_int_density_density(v_abcd, gf_struct, force_real=force_real)
+    if kind == "kanamori":
+        return h_int_slater(_kanamori_tensor(v_abcd), gf_struct, force_real=force_real)
+    if kind == "full":
+        return h_int_slater(v_abcd, gf_struct, force_real=force_real)
+    raise ValueError(f"triqs_utils::h_int_operator: kind must be density, kanamori or full, "
+                     f"got {kind!r}")
 
 
 def gf_dlr_from_ir(giw_ir, iaft, mesh_dlr_iw):
@@ -625,125 +597,6 @@ def extract_wij(sigma_iw_embed, embedding):
     return sigma_iw_list
 
 
-def imp_results_to_raw_data(g_iw, sigma_iw, w_iw, pi_iw, iaft=None):
-    if isinstance(sigma_iw.mesh, MeshDLRImFreq) and isinstance(pi_iw.mesh, MeshDLRImFreq):
-        return _dlr_imp_results_to_raw_data(g_iw, sigma_iw, w_iw, pi_iw, iaft)
-    elif isinstance(sigma_iw.mesh, MeshImFreq) and isinstance(pi_iw.mesh, MeshImFreq):
-        raise ValueError("imp_results_to_raw_data for uniform grid is disable for now")
-        #return _full_mesh_imp_results_to_raw_data(g_iw, sigma_iw, w_iw, pi_iw, iaft)
-    else:
-        raise ValueError("Incompatible mesh types for sigma_iw and pi_iw.")
-
-
-def _dlr_imp_results_to_raw_data(g_iw, sigma_iw, w_iw, pi_iw, iaft=None):
-    """
-    Convert impurity self-energy and polarization Green's functions from TRIQS objects
-    to raw NumPy array representations, optionally projected onto an intermediate
-    representation (IR) Matsubara frequency mesh.
-
-    Parameters
-    ----------
-    g_iw     : BlockGf on MeshDLRImFreq mesh
-    sigma_iw : BlockGf on MeshDLRImFreq mesh
-    w_iw     : Gf on MeshDLRImFreq mesh
-    pi_iw    : Gf on MeshDLRImFreq mesh
-    iaft : optional
-        IR kernel to get the IR Matsubara frequency meshes.
-        If provided, results will be interpolated on these IR grids.
-        If None, the data on the original full Matsubara mesh are returned.
-
-    Returns
-    -------
-    dict
-        A dictionary containing:
-        - ``"G_iw_data"``: list of ndarray
-            Block array representation of the impurity Green's function.
-        - ``"Sigma_iw_data"``: list of ndarray
-            Block array representation of the impurity self-energy.
-        - ``"Pi_iw_data"``: list of ndarray
-            Block array representation of the impurity polarizability.
-        - ``"W_iw_data"``: list of ndarray
-            Block array representation of the impurity screened interaction.
-    """
-    if iaft is None:
-        g_iw_data = coqui_dmft.blk_gf_to_blk_arr(g_iw)
-        sigma_iw_data = coqui_dmft.blk_gf_to_blk_arr(sigma_iw)
-        pi_iw_data = [pi_iw.data[:]]
-        w_iw_data = [w_iw.data[:]]
-        return {"G_iw_data": g_iw_data, "Sigma_iw_data": sigma_iw_data,
-                "W_iw_data": w_iw_data, "Pi_iw_data": pi_iw_data}
-
-    # converter Sigma and Pi to IR Matsubara mesh
-    g_iw_data     = coqui_dmft.make_hermitian(
-        coqui_dmft.gf_dlr_to_ir(make_gf_dlr(g_iw), iaft)
-    )
-    sigma_iw_data = coqui_dmft.make_hermitian(
-        coqui_dmft.gf_dlr_to_ir(make_gf_dlr(sigma_iw), iaft)
-    )
-    pi_iw_data = [coqui_dmft.gf_dlr_to_ir_phsym(make_gf_dlr(pi_iw), iaft)]
-    w_iw_data = [coqui_dmft.gf_dlr_to_ir_phsym(make_gf_dlr(w_iw), iaft)]
-    return {"G_iw_data": g_iw_data, "Sigma_iw_data": sigma_iw_data,
-            "W_iw_data": w_iw_data, "Pi_iw_data": pi_iw_data}
-
-
-def _full_mesh_imp_results_to_raw_data(g_iw, sigma_iw, w_iw, pi_iw, iaft=None):
-    """
-    Convert impurity self-energy and polarization Green's functions from TRIQS objects
-    to raw NumPy array representations, optionally projected onto an intermediate
-    representation (IR) Matsubara frequency mesh.
-
-    Parameters
-    ----------
-    sigma_iw : BlockGf on MeshImFreq mesh
-    pi_iw : Gf on MeshImFreq mesh
-    iaft : optional
-        IR kernel object providing methods to obtain the IR Matsubara frequency meshes.
-        If provided, both `sigma_iw` and `pi_iw` will be interpolated on these IR grids.
-        If None, the data on the original full Matsubara mesh are returned.
-
-    Returns
-    -------
-    dict
-        A dictionary containing:
-        - ``"Sigma_iw_data"`` : list of ndarray
-            Block array representation of the impurity self-energy.
-        - ``"Pi_iw_data"`` : list of ndarray
-            Block array representation of the impurity polarizability.
-    """
-    # solver_res.Sigma_iw (TRIQS BlockGf) -> solver_res.Sigma_iw_data (block array)
-    sigma_iw_data = coqui_dmft.blk_gf_to_blk_arr(sigma_iw)
-    # solver_res.Pi_iw (TRIQS Gf) -> solver_res.Pi_iw_data (block array)
-    pi_iw_data = [pi_iw.data[:]]
-
-    if iaft is None:
-        return {"Sigma_iw_data": sigma_iw_data, "Pi_iw_data": pi_iw_data}
-
-    # converter Sigma and Pi to IR Matsubara mesh
-    ir_idx_f = iaft.wn_mesh(stats='f', phys_notation=True)
-    nw_f = len(ir_idx_f)
-    nw_f_half = nw_f // 2
-    for i, sigma_dyn in enumerate(sigma_iw_data):
-        sigma_dyn_ir = np.zeros((nw_f,) + sigma_dyn.shape[1:], dtype=complex)
-        for idx in range(nw_f_half):
-            iw_pos = nw_f_half + idx
-            iw_neg = nw_f_half - idx - 1
-            data_idx = sigma_iw.mesh.to_data_index(ir_idx_f[iw_pos])
-            sigma_dyn_ir[iw_pos] = sigma_dyn[data_idx]
-            sigma_dyn_ir[iw_neg] = sigma_dyn[data_idx].conj()
-        sigma_iw_data[i] = sigma_dyn_ir
-
-    # interpolate solver_res.Pi_iw to ir grid
-    ir_idx_b = iaft.wn_mesh(stats='b', phys_notation=True, positive_only=True)
-    nw_b_pos = len(ir_idx_b)
-    pi_iw_ir = np.zeros((nw_b_pos,) + pi_iw_data[0].shape[1:], dtype=complex)
-    for idx in range(nw_b_pos):
-        data_idx = pi_iw.mesh.to_data_index(ir_idx_b[idx])
-        pi_iw_ir[idx] = pi_iw_data[0][data_idx]
-    pi_iw_data[0] = pi_iw_ir
-
-    return {"Sigma_iw_data": sigma_iw_data, "Pi_iw_data": pi_iw_data}
-
-
 def symmetrize_blk_mat(blk_mat, deg_blk):
     blk_mat_sym = blk_mat.copy()
     for i, blks in enumerate(deg_blk):
@@ -877,3 +730,284 @@ def symmetrize_blk2_gf(u_iw_blk_gf2, deg_blk, gf_struct):
                     u_iw_sym[blk_name1, blk_name2] << up_offdiag_buffer
 
     return u_iw_sym
+
+
+@dataclass
+class TriqsInputs:
+  """
+  The impurity problem as the TRIQS backends take it, built by ``problem_to_triqs``.
+
+  Attributes
+  ----------
+  mesh_f : triqs.gf.MeshDLRImFreq
+      The symmetrized fermionic DLR Matsubara mesh of ``delta_iw``.
+  mesh_b : triqs.gf.MeshDLRImFreq
+      The symmetrized bosonic DLR Matsubara mesh of ``u_weiss_iw``.
+  h0_op : triqs.operators.Operator
+      The one-body part, ``sum c^dag h0 c`` over the blocks of ``gf_struct``, with ``mu_shift``
+      subtracted from its diagonal.
+  h0_blocks : list of ndarray
+      The same one-body part as one matrix per ``gf_struct`` block, in the order of ``gf_struct``.
+  delta_iw : triqs.gf.BlockGf
+      The hybridization function on ``mesh_f``, one block per ``gf_struct`` block.
+  h_int : triqs.operators.Operator
+      The static interaction, ``h_int_density`` or a Slater operator depending on ``h_int_kind``.
+  u_weiss_iw : triqs.gf.Block2Gf
+      The retarded density-density interaction ``U_ij(i nu)`` on ``mesh_b``, indexed by pairs of
+      ``gf_struct`` blocks.
+  """
+  mesh_f: object
+  mesh_b: object
+  h0_op: object
+  h0_blocks: list
+  delta_iw: object
+  h_int: object
+  u_weiss_iw: object
+
+
+def dlr_meshes(beta, dlr_wmax, dlr_eps):
+  """Symmetrized fermionic and bosonic DLR Matsubara meshes of the impurity problem."""
+  mesh_f = MeshDLRImFreq(beta=beta, statistic='Fermion', w_max=dlr_wmax, eps=dlr_eps, symmetrize=True)
+  mesh_b = MeshDLRImFreq(beta=beta, statistic='Boson', w_max=dlr_wmax, eps=dlr_eps, symmetrize=True)
+  return mesh_f, mesh_b
+
+
+def _between_blocks_max(array_sab, gf_struct):
+  """
+  The largest element of a one-body array that couples two different ``gf_struct`` blocks.
+
+  Parameters
+  ----------
+  array_sab : np.ndarray
+      A one-body array of shape ``(..., nspin, norb, norb)``, e.g. ``h0_sab`` or ``delta_wsab``.
+  gf_struct : list of (str, int)
+
+  Returns
+  -------
+  float
+      Largest element being dropped. 
+  """
+  norb = array_sab.shape[-1]
+  block_of = {0: np.zeros(norb, dtype=int), 1: np.zeros(norb, dtype=int)}
+  offset = [0, 0]
+  for index, (name, size) in enumerate(gf_struct):
+    spin = 0 if name[:2] == "up" else 1
+    block_of[spin][offset[spin]:offset[spin] + size] = index
+    offset[spin] += size
+  largest = 0.0
+  for spin in (0, 1):
+    mask = block_of[spin][:, None] != block_of[spin][None, :]
+    if mask.any():
+      largest = max(largest, float(np.abs(array_sab[..., spin, :, :][..., mask]).max()))
+  return largest
+
+def _outside_density_density(A_abcd, *, keep_exchange):
+  """
+  The largest element of a four-index interaction tensor outside its density-density part.
+
+  Parameters
+  ----------
+  A_abcd : np.ndarray
+      An interaction tensor of shape ``(..., norb, norb, norb, norb)`` in the product basis
+      (``v_abcd`` or ``u_weiss_wabcd``).
+  keep_exchange : bool
+      Count the exchange elements ``A[a, b, b, a]`` as kept, as the density-density ``h_int``
+      and the ``screen_j`` treatment of the retarded interaction do.
+
+  Returns
+  -------
+  float
+      ``max |A_abcd[..., a, b, c, d]|`` over the elements with ``a != b`` or ``c != d``,
+      excluding the exchange elements when ``keep_exchange`` is set; 0 when nothing is dropped.
+  """
+  norb = A_abcd.shape[-1]
+  a, b, c, d = np.indices((norb,) * 4)
+  keep = (a == b) & (c == d)
+  if keep_exchange:
+    keep |= (a == d) & (b == c)
+  dropped = A_abcd[..., ~keep]
+  return float(np.abs(dropped).max()) if dropped.size else 0.0
+
+
+def _kanamori_tensor(v_abcd):
+  """
+  The Kanamori part of a Coulomb tensor: every other element set to zero.
+
+  Parameters
+  ----------
+  v_abcd : np.ndarray
+      The static Coulomb tensor of shape ``(norb, norb, norb, norb)`` in the product basis.
+
+  Returns
+  -------
+  np.ndarray
+      A copy holding only the density-density ``v[i, i, j, j]``, exchange ``v[i, j, j, i]`` and
+      pair-hopping ``v[i, j, i, j]`` elements, for the Kanamori form of ``h_int_operator``.
+  """
+  norb = v_abcd.shape[-1]
+  out = np.zeros_like(v_abcd)
+  for i in range(norb):
+    for j in range(norb):
+      out[i, i, j, j] = v_abcd[i, i, j, j]
+      out[i, j, j, i] = v_abcd[i, j, j, i]
+      out[i, j, i, j] = v_abcd[i, j, i, j]
+  return out
+
+
+def _log_dropped_elements(problem, *, h_int_kind, screen_j, real_hamiltonian):
+  """
+  Log the largest element, in Ha, that each reduction of ``problem_to_triqs`` drops.
+
+  A warning is added when the one-body part couples orbitals of different ``gf_struct`` blocks
+  above ``between_blocks_warn`` (downfolded problems carry such elements at the 1e-5 level as
+  numerical noise; the block cutting drops them either way). Nothing is returned: the log is
+  the only report.
+
+  Parameters
+  ----------
+  problem : ImpurityProblem
+      The problem about to be converted.
+  h_int_kind : {"density", "kanamori", "full"}
+      The form of the static interaction; the elements of ``v_abcd`` outside density-density
+      and exchange are reported for ``"density"`` only, the other forms drop nothing.
+  screen_j : bool
+      Whether the retarded exchange is kept (then it is not counted as dropped).
+  real_hamiltonian : bool
+      Whether the imaginary parts of h0 and Delta(tau) are dropped (then their size is reported).
+  """
+  gf_struct = problem.gf_struct
+  h0_between_blocks = _between_blocks_max(problem.h0_sab, gf_struct)
+  delta_between_blocks = _between_blocks_max(problem.delta_wsab, gf_struct)
+  u_outside_dd = _outside_density_density(problem.u_weiss_wabcd, keep_exchange=screen_j)
+  lines = [f"  dropped h0 between blocks        : {h0_between_blocks:.2e} Ha",
+           f"  dropped Delta between blocks     : {delta_between_blocks:.2e} Ha",
+           f"  dropped u outside density-density: {u_outside_dd:.2e} Ha"
+           + (" (exchange kept, screen_j)" if screen_j else "")]
+  if h_int_kind == "density":
+    v_outside_dd = _outside_density_density(problem.v_abcd, keep_exchange=True)
+    lines.append(f"  dropped V outside density-density + exchange: {v_outside_dd:.2e} Ha")
+  if real_hamiltonian:
+    imag_h0 = float(np.abs(problem.h0_sab.imag).max())
+    imag_delta_tau = float(np.abs(problem.iaft.w_to_tau(problem.delta_wsab, 'f').imag).max())
+    lines.append(f"  dropped imaginary parts          : h0 {imag_h0:.2e}, "
+                 f"Delta(tau) {imag_delta_tau:.2e} Ha")
+  app_log(1, "Impurity problem reduced for the solver (h_int = " + h_int_kind + "):\n"
+             + "\n".join(lines) + "\n")
+  between = max(h0_between_blocks, delta_between_blocks)
+  # an h0/Delta element between two blocks above this is physics, not downfolding noise (~1e-5 Ha)
+  between_blocks_warn = 1e-3
+  if between > between_blocks_warn:
+    app_log(1, f" [WARNING] the impurity problem couples orbitals of different gf_struct blocks "
+               f"({between:.2e} Ha, far above\n  the numerical noise of a downfolding); the block "
+               f"structure drops that coupling. Use blocks that contain the coupled\n  orbitals "
+               f"with a backend that accepts them (offdiag_delta).\n")
+
+
+def problem_to_triqs(problem, *, h_int_kind="density", screen_j=False, real_hamiltonian=True):
+  """
+  Build the TRIQS containers of an ``ImpurityProblem``.
+
+  The most general impurity Hamiltonian the function can return is
+
+      H = sum_{blocks} c^dag h0 c  +  h_int[v_abcd]  +  sum_{ij} U_ij(i nu) n_i n_j
+
+  with the hybridization Delta(i omega) alongside. In physical terms:
+
+  - One-body part (h0 and Delta):
+    - block-diagonal in ``gf_struct`` and spin-diagonal (two spin blocks ``up`` and ``down``),
+      matrix-valued inside a block;
+    - elements between two ``gf_struct`` blocks are dropped;
+    - the imaginary parts are dropped when ``real_hamiltonian`` is set;
+    - ``mu_shift`` is subtracted from the diagonal of h0.
+  - Static Coulomb interaction, its form is set by ``h_int_kind``:
+    - ``"density"``: density-density-only interactions
+    - ``"kanamori"``: Hubbard-Kanamori interactions
+    - ``"full"``: general four-index interactions
+    - currently, assume the same interaction for both spins.
+    - the imaginary parts are dropped when ``real_hamiltonian`` is set; 
+  - Retarded interaction:
+    - currently, only the density-density part is supported. (extension will be addressed in the future)
+    - the exchange part is folded into the same-spin channel when ``screen_j`` is set;
+
+  When ``problem.degenerate_blk`` is given, h0, Delta and the retarded interaction are
+  symmetrized over the degenerate groups of blocks. The static interaction is symmetrized only
+  for ``h_int_kind = "density"``: the symmetrization of a Kanamori or full operator is not
+  implemented yet.
+
+  Each part is built by its own builder (``h0_operator``, ``delta_block_gf``,
+  ``h_int_operator``, ``dynamic_4idx_u_to_dd_basis`` + ``to_block2_gf``); this function owns the
+  sequence: the drop report, the meshes, the ``mu_shift``, the builders, the symmetrization.
+
+  Parameters
+  ----------
+  problem : ImpurityProblem
+  h_int_kind : {"density", "kanamori", "full"}, optional
+      The form of the static interaction, see above. Default ``"density"``.
+  screen_j : bool, optional
+      Keep the retarded exchange in the same-spin channel of ``u_weiss_iw`` (as in
+      ``dynamic_4idx_u_to_dd_basis``). Default ``False``.
+  real_hamiltonian : bool, optional
+      Drop the imaginary parts of h0 and Delta(tau) and the interactions. 
+      Default ``True``.
+
+  Returns
+  -------
+  TriqsInputs
+      The converted problem in TRIQS containers. See ``TriqsInputs`` for the data format. 
+
+  Raises
+  ------
+  ValueError
+      For an unknown ``h_int_kind``.
+  """
+  gf_struct = problem.gf_struct
+  if h_int_kind not in ("density", "kanamori", "full"):
+    raise ValueError(f"triqs_utils::problem_to_triqs: h_int must be density, kanamori or full, "
+                     f"got {h_int_kind!r}")
+  _log_dropped_elements(problem, h_int_kind=h_int_kind, screen_j=screen_j,
+                        real_hamiltonian=real_hamiltonian)
+
+  # imaginary mesh for the impurity problem in TRIQS
+  mesh_f, mesh_b = dlr_meshes(beta=problem.beta, dlr_wmax=problem.dlr_wmax, dlr_eps=problem.dlr_eps)
+  
+  # non-interacting Hamiltonian
+  h0_sab = problem.h0_sab - problem.mu_shift * np.eye(problem.h0_sab.shape[-1])
+  h0_op = h0_operator(h0_sab, gf_struct, force_real=real_hamiltonian)
+  # hybridization function
+  delta_gf = delta_block_gf(problem.delta_wsab, problem.iaft, gf_struct, mesh_f,
+                            force_real=real_hamiltonian)
+  # static Coulomb interaction
+  h_int = h_int_operator(problem.v_abcd, gf_struct, kind=h_int_kind, 
+                         force_real=real_hamiltonian)
+  # dynamic Coulomb interaction (currently only density-density terms)
+  u_iw_s1s2 = coqui_dmft.dynamic_4idx_u_to_dd_basis(problem.u_weiss_wabcd, nspin=2, screen_j=screen_j)
+  u_gf = to_block2_gf(u_iw_s1s2.real if real_hamiltonian else u_iw_s1s2, problem.iaft, gf_struct, mesh_b)
+  
+  # symmetrize over degenerate blocks if given
+  if problem.degenerate_blk is not None:
+    delta_gf = modest.symmetrize(delta_gf, problem.degenerate_blk)
+    h0_op = symmetrize_h0_op(h0_op, problem.degenerate_blk, gf_struct)
+    if h_int_kind == "density":
+      h_int = symmetrize_h_int_op(h_int, problem.degenerate_blk, gf_struct)
+    else:
+      app_log(1, f" [WARNING] triqs_utils::problem_to_triqs: the symmetrization of h_int over the "
+                 f"degenerate blocks is implemented\n  for h_int = \"density\" only; the "
+                 f"{h_int_kind} interaction is left unsymmetrized while h0, Delta and u_weiss "
+                 f"are symmetrized.\n")
+    u_gf = symmetrize_blk2_gf(u_gf, problem.degenerate_blk, gf_struct)
+
+  # the matrices of the final (shifted, symmetrized) h0 operator
+  h0_blocks = [np.asarray(blk) for blk in block_matrix_from_op(h0_op, gf_struct)]
+  return TriqsInputs(mesh_f=mesh_f, mesh_b=mesh_b, h0_op=h0_op, h0_blocks=h0_blocks,
+                     delta_iw=delta_gf, h_int=h_int, u_weiss_iw=u_gf)
+
+
+def analyze_degenerate_blocks(delta_iw, iaft, gf_struct, dlr_wmax, dlr_eps, threshold, *,
+                              force_real=True):
+  """
+  Degenerate groups of ``gf_struct`` blocks inferred from Delta(iw) with ModEST's rule, on the
+  same (real-forced, DLR-sampled) Delta the driver passed to ModEST before this interface.
+  """
+  mesh_f, _ = dlr_meshes(beta=iaft.beta, dlr_wmax=dlr_wmax, dlr_eps=dlr_eps)
+  delta_gf = delta_block_gf(delta_iw, iaft, gf_struct, mesh_f, force_real=force_real)
+  return modest.analyze_degenerate_blocks(delta_gf, threshold=threshold)

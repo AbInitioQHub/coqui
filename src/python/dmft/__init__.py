@@ -23,6 +23,7 @@ _TRIQS_CTSEG_AVAILABLE = False
 _TRIQS_IMPORT_ERROR = None
 
 try:
+  from .solver_api import *
   from .scf_driver import *
   from .dmft_state import *
   from .triqs_utils import *

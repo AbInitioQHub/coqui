@@ -153,3 +153,64 @@ def test_causal_projection_boson_with_real_downfold_coulomb(downfold_inputs):
     assert wloc_fit_iw.shape == wloc_dd_iw.shape
     assert np.allclose(wloc_fit_iw.imag, 0.0, atol=1e-12)
 
+
+
+def test_run_gw_edmft_one_iteration(downfold_inputs, mpi, tmp_path):
+    """run_gw_edmft runs one EDMFT iteration with CT-SEG through the nested solver layout and
+    through the legacy flat layout, and writes the new checkpoint layout.
+
+    Setup: the SrVO3 2x2x2 fixture (GW checkpoint and MLWF file), a tiny Monte Carlo budget
+    (n_cycles 4000 total, warm-up 200, cycle length 20), screen_type "gw_edmft". The DLR
+    fixture only (the IR one differs just in the IAFT and would double the run time).
+
+    Cases (each runs on its own copy of the fixture's GW checkpoint in tmp_path, so 2 reuses
+    nothing from 1 and the fixture file is left untouched):
+      1. Nested layout: the run completes; dmft/iter0/impurity_0/results holds Sigma_iw_data,
+         Pi_iw_data, mu_imp and density; impurity_results holds G_iw, Sigma_iw, Pi_iw, W_iw,
+         Chi_iw; inputs holds degenerate_blk, occupations_sab and screen_type.
+      2. Legacy flat layout (the same keys without the solver table): the run completes and
+         writes the same result keys (the shim nested them).
+    """
+    if downfold_inputs["basis"] != "dlr":
+        pytest.skip("one basis is enough for the end-to-end check")
+    pytest.importorskip("triqs_ctseg")
+    import shutil
+    import triqs_modest as modest
+    from triqs.utility import mpi as triqs_mpi
+    from h5 import HDFArchive
+    import coqui.dmft as coqui_dmft
+    wan_h5 = coqui.TEST_INPUT_DIR + "qe/svo_kp222_nbnd40/mlwf/svo.mlwf.h5"
+    obe = modest.make_one_body_elements_gw(wan_h5)
+    embedding = modest.make_embedding(obe.C_space)
+    proj_info = coqui_dmft.get_proj_info(obe.P)
+    mf = construct_qe_mf(mpi, "qe_svo222_sym")
+    thc = coqui.make_thc_coulomb(mf, {"storage": "incore", "thresh": 1e-5,
+                                      "ecut": mf.ecutwfc() * 1.5, "chol_block_size": 1, "init": True})
+    out = triqs_mpi.bcast(str(tmp_path))          # tmp_path is per rank under MPI
+    solver = {"type": "ctseg", "n_cycles": 4000, "n_warmup_cycles": 200, "length_cycle": 20,
+              "random_seed": 5, "perform_tail_fit": False}
+    base = {"niter": 1, "gw_iter_per_loop": 1, "edmft_iter_per_loop": 1,
+            "prefix": "svo_dlr", "screen_type": "gw_edmft", "wannier_file": wan_h5,
+            "iter_alg": {"alg": "damping", "mixing": 0.3}}
+    for label, impurity in (("nested", {"init_imp_results": "dc", "degenerate_blk": [[0, 1, 2, 3, 4, 5]],
+                                        "solver": solver}),
+                            ("legacy", {"init_imp_results": "dc", "degenerate_blk": [[0, 1, 2, 3, 4, 5]],
+                                        **{k: v for k, v in solver.items() if k != "type"}})):
+        outdir = f"{out}/{label}"
+        chkpt = f"{outdir}/svo.{label}.dmft.h5"
+        if mpi.root():
+            os.makedirs(outdir, exist_ok=True)
+            shutil.copy("./svo_dlr.mbpt.h5", f"{outdir}/svo_dlr.mbpt.h5")
+        mpi.barrier()
+        params = dict(base, outdir=outdir, edmft={"chkpt_h5": chkpt, "impurity": impurity})
+        coqui_dmft.run_gw_edmft(thc, embedding, proj_info=proj_info, params=params)
+        mpi.barrier()
+        if mpi.root():
+            with HDFArchive(chkpt, 'r') as ar:
+                imp = ar["dmft/iter0/impurity_0"]
+                for key in ("Sigma_iw_data", "Pi_iw_data", "mu_imp", "density", "average_sign"):
+                    assert key in imp["results"].keys(), (label, key)
+                assert set(imp["solver_results"].keys()) == {"G_iw", "Sigma_iw", "Pi_iw", "W_iw", "Chi_iw"}
+                for key in ("degenerate_blk", "occupations_sab", "screen_type"):
+                    assert key in imp["inputs"].keys(), (label, key)
+        mpi.barrier()

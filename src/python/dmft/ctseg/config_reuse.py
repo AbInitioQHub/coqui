@@ -168,7 +168,7 @@ def _open_impurity_group(ar, iteration, impurity_index):
     return grp
 
 
-def save_to_chkpt(solver_chkpt, iteration, impurity_index, final_config):
+def save_to_chkpt(dmft_chkpt, iteration, impurity_index, final_config):
     """
     Write the configurations of all ranks to the checkpoint. 
     
@@ -181,18 +181,18 @@ def save_to_chkpt(solver_chkpt, iteration, impurity_index, final_config):
     """
     from triqs_ctseg import save_configs
     path = "/".join(_impurity_path(iteration, impurity_index) + [_CONFIG_GROUP])
-    app_log(2, f"Writing CT-SEG configurations to {solver_chkpt}:{path}")
+    app_log(2, f"Writing CT-SEG configurations to {dmft_chkpt}:{path}")
     if not mpi.is_master_node():
         save_configs(None, _CONFIG_GROUP, final_config)
     else:
         ar, grp = None, None
         try:
-            ar = HDFArchive(solver_chkpt, 'a')
+            ar = HDFArchive(dmft_chkpt, 'a')
             grp = _open_impurity_group(ar, iteration, impurity_index)
             if _CONFIG_GROUP in grp:
                 del grp[_CONFIG_GROUP]
         except Exception as e:
-            app_log(1, f" [WARNING] cannot prepare {solver_chkpt}:{path} for writing: {e}\n")
+            app_log(1, f" [WARNING] cannot prepare {dmft_chkpt}:{path} for writing: {e}\n")
             grp = None
         try:
             save_configs(grp, _CONFIG_GROUP, final_config)   
@@ -202,7 +202,7 @@ def save_to_chkpt(solver_chkpt, iteration, impurity_index, final_config):
     mpi.barrier()
 
 
-def load_from_chkpt(solver_chkpt, iteration, impurity_index):
+def load_from_chkpt(dmft_chkpt, iteration, impurity_index):
     """
     Read the stored configuration from the checkpoint. 
 
@@ -218,11 +218,11 @@ def load_from_chkpt(solver_chkpt, iteration, impurity_index):
     from triqs_ctseg import load_configs
     keys = _impurity_path(iteration, impurity_index) + [_CONFIG_GROUP]
     path = "/".join(keys)
-    app_log(2, f"Checking for CT-SEG configurations at {solver_chkpt}:{path}")
+    app_log(2, f"Checking for CT-SEG configurations at {dmft_chkpt}:{path}")
     found, error = False, None
-    if mpi.is_master_node() and os.path.isfile(solver_chkpt):
+    if mpi.is_master_node() and os.path.isfile(dmft_chkpt):
         try:
-            with HDFArchive(solver_chkpt, 'r') as ar:
+            with HDFArchive(dmft_chkpt, 'r') as ar:
                 grp, found = ar, True
                 for key in keys:
                     if key not in grp:
@@ -243,7 +243,7 @@ def load_from_chkpt(solver_chkpt, iteration, impurity_index):
     app_log(2, f"  CT-SEG configurations {'found' if found else 'not found'}")
     if not found:
         return None
-    with HDFArchive(solver_chkpt, 'r') as ar:
+    with HDFArchive(dmft_chkpt, 'r') as ar:
         config = load_configs(ar["/".join(keys[:-1])], _CONFIG_GROUP)
     mpi.barrier()
     return config

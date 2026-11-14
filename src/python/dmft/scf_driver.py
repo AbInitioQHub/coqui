@@ -17,7 +17,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==========================================================================
 """
-from functools import partial
 import numpy as np
 from h5 import HDFArchive
 
@@ -26,12 +25,15 @@ import triqs_modest as modest
 import coqui
 from coqui.utils.imag_axes_ft import IAFT
 import coqui.dmft as coqui_dmft
-from coqui.dmft.io import convert_gw_edmft_params, _normalize_solver_params_list, resolve_dmft_iteration
+from coqui.dmft.io import convert_gw_edmft_params, resolve_dmft_iteration
+from coqui.dmft.solver_api import (ImpurityProblem, make_solver, 
+                                   check_solver_capabilities_for_gw_edmft,
+                                   check_solver_capabilities_for_problem)
 
 Hartree_eV = 27.211386245988
 
 
-def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: dict):
+def run_gw_edmft(h_int, embedding, *, proj_info=None, params: dict):
     """
     Run the GW+EDMFT self-consistency workflow.
 
@@ -46,13 +48,6 @@ def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: 
         Embedding object from TRIQS/ModEST
         (https://github.com/TRIQS/modest) defining mappings between local MLWF
         orbitals and impurity subspaces.
-    inner_loop_alg : int, optional
-        EDMFT inner-loop mode.
-
-        - ``1``: recompute ``G_loc`` and ``W_loc`` each EDMFT iteration.
-        - ``2``: keep ``G_loc`` and ``W_loc`` fixed inside one EDMFT inner loop.
-
-        Default is ``1``.
     proj_info : dict, optional
         Projector metadata for the correlated subspace. If ``None``,
         ``wannier_file`` must be provided in ``params``.
@@ -63,7 +58,7 @@ def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: 
         ~~~~~~~~~~~~~~~~~~~~~~~
             - ``niter`` (int): total number of outer GW+EDMFT cycles. Must be a positive integer.
             - ``edmft`` (dict): EDMFT subsection containing impurity controls.
-            - ``edmft.impurity`` (dict or list[dict]): impurity solver parameter set(s).
+            - ``edmft.impurity`` (dict or list[dict]): one block per impurity.
             - ``wannier_file`` (str), only when ``proj_info is None``:
                 Wannier90 HDF5 file used to build projectors.
 
@@ -107,57 +102,34 @@ def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: 
                 configuration. A single dict applies to one impurity; use a list for
                 multiple impurities.
 
-                Per-impurity solver parameters (``edmft.impurity``)
-                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-                Only TRIQS/CT-SEG is currently supported. Post-processing options are
-                part of the same impurity-solver parameter block.
+                Per-impurity block (``edmft.impurity``)
+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                Workflow keys, beside a nested ``solver`` table (required):
 
-                Required CT-SEG run controls:
-
-                    - ``n_cycles`` (int): total Monte Carlo measurement cycles across MPI.
-                    - ``n_warmup_cycles`` (int): warmup Monte Carlo cycles.
-                    - ``length_cycle`` (int): updates per Monte Carlo cycle.
-
-                Optional CT-SEG mesh/solver controls:
-
-                    - ``n_iw`` (default ``2 * max_dlr_idx``): Internal uniform Matsubara 
-                        mesh size within CT-SEG. 
-                    - ``n_tau`` (default ``6 * n_iw + 1``): Internal uniform imaginary-time 
-                        mesh size within CT-SEG.
-                    - ``n_tau_bosonic`` (default ``n_tau``): Internal bosonic imaginary-time 
-                        mesh size within CT-SEG. 
-                    - ``perform_tail_fit`` (default ``False``): enable self-energy tail fit.
-                    - ``fit_max_moment`` (default ``3``): highest fitted self-energy moment.
-                    - ``fit_min_w`` / ``fit_max_w`` / ``fit_min_n`` / ``fit_max_n``
-                        (default ``None``): tail-fit window controls.
-                    - ``analytic_hf`` (default ``True``): evaluate static self-energy 
-                        analytically.
-                    - ``truncate_uchi`` (default ``False``): stabilize ``U*Chi`` inversion i
-                        n DLR post-processing.
-                    - ``reuse_config`` (bool, default ``False``): start each CT-SEG solve from
-                        the configuration that the CT-SEG solve of the previous iteration ended with. 
-                        Requires a TRIQS/ctseg build providing ``ConfigDataT``. 
-                        Without a stored configuration (e.g. first iteration, an older checkpoint, 
-                        a changed ``beta`` or block structure) the solves starts from scratch with 
-                        ``n_warmup_cycles``. 
-                    - ``restart_n_warmup_cycles`` (int >= 1, required with ``reuse_config``):
-                        warm-up cycles of a solve that starts from a stored configuration.
-                        ``n_warmup_cycles`` stays the warm-up from scratch, i.e. the long
-                        initial one.
-                    - ``random_seed`` (int, optional): base seed of every CT-SEG solve; rank
-                        ``r`` uses ``(random_seed + 928374 r) mod (2^31 - 1)``. Without it,
-                        CT-SEG's default seed applies.
-
-                Additional DMFT workflow options in the same impurity block:
-
-                     - ``init_imp_results`` (str, default ``"dc"``): initialization strategy
-                         for impurity self-energies (``"dc"`` or ``"zero"``).
-                     - ``degenerate_blk`` (list[list[int]], default ``None``): explicit
-                         orbital-degeneracy groups for symmetry enforcement.
-                     - ``degenerate_blk_thresh`` (float, default ``None``): infer
-                         ``degenerate_blk`` from hybridization when explicit blocks are absent.
-                     - ``screen_j`` (bool, default ``False``): include screened Hund's
-                         coupling in density-density mapping.
+                    - ``solver`` (dict): ``type`` is the registered name of the backend
+                        (``"ctseg"``, or a name added with ``coqui.dmft.register_solver`` for
+                        an ``ImpuritySolver`` subclass outside the package); every other key is
+                        the backend's. Common to the QMC backends: ``n_cycles``
+                        (total over MPI ranks), ``n_warmup_cycles`` and ``length_cycle`` (per
+                        rank), ``random_seed`` (base seed; rank ``r`` uses
+                        ``(random_seed + 928374 r) mod (2^31 - 1)``), ``screen_j`` (default
+                        ``False``: include the screened Hund's coupling in the density-density
+                        retarded interaction), ``h_int`` (``"density"``; the other kinds are
+                        reserved for backends with a general interaction). CT-SEG keys: ``n_iw``
+                        (default ``int(1.4 * max_dlr_idx)``), ``n_tau`` (default
+                        ``max(500001, 2 beta wmax + 1)``), ``n_tau_bosonic`` (default ``n_tau``),
+                        ``perform_tail_fit`` (default ``False``), ``fit_max_moment`` (``3``),
+                        ``fit_min_w`` / ``fit_max_w`` / ``fit_min_n`` / ``fit_max_n``
+                        (``None``), ``analytic_hf`` (``True``), ``truncate_uchi`` (``False``),
+                        ``reuse_config`` (``False``) with ``restart_n_warmup_cycles`` (int >= 1,
+                        required with ``reuse_config``); unknown keys are forwarded to CT-SEG's
+                        ``solve``.
+                    - ``init_imp_results`` (str, default ``"dc"``): initialization strategy
+                        for impurity self-energies (``"dc"`` or ``"zero"``).
+                    - ``degenerate_blk`` (list[list[int]], default ``None``): explicit
+                        orbital-degeneracy groups for symmetry enforcement.
+                    - ``degenerate_blk_thresh`` (float, default ``None``): infer
+                        ``degenerate_blk`` from hybridization when explicit blocks are absent.
                      - ``causal_projection`` (dict, default ``None``): options for bosonic
                          causal projection. A bath-fitting step is skipped when its
                          ``nbath_per_orbital_*`` key is absent or set to ``-1``; the
@@ -184,19 +156,17 @@ def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: 
                          Example — fit only ``Wloc`` and ``U_weiss`` with 3 poles each::
 
                              {"nbath_per_orbital_wloc": 3, "nbath_per_orbital_u_weiss": 3}
-                     - ``chemical_potential`` (dict, optional): auxiliary impurity chemical-
-                         potential solver controls:
-                         - ``tolerance`` (float, default ``0.1``)
-                         - ``suppress_solver_output`` (bool, default ``True``)
-                         - ``solver_output_file`` (str)
-                         - ``n_cycles`` / ``n_warmup_cycles`` / ``length_cycle`` (int)
-                         - ``restart_n_warmup_cycles`` (int >= 1)
+                    - ``chemical_potential`` (dict, optional): requests the impurity
+                        chemical-potential search; ``tolerance`` (default ``0.1``) is its only
+                        key. The solver parameters of the search's occupations-only solves are
+                        the production ones with the QMC cycle controls of the ``mu_search``
+                        table of the ``solver`` block (``n_cycles``, default 5 % of the
+                        production total, ``n_warmup_cycles``, ``length_cycle``,
+                        ``restart_n_warmup_cycles``) and its solver-output keys
+                        (``suppress_solver_output``, default ``True``, ``solver_output_file``);
+                        no other key may be set there.
 
-                         If omitted, defaults are derived from the main impurity solver setup:
-                         ``n_cycles = int(solver_n_cycles * 0.05)``,
-                         ``n_warmup_cycles = solver_n_warmup_cycles``, 
-                         ``length_cycle = solver_length_cycle``, and 
-                         ``restart_n_warmup_cycles = solver_restart_n_warmup_cycles``
+                A block without ``solver`` is read as the former flat CT-SEG layout for backward compatibility. 
 
     Returns
     -------
@@ -230,15 +200,16 @@ def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: 
                 "iaft": {"wmax": 5.0, "eps": 1e-10},
                 "impurity": {
                     "init_imp_results": "dc",
-                    "n_iw": 3000,
-                    "n_tau": 96001,
-                    "length_cycle": 60,
-                    "n_warmup_cycles": 6000,
-                    "n_cycles": 2000000,
-                    "chemical_potential": {
-                        "tolerance": 0.1,
-                        "n_cycles": 100000,
+                    "solver": {
+                        "type": "ctseg",
+                        "n_iw": 3000,
+                        "n_tau": 96001,
+                        "length_cycle": 60,
+                        "n_warmup_cycles": 6000,
+                        "n_cycles": 2000000,
+                        "mu_search": {"n_cycles": 100000},
                     },
+                    "chemical_potential": {"tolerance": 0.1},
                 },
             },
         }
@@ -267,8 +238,7 @@ def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: 
                      "╚═╝╚═╝╚═╝╚╚═╝╩  ╚═╝└┴┘╚═╝─┴┘┴ ┴└   ┴ \n")
     coqui.app_log(1, f"  Total GW+EDMFT cycles (niter)       = {niter}")
     coqui.app_log(1, f"  GW iterations per GW+EDMFT cycle    = {gw_iter_per_loop}")
-    coqui.app_log(1, f"  EDMFT iterations per GW+EDMFT cycle = {edmft_iter_per_loop}")
-    coqui.app_log(1, f"    - Fix Gloc and Wloc during EDMFT iterations = {inner_loop_alg==2}\n")
+    coqui.app_log(1, f"  EDMFT iterations per GW+EDMFT cycle = {edmft_iter_per_loop}\n")
 
     embedding_2e = embedding.merge_embed_block_by_imp.slice_sigma
     coqui.app_log(1, embedding.description(True))
@@ -278,19 +248,19 @@ def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: 
         wloc_params      = params.pop('wloc')
         gloc_params      = params.pop('gloc')
         embed_params     = params.pop('dmft_embed')
-        impurity_params  = params.pop('impurity')
-        imp_iaft_params  = impurity_params.pop('iaft', {})
-        iterative_params = impurity_params.pop('iter_alg', None)
+        edmft_params     = params.pop('edmft')
+        imp_iaft_params  = edmft_params.pop('iaft', {})
+        iterative_params = edmft_params.pop('iter_alg', None)
     except KeyError as e:
         raise KeyError(f"run_gw_edmft: Missing required params key: {e.args[0]}")
 
-    # Scale Monte-Carlo cycle counts by MPI communicator size.
-    impurity_params['solver'] = _normalize_solver_params_list(
-        impurity_params['solver'], coqui_mpi.comm_size()
-    )
+    
+    # one block per impurity: the workflow keys beside the backend's 'solver' table
+    impurity_params_list = edmft_params['impurity']
+    solvers = _make_solvers(impurity_params_list, coqui_mpi.comm_size(), wloc_params['screen_type'])
 
     coqui_chkpt_h5 = embed_params['outdir']+"/"+embed_params['prefix']+".mbpt.h5"
-    solver_chkpt_h5 = impurity_params.pop('chkpt_h5', coqui_chkpt_h5)
+    dmft_chkpt_h5 = edmft_params.pop('chkpt_h5', coqui_chkpt_h5)
 
     # DMFT state container
     dmft_state = coqui_dmft.DMFTState.make_dmft_state(
@@ -301,8 +271,8 @@ def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: 
         screen_type=wloc_params['screen_type'],
         verbal=coqui_mpi.root()
     )
-    if impurity_params.pop('restart', True):
-        dmft_state.load(solver_chkpt_h5)
+    if edmft_params.pop('restart', True):
+        dmft_state.load(dmft_chkpt_h5)
     
     coqui_mpi.barrier()
 
@@ -331,15 +301,9 @@ def run_gw_edmft(h_int, embedding, inner_loop_alg=1, *, proj_info=None, params: 
             coqui_mpi.barrier()
 
             # inner EDMFT loop
-            edmft_alg = {1: _edmft_loop, 2: _edmft_loop_fixed_gloc_and_wloc}
-            try:
-                edmft_impl = edmft_alg[inner_loop_alg]
-            except KeyError:
-                raise ValueError(f"Unknown inner_loop_alg={inner_loop_alg!r} (expected 1, or 2)")
-        
-            edmft_impl(
-                mf, h_int, proj_info, dmft_state, solver_chkpt_h5, coqui_chkpt_h5, 
-                gloc_params, wloc_params, impurity_params['solver'], embed_params, 
+            _edmft_loop(
+                mf, h_int, proj_info, dmft_state, dmft_chkpt_h5, coqui_chkpt_h5, 
+                gloc_params, wloc_params, solvers, impurity_params_list, embed_params,
                 iterative_params, edmft_iter_per_loop
             )
 
@@ -381,8 +345,8 @@ def _gw_loop(mf, h_int, proj_info,
             coqui_mpi.barrier()
 
 
-def _edmft_loop(mf, h_int, proj_info, dmft_state, solver_chkpt_h5, coqui_chkpt_h5, 
-               gloc_params, wloc_params, solver_params_list, embed_params,
+def _edmft_loop(mf, h_int, proj_info, dmft_state, dmft_chkpt_h5, coqui_chkpt_h5, 
+               gloc_params, wloc_params, solvers, impurity_params_list, embed_params,
                iterative_params, num_iter):
 
     coqui_mpi = mf.mpi()
@@ -425,14 +389,15 @@ def _edmft_loop(mf, h_int, proj_info, dmft_state, solver_chkpt_h5, coqui_chkpt_h
         for imp_index, (G_t, W_t, V) in enumerate(zip(Gloc_C, Wloc_C, Vloc_C)):
             coqui_dmft.print_title_box(f"IMPURITY {imp_index}")
 
-            solver_params = solver_params_list[imp_index]
-            Res, Input = dmft_state.solver_results[imp_index], dmft_state.solver_inputs[imp_index]
+            imp_params = impurity_params_list[imp_index]
+            solver = solvers[imp_index]
+            Res, Input = dmft_state.impurity_results[imp_index], dmft_state.impurity_inputs[imp_index]
             Input['Gloc_t'] = G_t
             Input['Wloc_t'] = coqui_dmft.chemistry_to_product_basis(W_t)
             Input['Vloc'] = coqui_dmft.chemistry_to_product_basis(V)
 
             coqui_dmft.fit_local_results_boson(
-                Input, dmft_state.iaft, solver_params.get("causal_projection")
+                Input, dmft_state.iaft, imp_params.get("causal_projection")
             )
 
             # Save previous Weiss fields before updating (for convergence check)
@@ -441,10 +406,10 @@ def _edmft_loop(mf, h_int, proj_info, dmft_state, solver_chkpt_h5, coqui_chkpt_h
 
             # Fermionic and bosonic Weiss fields
             Input['g_weiss_iw'], Input['u_weiss_iw'] = _compute_weiss_fields(
-                coqui_mpi, Res, Input, solver_params, dmft_state.iaft
+                coqui_mpi, Res, Input, imp_params, dmft_state.iaft
             )
             Input['u_weiss_iw'] = coqui_dmft.fit_u_weiss(
-                Input['u_weiss_iw'], dmft_state.iaft, solver_params.get("causal_projection")
+                Input['u_weiss_iw'], dmft_state.iaft, imp_params.get("causal_projection")
             )
 
             # h0: (nspin, norb, norb), delta_iw: (niw, nspin, norb, norb)
@@ -458,6 +423,7 @@ def _edmft_loop(mf, h_int, proj_info, dmft_state, solver_chkpt_h5, coqui_chkpt_h
             dm = -dmft_state.iaft.tau_interpolate(gloc_t_arr, dmft_state.iaft.beta, 'f')[0]
             g_beta_half = -dmft_state.iaft.tau_interpolate(gloc_t_arr, dmft_state.iaft.beta/2, 'f')[0]
             Input['density'] = (np.diag(dm[0]).sum() + np.diag(dm[1]).sum()).real
+            Input['occupations_sab'] = np.real(dm)
             coqui.app_log(1, "Bare/static orbital-averaged interactions for the impurity")
             coqui.app_log(1, "----------------------------------------------------------")
             coqui.app_log(1, f"  intra-orbital                  = {Ub*Hartree_eV:.4f}, {U*Hartree_eV:.4f} eV")
@@ -478,46 +444,33 @@ def _edmft_loop(mf, h_int, proj_info, dmft_state, solver_chkpt_h5, coqui_chkpt_h
             coqui.app_log(1, f"  Spin up: {np.diag(dm[0]).real}")
             coqui.app_log(1, f"  Spin down: {np.diag(dm[1]).real}\n")
 
-            dmft_state.save_impurity_inputs(solver_chkpt_h5, imp_index)
-
-            # Convert CoQuí outputs to TRIQS containers
-            h0, delta_iw, h_int, u_weiss_iw = coqui_dmft.to_triqs_containers(
-                Input['h0'], Input['delta_iw'], Input['Vloc'], Input['u_weiss_iw'],
-                dmft_state.iaft, gf_struct = Res['gf_struct'],
-                triqs_iw_mesh = {"fermion": Res['iw_mesh_f'], "boson": Res['iw_mesh_b']},
-                density_hamiltonian = True, real_hamiltonian = True,
-                screen_j_in_u_dd = solver_params.get('screen_j', False)
-            )
-
-            # Analyze block symmetry
-            if solver_params.get('degenerate_blk') is None and solver_params.get('degenerate_blk_thresh'):
-                coqui.app_log(2, "Analyzing block symmetries via the hybridization function...\n")
-                # Cache the result so subsequent EDMFT iterations skip re-analysis
-                solver_params['degenerate_blk'] = modest.analyze_degenerate_blocks(
-                    delta_iw, threshold=solver_params['degenerate_blk_thresh']
-                )
-            degenerate_blk = solver_params.get('degenerate_blk')
-            if degenerate_blk is not None:
-                coqui_dmft.print_degenerate_blks(degenerate_blk, Res['gf_struct'])
-                delta_iw   = modest.symmetrize(delta_iw, degenerate_blk)
-                h0         = coqui_dmft.symmetrize_h0_op(h0, degenerate_blk, Res['gf_struct'])
-                h_int      = coqui_dmft.symmetrize_h_int_op(h_int, degenerate_blk, Res['gf_struct'])
-                u_weiss_iw = coqui_dmft.symmetrize_blk2_gf(u_weiss_iw, degenerate_blk, Res['gf_struct'])
+            # degenerate groups of blocks: fixed on the first hybridization of this impurity
+            if Input.get('degenerate_blk') is None:
+                Input['degenerate_blk'] = _degenerate_blocks(
+                    Input, imp_params, dmft_state.iaft, dmft_state.dlr_wmax, dmft_state.dlr_eps,
+                    solver)
+            # impurity problem in CoQui's data format. 
+            problem = ImpurityProblem(
+                gf_struct=Res['gf_struct'], beta=dmft_state.iaft.beta, iaft=dmft_state.iaft,
+                dlr_wmax=dmft_state.dlr_wmax, dlr_eps=dmft_state.dlr_eps,
+                h0_sab=Input['h0'], delta_wsab=Input['delta_iw'], v_abcd=Input['Vloc'],
+                u_weiss_wabcd=Input['u_weiss_iw'], target_density=Input['density'],
+                occupations_sab=Input['occupations_sab'], degenerate_blk=Input['degenerate_blk'])
+            check_solver_capabilities_for_problem(solver=solver, problem=problem)
+            dmft_state.save_impurity_inputs(dmft_chkpt_h5, imp_index)
 
             # Call impurity solver, and store sigma_imp, vhf_imp, and pi_imp in "Res"
-            chkpt = {"h5": solver_chkpt_h5, "impurity": imp_index,
-                     "iteration": dmft_state.iteration, "save": True}
-            Res.update(
-                _solver_inner_loop(coqui_mpi, h0, delta_iw, u_weiss_iw, h_int, Input['density'],
-                                   chkpt=chkpt, **solver_params)
-            )
-            # convert from triqs Gf to numpy arrays and ir mesh
-            Res.update(coqui_dmft.imp_results_to_raw_data(
-                Res['G_iw'], Res['Sigma_iw'], Res['W_iw'], Res['Pi_iw'], dmft_state.iaft)
-            )
+            chkpt = {'h5': dmft_chkpt_h5, 'impurity': imp_index,
+                     'iteration': dmft_state.iteration, 'save': True}
+            result = _solve_impurity(solver, problem, imp_params, chkpt)
+            # Update the solver-agnostic results in Res. 
+            Res.update(result.solver_agnostic_results())
+            Res['mu_imp'] = problem.mu_shift
+            # Backend-specific data goes here
+            dmft_state.solver_data[imp_index] = result.solver_data
             # Causal projection
             coqui_dmft.fit_impurity_results_boson(
-                Res, dmft_state.iaft, solver_params.get("causal_projection"))
+                Res, dmft_state.iaft, imp_params.get("causal_projection"))
 
             conv_metrics = _edmft_convergence_check(coqui_mpi, imp_index, Input, Res, dmft_state.iaft,
                                                     prev_g_weiss_iw, prev_u_weiss_iw)
@@ -554,12 +507,12 @@ def _edmft_loop(mf, h_int, proj_info, dmft_state, solver_chkpt_h5, coqui_chkpt_h
 
             # mixing impurity and dc solutions to facilitate convergence
             dmft_state.damp_impurity_results(
-                solver_chkpt_h5, mixing=iterative_params.get('mixing', 0.7), impurity_indices=[imp_index],
+                dmft_chkpt_h5, mixing=iterative_params.get('mixing', 0.7), impurity_indices=[imp_index],
                 mix_in_first_iter=iterative_params.get('mix_in_first_iter', True)
             )
 
             # save solver results for current impurity
-            dmft_state.save_impurity_results(solver_chkpt_h5, imp_index)
+            dmft_state.save_impurity_results(dmft_chkpt_h5, imp_index)
             
         # Embed impurity results
         dmft_state.embed_impurity_results()
@@ -575,197 +528,12 @@ def _edmft_loop(mf, h_int, proj_info, dmft_state, solver_chkpt_h5, coqui_chkpt_h
         coqui_mpi.barrier()
 
 
-def _edmft_loop_fixed_gloc_and_wloc(
-        mf, h_int, proj_info, dmft_state, solver_chkpt_h5, coqui_chkpt_h5, 
-        gloc_params, wloc_params, solver_params_list, embed_params,
-        iterative_params, num_iter):
-    coqui_mpi = mf.mpi()
-    with HDFArchive(coqui_chkpt_h5, 'r') as ar:
-        greens_func_source = "embed" if "embed" in ar.keys() else "scf"
-        greens_func_iteration = ar[f"{greens_func_source}/final_iter"]
-
-    # downfold for W_loc
-    # greens_func_source and greens_func_iteration should be fixed during the inner loop
-    Vloc, Wloc_t = coqui.downfold_coulomb(
-        h_int, wloc_params,
-        projector_info=proj_info,
-        local_polarizabilities=dmft_state.local_pi_w
-    )
-
-    # downfold for G_loc
-    gloc_params["greens_func_source"] = greens_func_source
-    gloc_params["greens_func_iteration"] = greens_func_iteration
-    Gloc_t = coqui.downfold_local_gf(mf, gloc_params, projector_info=proj_info)
-
-    if coqui_mpi.root():
-        dmft_state.iaft.check_leakage(Gloc_t, stats='f', name='Gloc in the full MLWF space')
-        dmft_state.iaft.check_leakage_phsym(Wloc_t, stats='b', name='Wloc in the full MLWF space')
-
-    # Convert spin axis → list of length nspin
-    Gloc_t = [Gloc_t[:, s] for s in range(Gloc_t.shape[1])]
-    if mf.nspin() == 1:
-        Gloc_t = [Gloc_t[0], Gloc_t[0].copy()]
-
-    # Extract local Green's function and screened interactions for each impurity
-    Gloc_C    = dmft_state.embedding['1e'].extract(Gloc_t)   # block matrix
-    Vloc_C    = dmft_state.embedding['2e'].extract([Vloc])    # (norb, norb, norb, norb)
-    Wloc_C    = dmft_state.embedding['2e'].extract([Wloc_t]) # (nts, norb, norb, norb, norb)
-    Vloc_C    = [ V[0] for V in Vloc_C ]      # spinless
-    Wloc_C    = [ W_t[0] for W_t in Wloc_C ]  # spinless
-
-    for iteration in range(num_iter):
-        for imp_index, (G_t, W_t, V) in enumerate(zip(Gloc_C, Wloc_C, Vloc_C)):
-            coqui_dmft.print_title_box(f"IMPURITY {imp_index}")
-
-            solver_params = solver_params_list[imp_index]
-            Res, Input = dmft_state.solver_results[imp_index], dmft_state.solver_inputs[imp_index]
-            Input['Gloc_t'] = G_t
-            Input['Wloc_t'] = coqui_dmft.chemistry_to_product_basis(W_t)
-            Input['Vloc'] = coqui_dmft.chemistry_to_product_basis(V)
-
-            coqui_dmft.fit_local_results_boson(
-                Input, dmft_state.iaft, solver_params.get("causal_projection"))
-
-            # Save previous Weiss fields before updating (for convergence check)
-            prev_g_weiss_iw = Input.get('g_weiss_iw')
-            prev_u_weiss_iw = Input.get('u_weiss_iw')
-
-            # Fermionic and bosonic Weiss fields
-            Input['g_weiss_iw'], Input['u_weiss_iw'] = _compute_weiss_fields(
-                coqui_mpi, Res, Input, solver_params, dmft_state.iaft
-            )
-            Input['u_weiss_iw'] = coqui_dmft.fit_u_weiss(
-                Input['u_weiss_iw'], dmft_state.iaft, solver_params.get("causal_projection")
-            )
-
-            # h0: (nspin, norb, norb), delta_iw: (niw, nspin, norb, norb)
-            Input['h0'], Input['delta_iw'] = coqui_dmft.extract_h0_and_delta(
-                Input['g_weiss_iw'], dmft_state.iaft
-            )
-
-            Ub, Ubp, Jb_spin, Jb_pair = coqui_dmft.hubbard_kanamori_coulomb(Input['Vloc'])
-            U, Up, J_spin, J_pair = coqui_dmft.hubbard_kanamori_coulomb(Input['Vloc']+Input['u_weiss_iw'][0])
-            dm = -dmft_state.iaft.tau_interpolate(
-                coqui_dmft.blk_arr_to_arr(Input['Gloc_t'], Input["gf_struct"]),
-                dmft_state.iaft.beta, 'f')[0]
-            g_beta_half = -dmft_state.iaft.tau_interpolate(
-                coqui_dmft.blk_arr_to_arr(Input['Gloc_t'], Input["gf_struct"]),
-                dmft_state.iaft.beta/2, 'f')[0]
-            Input['density'] = (np.diag(dm[0]).sum() + np.diag(dm[1]).sum()).real
-            coqui.app_log(1, "Bare/static orbital-averaged interactions for the impurity")
-            coqui.app_log(1, "----------------------------------------------------------")
-            coqui.app_log(1, f"  intra-orbital                  = {Ub*Hartree_eV:.4f}, {U*Hartree_eV:.4f} eV")
-            coqui.app_log(1, f"  inter-orbital                  = {Ubp*Hartree_eV:.4f}, {Up*Hartree_eV:.4f} eV")
-            coqui.app_log(1, f"  Hund's coupling (spin-flip)    = {Jb_spin*Hartree_eV:.4f}, {J_spin*Hartree_eV:.4f} eV")
-            coqui.app_log(1, f"  Hund's coupling (pair-hopping) = {Jb_pair*Hartree_eV:.4f}, {J_pair*Hartree_eV:.4f} eV\n")
-
-            # For metals, beta * G(beta/2) saturates with increasing beta
-            # For insulators, beta * G(beta/2) decays exponentially to zero with increasing beta
-            coqui.app_log(1, "Spectral weight proxy at Fermi level: A(w) ~ -beta/pi * G_loc(tau=beta/2)")
-            coqui.app_log(1, "---------------------------------------------------------")
-            coqui.app_log(1, f"  Spin up:   {(dmft_state.iaft.beta/np.pi) * np.diag(g_beta_half[0]).real}")
-            coqui.app_log(1, f"  Spin down: {(dmft_state.iaft.beta/np.pi) * np.diag(g_beta_half[1]).real}\n")
-
-            coqui.app_log(1, "Local densities ")
-            coqui.app_log(1, "-------------------")
-            coqui.app_log(1, f"Total: {Input['density']:.4f}")
-            coqui.app_log(1, f"Spin up: {np.diag(dm[0]).real}")
-            coqui.app_log(1, f"Spin down: {np.diag(dm[1]).real}\n")
-
-            dmft_state.save_impurity_inputs(solver_chkpt_h5, imp_index)
-
-            # Convert CoQuí outputs to TRIQS containers
-            h0, delta_iw, h_int, u_weiss_iw = coqui_dmft.to_triqs_containers(
-                Input['h0'], Input['delta_iw'], Input['Vloc'], Input['u_weiss_iw'],
-                dmft_state.iaft, gf_struct = Res['gf_struct'],
-                triqs_iw_mesh = {"fermion": Res['iw_mesh_f'], "boson": Res['iw_mesh_b']},
-                density_hamiltonian = True, real_hamiltonian = True,
-                screen_j_in_u_dd = solver_params.get('screen_j', False)
-            )
-
-            # Analyze block symmetry
-            if solver_params.get('degenerate_blk') is None and solver_params.get('degenerate_blk_thresh'):
-                coqui.app_log(2, "Analyzing block symmetries via the hybridization function...\n")
-                # Cache the result so subsequent EDMFT iterations skip re-analysis
-                solver_params['degenerate_blk'] = modest.analyze_degenerate_blocks(
-                    delta_iw, threshold=solver_params['degenerate_blk_thresh']
-                )
-            degenerate_blk = solver_params.get('degenerate_blk') 
-            if degenerate_blk is not None:
-                coqui_dmft.print_degenerate_blks(degenerate_blk, Res['gf_struct'])
-                delta_iw   = modest.symmetrize(delta_iw, degenerate_blk)
-                h0         = coqui_dmft.symmetrize_h0_op(h0, degenerate_blk, Res['gf_struct'])
-                h_int      = coqui_dmft.symmetrize_h_int_op(h_int, degenerate_blk, Res['gf_struct'])
-                u_weiss_iw = coqui_dmft.symmetrize_blk2_gf(u_weiss_iw, degenerate_blk, Res['gf_struct'])
-
-            # Call impurity solver, and store sigma_imp, vhf_imp, and pi_imp in "Res"
-            chkpt = {"h5": solver_chkpt_h5, "impurity": imp_index,
-                     "iteration": dmft_state.iteration, "save": True}
-            Res.update(
-                _solver_inner_loop(coqui_mpi, h0, delta_iw, u_weiss_iw, h_int, Input['density'],
-                                   chkpt=chkpt, **solver_params)
-            )
-            # convert from triqs Gf to numpy arrays and ir mesh
-            Res.update(coqui_dmft.imp_results_to_raw_data(
-                Res['G_iw'], Res['Sigma_iw'], Res['W_iw'], Res['Pi_iw'], dmft_state.iaft)
-            )
-            # Causal projection
-            coqui_dmft.fit_impurity_results_boson(
-                Res, dmft_state.iaft, solver_params.get("causal_projection"))
-
-            conv_metrics = _edmft_convergence_check(coqui_mpi, imp_index, Input, Res, dmft_state.iaft,
-                                                      prev_g_weiss_iw, prev_u_weiss_iw)
-
-            # Store convergence metrics array: [U_w0, A_w0, diff_g, diff_g_weiss, diff_u_weiss, diff_w]
-            if coqui_mpi.root():
-                A_w0  = float(np.mean((dmft_state.iaft.beta / np.pi) * np.diag(g_beta_half[0]+g_beta_half[1]).real)) * 0.5
-                Res['convergence'] = np.array([
-                    U, A_w0,
-                    conv_metrics['diff_g'], conv_metrics['diff_g_weiss'],
-                    conv_metrics['diff_u_weiss'], conv_metrics['diff_w']
-                ])
-
-            # GW double counting contributions
-            Res.update(
-                coqui_dmft.solve_gw_dc(
-                    coqui_dmft.blk_arr_to_arr(Input['Gloc_t'], Res['gf_struct']),
-                    Input['Vloc'], Input['Wloc_t'], Input['u_weiss_iw'],
-                    dmft_state.iaft, density_only=True,
-                    gf_struct=Res['gf_struct']
-                )
-            )
-
-            # mixing impurity and dc solutions to facilitate convergence
-            dmft_state.damp_impurity_results(
-                solver_chkpt_h5, mixing = iterative_params.get('mixing', 0.7), impurity_indices=[imp_index],
-                mix_in_first_iter=iterative_params.get('mix_in_first_iter', True)
-            )
-
-            # save solver results for current impurity
-            dmft_state.save_impurity_results(solver_chkpt_h5, imp_index)
-
-        # Embed impurity results
-        dmft_state.embed_impurity_results()
-
-        dmft_state.iteration += 1
-        coqui_mpi.barrier()
-
-    # Upfolding
-    coqui.dmft_embed(
-        mf, embed_params,
-        projector_info = proj_info,
-        local_hf_potentials = dmft_state.local_sigma_infty,
-        local_sigma_dynamic = dmft_state.local_sigma_w
-    )
-    coqui_mpi.barrier()
-
-
-def _compute_weiss_fields(coqui_mpi, imp_results, imp_inputs, solver_params, iaft):
+def _compute_weiss_fields(coqui_mpi, imp_results, imp_inputs, imp_params, iaft):
 
     gloc_t_mat = coqui_dmft.blk_arr_to_arr(imp_inputs['Gloc_t'], imp_inputs['gf_struct'])
 
     if imp_results['Sigma_iw_data'] is not None:
-        if solver_params.get('set_sigma_infty_to_dc', False):
+        if imp_params.get('set_sigma_infty_to_dc', False):
             vhf_imp =  imp_results['Sigma_infty_dc']
         else:
             vhf_imp =  imp_results['Sigma_infty']
@@ -778,7 +546,13 @@ def _compute_weiss_fields(coqui_mpi, imp_results, imp_inputs, solver_params, iaf
                 coqui_dmft.eval_pi_rpa(gloc_t_mat, density_only=True), stats='b'
             )
         else:
-            pi_imp = imp_results['Pi_iw_data'][0] if imp_results['Pi_iw_data'] else None
+            if imp_results['Pi_iw_data'] is None:
+                raise RuntimeError(f"scf_driver::_compute_weiss_fields: screen_type = "
+                                   f"{imp_inputs['screen_type']!r} needs the impurity polarization, "
+                                   f"but the impurity results carry none (the backend did not "
+                                   f"measure the density correlator); use screen_type = \"rpa\" "
+                                   f"or a backend that returns it")
+            pi_imp = imp_results['Pi_iw_data'][0]
 
         return (
             coqui_dmft.compute_weiss_fields_w(
@@ -805,73 +579,132 @@ def _compute_weiss_fields(coqui_mpi, imp_results, imp_inputs, solver_params, iaf
                     "Wloc_t": imp_inputs['Wloc_t'],
                     "Vloc": imp_inputs['Vloc']
                 },
-                init_imp_results = solver_params.get('init_imp_results', 'dc'),
+                init_imp_results = imp_params.get('init_imp_results', 'dc'),
                 density_only=True
             )
         )
 
 
-def _solver_inner_loop(coqui_mpi, h0, delta_iw, u_weiss_iw, h_int,
-                       target_density, *, chkpt=None, **solver_params):
+def _make_solvers(impurity_params_list, comm_size, screen_type):
+    """
+    Construct one impurity-solver backend per impurity block, once for the whole run.
+
+    Each backend is built from the block's ``solver`` table, checked against what the GW+EDMFT
+    setup needs (``check_solver_capabilities_for_gw_edmft``), and described in the log.
+
+    Parameters
+    ----------
+    impurity_params_list : list of dict
+        The ``edmft.impurity`` blocks, one per impurity, each with a ``solver`` table.
+    comm_size : int
+        Number of MPI ranks, for the backends that divide a Monte Carlo budget over ranks.
+    screen_type : str
+        The screening prescription of the run; anything but ``"rpa"`` needs backends that
+        return the impurity polarization.
+
+    Returns
+    -------
+    list of ImpuritySolver
+        The backends, in the order of ``impurity_params_list``.
+
+    Raises
+    ------
+    ValueError, ImportError, TypeError, KeyError
+        From ``make_solver`` (an unknown or unimportable backend, an invalid block) or from
+        the capability check (a search or a screening the backend cannot provide).
+    """
+    solvers = []
+    for index, imp_params in enumerate(impurity_params_list):
+        solver = make_solver(imp_params['solver'], comm_size=comm_size)
+        check_solver_capabilities_for_gw_edmft(solver=solver, imp_params=imp_params, screen_type=screen_type)
+        coqui.app_log(1, f"Impurity {index}: {solver.describe()}\n")
+        solvers.append(solver)
+    return solvers
+
+
+def _degenerate_blocks(Input, imp_params, iaft, dlr_wmax, dlr_eps, solver):
+    """
+    Determine the degenerate groups of ``gf_struct`` blocks of one impurity. 
+
+    The groups are either 
+    1) read from ``imp_params['degenerate_blk']``, if present, or
+    2) inferred from the hybridization ``Input['delta_iw']`` if 
+        ``degenerate_blk_thresh`` is set, or
+    3) none, otherwise. 
+
+    Parameters
+    ----------
+    Input : dict
+        The impurity inputs; ``delta_iw`` and ``gf_struct`` are read.
+    imp_params : dict
+        The impurity block; ``degenerate_blk`` and ``degenerate_blk_thresh`` are read.
+    iaft : IAFT
+        The imaginary-axis transform of the crystal.
+    dlr_wmax, dlr_eps : float
+        DLR controls of the mesh the inference samples the hybridization on.
+    solver : ImpuritySolver
+        The impurity's backend; its ``complex_hamiltonian`` capability decides whether the
+        inference sees a real-forced hybridization, as the backend will.
+
+    Returns
+    -------
+    list of index groups or None
+    """
+    degenerate_blk = imp_params.get('degenerate_blk')
+    if degenerate_blk is None and imp_params.get('degenerate_blk_thresh'):
+        coqui.app_log(2, "Analyzing block symmetries via the hybridization function...\n")
+        degenerate_blk = coqui_dmft.analyze_degenerate_blocks(
+            delta_iw=Input['delta_iw'], iaft=iaft, gf_struct=Input['gf_struct'],
+            dlr_wmax=dlr_wmax, dlr_eps=dlr_eps, threshold=imp_params['degenerate_blk_thresh'],
+            force_real=not solver.capabilities.complex_hamiltonian)
+    if degenerate_blk is not None:
+        coqui_dmft.print_degenerate_blks(degenerate_blk, Input['gf_struct'])
+    return degenerate_blk
+
+
+def _solve_impurity(solver, problem, imp_params, chkpt):
     """
     Impurity chemical-potential search (optional) followed by the production impurity solve.
 
-    ``chkpt`` ({"h5", "impurity", "iteration", "save"}) provides the checkpoint information 
-    of the current impurity solve. 
+    Parameters
+    ----------
+    solver : ImpuritySolver
+        The backend of this impurity, built by ``_make_solvers``.
+    problem : ImpurityProblem
+        The problem of this iteration, built by the loop from its ``Input``. Its ``mu_shift``
+        is updated in place by the search.
+    imp_params : dict
+        The impurity block; its ``chemical_potential`` entry (``tolerance``, default 0.1)
+        requests the search, absent means no search.
+    chkpt : dict or None
+        ``{"h5", "impurity", "iteration", "save"}`` handed to ``solver.solve``; the search
+        solves get a copy with ``save = False``.
+
+    Returns
+    -------
+    ImpurityResult
+        The production result
     """
-    solver_params.pop('degenerate_blk_thresh', None)
-    solver_params.pop('set_sigma_infty_to_dc', None)
-    solver_params.pop('init_imp_results', None)
-    solver_params.pop("causal_projection", None)
-    solver_params.pop("screen_j", None)
-    mu_params = solver_params.pop('chemical_potential', None)
-
+    mu_params = imp_params.get('chemical_potential')
     if mu_params is not None:
-        dens_solver_params = solver_params.copy()
-        dens_solver_params['verbosity'] = 0
-        dens_solver_params['suppress_solver_output'] = mu_params.get('suppress_solver_output', True)
-        if mu_params.get('solver_output_file'):
-            dens_solver_params['solver_output_file'] = mu_params.get('solver_output_file')
-        if mu_params.get('n_warmup_cycles'):
-            dens_solver_params['n_warmup_cycles'] = int(mu_params.get('n_warmup_cycles'))
-        if mu_params.get('restart_n_warmup_cycles'):
-            dens_solver_params['restart_n_warmup_cycles'] = int(mu_params.get('restart_n_warmup_cycles'))
-        if mu_params.get('length_cycle'):
-            dens_solver_params['length_cycle'] = mu_params.get('length_cycle')
-        dens_solver_params['n_cycles'] = mu_params.get('n_cycles', solver_params.get('n_cycles')*0.05)
+        search_chkpt = None if chkpt is None else dict(chkpt, save=False)
 
-        gf_struct = [(bl, gf.target_shape[0]) for (bl, gf) in delta_iw]
-        h0_sab = coqui_dmft.h0_operator_to_array(h0, gf_struct)
-        compute_nelec_fcn = partial(
-            coqui_dmft.compute_nelec_from_solver,
-            gf_struct=gf_struct, h0_sab=h0_sab,
-            delta_iw=delta_iw, u_weiss_iw=u_weiss_iw, h_int=h_int,
-            chkpt=chkpt, **dens_solver_params
-        )
-        mu_imp, imp_density = coqui_dmft.compute_mu_impurity(
-            target_density, compute_nelec_fcn,
-            tolerance=mu_params.get('tolerance', 0.1), 
+        def compute_nelec_fcn(mu):
+            problem.mu_shift = mu
+            return solver.solve(problem, occupations_only=True, chkpt=search_chkpt).density
+
+        problem.mu_shift, _ = coqui_dmft.compute_mu_impurity(
+            problem.target_density, compute_nelec_fcn,
+            tolerance=mu_params.get('tolerance', 0.1),
             mu0=0.0, # always start from mu=0 s.t. mu_imp falls back to 0 at convergence
         )
-        # update h0 = h0 - mu_imp
-        h0_mat_shifted = np.array([ h0_mat - np.eye(h0_mat.shape[0])*mu_imp for h0_mat in h0_sab ])
-        h0 = coqui_dmft.h0_operator(h0_mat_shifted, gf_struct, force_real=True)
-    else:
-        mu_imp = 0.0
 
-    solver_results = coqui_dmft.ctseg.solve_dynamic_imp(delta_iw, h0, u_weiss_iw, h_int,
-                                                        chkpt=chkpt, **solver_params)
-    solver_results['mu_imp'] = mu_imp
-    # impurity total density
-    imp_density = 0.0
-    for blk_name, occ in solver_results['orbital_occupations'].items():
-        imp_density += occ.sum()
-    solver_results['density'] = imp_density
-
-    coqui.app_log(1, f"Total impurity densities = {imp_density}")
-    coqui.app_log(1, f"Convergence of impurity density: {imp_density - target_density}\n")
-
-    return solver_results
+    result = solver.solve(problem, chkpt=chkpt)
+    # validate the result dimensions against the problem.
+    result.validate(problem)
+    coqui.app_log(1, f"Total impurity densities = {result.density}")
+    coqui.app_log(1, f"Convergence of impurity density: {result.density - problem.target_density}\n")
+    return result
 
 
 def _edmft_convergence_check(coqui_mpi, imp_index, Input, Res, iaft,
@@ -984,33 +817,38 @@ def solve_impurities_from_chkpt(coqui_mpi, *, dmft_iteration=-1, imp_indices=Non
 
     params = convert_gw_edmft_params(params)
     
-    imp_params = params.pop('impurity')
-    imp_iaft_params = imp_params.pop('iaft', {})
+    edmft_params = params.pop('edmft')
+    imp_iaft_params = edmft_params.pop('iaft', {})
 
-    # Scale Monte-Carlo cycle counts by MPI communicator size.
-    solver_params_list = _normalize_solver_params_list(
-        imp_params['solver'], coqui_mpi.comm_size()
-    )
-
-    iaft = IAFT.from_coqui_chkpt(imp_params['chkpt_h5'], verbose=coqui_mpi.root())
+    # one block per impurity: the workflow keys beside the backend's 'solver' table
+    impurity_params_list = edmft_params['impurity']
+    dmft_chkpt_h5 = edmft_params['chkpt_h5']
+    iaft = IAFT.from_coqui_chkpt(dmft_chkpt_h5, verbose=coqui_mpi.root())
+    dlr_wmax = imp_iaft_params.get('wmax', iaft.wmax)
+    dlr_eps = imp_iaft_params.get('eps', iaft.eps)
 
     # explicit iteration index: results (and solver state, e.g. CT-SEG configurations) are
     # written back to it
-    dmft_iteration = resolve_dmft_iteration(imp_params['chkpt_h5'], dmft_iteration)
+    dmft_iteration = resolve_dmft_iteration(dmft_chkpt_h5, dmft_iteration)
 
-    solver_inputs = coqui_dmft.read_impurity_chkpt(
-        imp_params['chkpt_h5'], dmft_iteration, read="inputs", impurity_indices=imp_indices
+    impurity_inputs = coqui_dmft.read_impurity_chkpt(
+        dmft_chkpt_h5, dmft_iteration, read="inputs", impurity_indices=imp_indices
     )
-    solver_results = []
-    for pos, inputs in enumerate(solver_inputs):
+    impurity_results, solver_data = [], []
+    for pos, inputs in enumerate(impurity_inputs):
         # read_impurity_chkpt returns only the selected impurities, in the order of imp_indices
         imp_index = imp_indices[pos] if imp_indices is not None else pos
         coqui_dmft.print_title_box(f"IMPURITY {imp_index}")
-        solver_params = solver_params_list[imp_index]
-        Input = solver_inputs[pos]
+        imp_params = impurity_params_list[imp_index]
+        Input = impurity_inputs[pos]
+        # absent in checkpoints written before the solver interface: require the polarization
+        screen_type = Input.get('screen_type', 'gw_edmft')
+        solver = make_solver(imp_params['solver'], comm_size=coqui_mpi.comm_size())
+        check_solver_capabilities_for_gw_edmft(solver=solver, imp_params=imp_params, screen_type=screen_type)
+        coqui.app_log(1, f"Impurity {imp_index}: {solver.describe()}\n")
 
         Input['u_weiss_iw'] = coqui_dmft.fit_u_weiss(
-            Input['u_weiss_iw'], iaft, solver_params.get("causal_projection")
+            Input['u_weiss_iw'], iaft, imp_params.get("causal_projection")
         )
 
         Ub, Ubp, Jb_spin, Jb_pair = coqui_dmft.hubbard_kanamori_coulomb(Input['Vloc'])
@@ -1019,6 +857,7 @@ def solve_impurities_from_chkpt(coqui_mpi, *, dmft_iteration=-1, imp_indices=Non
             coqui_dmft.blk_arr_to_arr(Input['Gloc_t'], Input["gf_struct"]),
             iaft.beta, 'f')[0]
         Input['density'] = (np.diag(dm[0]).sum() + np.diag(dm[1]).sum()).real
+        Input['occupations_sab'] = np.real(dm)
         coqui.app_log(1, "Bare/static orbital-averaged interactions for the impurity")
         coqui.app_log(1, "----------------------------------------------------------")
         coqui.app_log(1, f"  intra-orbital                  = {Ub*Hartree_eV:.4f}, {U*Hartree_eV:.4f} eV")
@@ -1036,54 +875,35 @@ def solve_impurities_from_chkpt(coqui_mpi, *, dmft_iteration=-1, imp_indices=Non
             iaft.check_leakage(Input['delta_iw'], 'f', 'delta', w_input=True)
             iaft.check_leakage_phsym(Input['u_weiss_iw'], 'b', 'u_weiss', w_input=True)
 
-        # Convert CoQuí outputs to TRIQS containers
-        h0, delta_iw, h_int, u_weiss_iw = coqui_dmft.to_triqs_containers(
-            Input['h0'], Input['delta_iw'], Input['Vloc'], Input['u_weiss_iw'],
-            iaft, gf_struct = Input['gf_struct'],
-            triqs_iw_mesh = {
-                "dlr_wmax": imp_iaft_params.get('wmax', iaft.wmax), 
-                "dlr_eps": imp_iaft_params.get('eps', iaft.eps)
-            },
-            density_hamiltonian = True, real_hamiltonian = True,
-            screen_j_in_u_dd = solver_params.get('screen_j', False)
-        )
-
-        # Analyze block symmetry
-        if solver_params.get('degenerate_blk') is None and solver_params.get('degenerate_blk_thresh'):
-            coqui.app_log(2, "Analyzing block symmetries via the hybridization function...\n")
-            solver_params['degenerate_blk'] = modest.analyze_degenerate_blocks(
-                delta_iw, threshold=solver_params['degenerate_blk_thresh']
-            )
-        degenerate_blk = solver_params.get('degenerate_blk')
-        if degenerate_blk is not None:
-            coqui_dmft.print_degenerate_blks(degenerate_blk, Input['gf_struct'])
-            delta_iw   = modest.symmetrize(delta_iw, degenerate_blk)
-            h0         = coqui_dmft.symmetrize_h0_op(h0, degenerate_blk, Input['gf_struct'])
-            h_int      = coqui_dmft.symmetrize_h_int_op(h_int, degenerate_blk, Input['gf_struct'])
-            u_weiss_iw = coqui_dmft.symmetrize_blk2_gf(u_weiss_iw, degenerate_blk, Input['gf_struct'])
-
-        # Call impurity solver, and store sigma_imp, vhf_imp, and pi_imp in "Res"
-        chkpt = {"h5": imp_params['chkpt_h5'], "impurity": imp_index,
-                 "iteration": dmft_iteration, "save": save_results}
-        Res = _solver_inner_loop(coqui_mpi, h0, delta_iw, u_weiss_iw, h_int, Input['density'],
-                                 chkpt=chkpt, **solver_params)
-
-        # convert from triqs Gf to numpy arrays and ir mesh
-        Res.update(coqui_dmft.imp_results_to_raw_data(
-            Res['G_iw'], Res['Sigma_iw'], Res['W_iw'], Res['Pi_iw'], iaft)
-        )
+        # degenerate groups of blocks: the checkpoint's when it stores them, else as the loop
+        if Input.get('degenerate_blk') is None:
+            Input['degenerate_blk'] = _degenerate_blocks(Input, imp_params, iaft, dlr_wmax, dlr_eps,
+                                                         solver)
+        problem = ImpurityProblem(
+            gf_struct=Input['gf_struct'], beta=iaft.beta, iaft=iaft, dlr_wmax=dlr_wmax,
+            dlr_eps=dlr_eps, h0_sab=Input['h0'], delta_wsab=Input['delta_iw'], v_abcd=Input['Vloc'],
+            u_weiss_wabcd=Input['u_weiss_iw'], target_density=Input['density'],
+            occupations_sab=Input['occupations_sab'], degenerate_blk=Input['degenerate_blk'])
+        check_solver_capabilities_for_problem(solver=solver, problem=problem)
+        chkpt = {'h5': dmft_chkpt_h5, 'impurity': imp_index, 'iteration': dmft_iteration,
+                 'save': save_results}
+        result = _solve_impurity(solver, problem, imp_params, chkpt)
+        Res = {'gf_struct': Input['gf_struct']}
+        Res.update(result.solver_agnostic_results())
+        Res['mu_imp'] = problem.mu_shift
 
         # Causal projection
         coqui_dmft.fit_impurity_results_boson(
-            Res, iaft, solver_params.get("causal_projection"))
+            Res, iaft, imp_params.get("causal_projection"))
 
-        solver_results.append(Res)
+        impurity_results.append(Res)
+        solver_data.append(result.solver_data)
 
         if save_results:
-            # solver_results holds only the selected impurities: entry pos goes to impurity_{imp_index}
+            # the lists hold only the selected impurities: entry pos goes to impurity_{imp_index}
             coqui_dmft.save_impurity_results(
-                solver_results, imp_params['chkpt_h5'], iteration=dmft_iteration, impurity_index=pos,
-                chkpt_impurity_index=imp_index
+                impurity_results, dmft_chkpt_h5, iteration=dmft_iteration, impurity_index=pos,
+                chkpt_impurity_index=imp_index, solver_data=solver_data
             )
 
-    return solver_results
+    return impurity_results

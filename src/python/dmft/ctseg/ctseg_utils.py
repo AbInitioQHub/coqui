@@ -28,6 +28,7 @@ from triqs.gfs.gf_fnt import fit_hermitian_tail_on_window, replace_by_tail
 from triqs.gfs.tools import inverse, make_zero_tail
 
 import triqs_modest as modest
+import coqui.dmft as coqui_dmft
 from triqs_ctseg import Solver as CTSEG_Solver
 
 def post_process(solver, **post_proc_params):
@@ -690,3 +691,66 @@ def seed_for_rank(base, rank=None):
     """
     rank = mpi.rank if rank is None else rank
     return (int(base) + 928374 * int(rank)) % (2**31 - 1)
+
+
+def imp_results_to_raw_data(g_iw, sigma_iw, w_iw, pi_iw, iaft=None):
+    """
+    The CT-SEG results on the IAFT sampling meshes, as the arrays of ``ImpurityResult``. The
+    TRIQS objects must live on DLR meshes: the uniform-mesh path was removed (the solver is
+    driven on DLR meshes only).
+    """
+    if not (isinstance(sigma_iw.mesh, MeshDLRImFreq) and isinstance(pi_iw.mesh, MeshDLRImFreq)):
+        raise ValueError("ctseg_utils::imp_results_to_raw_data: sigma_iw and pi_iw must live on "
+                         "DLR meshes (MeshDLRImFreq)")
+    return _dlr_imp_results_to_raw_data(g_iw, sigma_iw, w_iw, pi_iw, iaft)
+
+
+def _dlr_imp_results_to_raw_data(g_iw, sigma_iw, w_iw, pi_iw, iaft=None):
+    """
+    Convert impurity self-energy and polarization Green's functions from TRIQS objects
+    to raw NumPy array representations, optionally projected onto an intermediate
+    representation (IR) Matsubara frequency mesh.
+
+    Parameters
+    ----------
+    g_iw     : BlockGf on MeshDLRImFreq mesh
+    sigma_iw : BlockGf on MeshDLRImFreq mesh
+    w_iw     : Gf on MeshDLRImFreq mesh
+    pi_iw    : Gf on MeshDLRImFreq mesh
+    iaft : optional
+        IR kernel to get the IR Matsubara frequency meshes.
+        If provided, results will be interpolated on these IR grids.
+        If None, the data on the original full Matsubara mesh are returned.
+
+    Returns
+    -------
+    dict
+        A dictionary containing:
+        - ``"G_iw_data"``: list of ndarray
+            Block array representation of the impurity Green's function.
+        - ``"Sigma_iw_data"``: list of ndarray
+            Block array representation of the impurity self-energy.
+        - ``"Pi_iw_data"``: list of ndarray
+            Block array representation of the impurity polarizability.
+        - ``"W_iw_data"``: list of ndarray
+            Block array representation of the impurity screened interaction.
+    """
+    if iaft is None:
+        g_iw_data = coqui_dmft.blk_gf_to_blk_arr(g_iw)
+        sigma_iw_data = coqui_dmft.blk_gf_to_blk_arr(sigma_iw)
+        pi_iw_data = [pi_iw.data[:]]
+        w_iw_data = [w_iw.data[:]]
+        return {"G_iw_data": g_iw_data, "Sigma_iw_data": sigma_iw_data,
+                "W_iw_data": w_iw_data, "Pi_iw_data": pi_iw_data}
+
+    # converter Sigma and Pi to IR Matsubara mesh
+    g_iw_data     = coqui_dmft.make_hermitian(
+        coqui_dmft.gf_dlr_to_ir(make_gf_dlr(g_iw), iaft)
+    )
+    sigma_iw_data = coqui_dmft.make_hermitian(
+        coqui_dmft.gf_dlr_to_ir(make_gf_dlr(sigma_iw), iaft)
+    )
+    pi_iw_data = [coqui_dmft.gf_dlr_to_ir_phsym(make_gf_dlr(pi_iw), iaft)]
+    w_iw_data = [coqui_dmft.gf_dlr_to_ir_phsym(make_gf_dlr(w_iw), iaft)]
+    return {"G_iw_data": g_iw_data, "Sigma_iw_data": sigma_iw_data,
+            "W_iw_data": w_iw_data, "Pi_iw_data": pi_iw_data}

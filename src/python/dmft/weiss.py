@@ -511,16 +511,16 @@ def solve_gw_dc(G_t, V, W_t, u_weiss_iw, iaft, density_only=True,
     }
 
 
-def embed_impurities(embeding_1e, embeding_2e, solver_results, spin_average=False):
+def embed_impurities(embeding_1e, embeding_2e, impurity_results, spin_average=False):
     # A list of 3D arrays (w, i, j) with the length of the list = number of spins
-    Sigma_imp_embed = embeding_1e.embed([ Res['Sigma_iw_data'] for Res in solver_results ])
-    Vhf_imp_embed   = embeding_1e.embed([ Res['Sigma_infty'] for Res in solver_results ])
-    Pi_imp_embed    = embeding_2e.embed([ Res['Pi_iw_data'] for Res in solver_results ])
+    Sigma_imp_embed = embeding_1e.embed([ Res['Sigma_iw_data'] for Res in impurity_results ])
+    Vhf_imp_embed   = embeding_1e.embed([ Res['Sigma_infty'] for Res in impurity_results ])
+    Pi_imp_embed    = embeding_2e.embed([ Res['Pi_iw_data'] for Res in impurity_results ])
 
     # The same applied to the DC terms
-    Sigma_dc_embed = embeding_1e.embed([ Res['Sigma_iw_dc_data'] for Res in solver_results ])
-    Vhf_dc_embed   = embeding_1e.embed([ Res['Sigma_infty_dc'] for Res in solver_results ])
-    Pi_dc_embed    = embeding_2e.embed([ Res['Pi_iw_dc_data'] for Res in solver_results ])
+    Sigma_dc_embed = embeding_1e.embed([ Res['Sigma_iw_dc_data'] for Res in impurity_results ])
+    Vhf_dc_embed   = embeding_1e.embed([ Res['Sigma_infty_dc'] for Res in impurity_results ])
+    Pi_dc_embed    = embeding_2e.embed([ Res['Pi_iw_dc_data'] for Res in impurity_results ])
 
     #combine spins to a single array and add auxiliary impurity index
     Sigma_imp_embed = np.stack(Sigma_imp_embed, axis=1)[:,:,None]

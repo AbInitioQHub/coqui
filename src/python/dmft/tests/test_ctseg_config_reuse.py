@@ -26,7 +26,6 @@ the whole file is skipped otherwise.
 Serial:  python -m pytest <this file> -v                      (from outside the repository)
 MPI:     mpirun -n 2 python -m pytest <this file> -v
 """
-import sys
 import types
 
 import numpy as np
@@ -42,7 +41,6 @@ from triqs.utility import mpi
 from h5 import HDFArchive
 from coqui.dmft.ctseg import seed_for_rank, ctseg_solver, config_reuse
 from coqui.dmft.ctseg import save_to_chkpt, load_from_chkpt, read_initial_config
-from coqui.dmft.io import _normalize_solver_params_list
 
 _GF_STRUCT = [('up_0', 1), ('up_1', 1), ('down_0', 1), ('down_1', 1)]
 
@@ -69,42 +67,39 @@ def _fake_config(beta=10.0, block_sizes=(1, 1, 1, 1), seglists=None, jperp=0):
 _CHKPT = {"h5": "unused.h5", "impurity": 2, "iteration": 5, "save": True}
 
 
-def test_read_initial_config_first_iteration(monkeypatch):
-    """At iteration 0 there is no iteration N-1, so the solve starts cold.
+def test_read_initial_config(monkeypatch):
+    """read_initial_config hands back a stored configuration only when the solve can start from it.
 
-    load_from_chkpt is replaced by one that returns a compatible configuration for every
-    iteration, so (None, -1) can only come from read_initial_config's own iteration-0 check,
-    not from a configuration that is missing.
+    Setup: load_from_chkpt is replaced, in place, by one that returns a given configuration for
+    every iteration, so (None, -1) can only come from read_initial_config's own decision, never
+    from a configuration that is missing.
+
+    Cases:
+      1. Iteration 0: there is no iteration N-1, so the solve starts cold.
+      2. A configuration that does not fit the current impurity problem is not reused; one case
+         per check of config_reuse._compatible: beta, block structure, number of colors,
+         spin-flip (Jperp) lines, and J flags on a segment.
     """
     monkeypatch.setattr(config_reuse, 'load_from_chkpt',
-                        lambda solver_chkpt, iteration, impurity_index: _fake_config())
+                        lambda dmft_chkpt, iteration, impurity_index: _fake_config())
     config, source_iter = read_initial_config(chkpt=dict(_CHKPT, iteration=0), reuse_config=True,
                                               beta=10.0, gf_struct=_GF_STRUCT,
                                               label="test", log_level=1)
     assert (config, source_iter) == (None, -1)
-
-
-@pytest.mark.parametrize("cfg", [
-    _fake_config(beta=12.0),                                        # other beta
-    _fake_config(block_sizes=(2, 2)),                               # other block structure
-    _fake_config(seglists=[_ONE_SEGMENT] * 3),                      # other number of colors
-    _fake_config(jperp=1),                                          # spin-flip lines
-    _fake_config(seglists=[np.array([[2**63, 2**62, 1, 0]], dtype=np.uint64)] * 4),  # J flags
-])
-def test_read_initial_config_incompatible(monkeypatch, cfg):
-    """A stored configuration that does not fit the current impurity problem is not reused.
-
-    Each case breaks one check of config_reuse._compatible: beta, block structure, number of
-    colors, spin-flip (Jperp) lines, or J flags on a segment. load_from_chkpt is replaced by
-    one that returns the configuration for every iteration, so (None, -1) can only come from
-    the rejection, not from a configuration that is missing.
-    """
-    monkeypatch.setattr(config_reuse, 'load_from_chkpt',
-                        lambda solver_chkpt, iteration, impurity_index: cfg)
-    config, source_iter = read_initial_config(chkpt=_CHKPT, reuse_config=True,
-                                              beta=10.0, gf_struct=_GF_STRUCT,
-                                              label="test", log_level=1)
-    assert (config, source_iter) == (None, -1)
+    incompatible = [
+        _fake_config(beta=12.0),                                        # other beta
+        _fake_config(block_sizes=(2, 2)),                               # other block structure
+        _fake_config(seglists=[_ONE_SEGMENT] * 3),                      # other number of colors
+        _fake_config(jperp=1),                                          # spin-flip lines
+        _fake_config(seglists=[np.array([[2**63, 2**62, 1, 0]], dtype=np.uint64)] * 4),  # J flags
+    ]
+    for cfg in incompatible:
+        monkeypatch.setattr(config_reuse, 'load_from_chkpt',
+                            lambda dmft_chkpt, iteration, impurity_index, cfg=cfg: cfg)
+        config, source_iter = read_initial_config(chkpt=_CHKPT, reuse_config=True,
+                                                  beta=10.0, gf_struct=_GF_STRUCT,
+                                                  label="test", log_level=1)
+        assert (config, source_iter) == (None, -1)
 
 
 # ---------- toy impurity problem (DLR mesh, static U, D0 = 0) ----------
@@ -155,7 +150,7 @@ def _chkpt_holding_iteration_4(tmp_path):
     """Create a checkpoint holding a configuration for iteration 4, impurity 0,
     and return the checkpoint information dictionary"""
     h5 = _shared_path(tmp_path=tmp_path, name="solve.h5")
-    save_to_chkpt(solver_chkpt=h5, iteration=4, impurity_index=0, final_config=_cold_config())
+    save_to_chkpt(dmft_chkpt=h5, iteration=4, impurity_index=0, final_config=_cold_config())
     return {"h5": h5, "impurity": 0, "iteration": 5, "save": True}
 
 
@@ -164,16 +159,16 @@ def test_density_solve_restarts_and_never_saves(tmp_path):
     Runs solve_density_dynamic_u_dlr_mesh at iteration 5 with a configuration stored from
     iteration 4.
 
-    CT-SEG should restart from iteration 4. Since this is a density-only solve, it should
+    CT-SEG should restart from iteration 4. Since this is a occupations-only solve, it should
     not save the resulting configuration.
     """
     chkpt = _chkpt_holding_iteration_4(tmp_path)
     p = _toy_problem()
-    res = ctseg_solver.solve_density_dynamic_u_dlr_mesh(
+    res = ctseg_solver._solve_density_dynamic_u_dlr_mesh(
         Delta_iw=p['delta'], h_loc0=p['h0'], D0_iw=p['D0'], h_int=p['h_int'], chkpt=chkpt, **_SOLVE,
         n_warmup_cycles=500, reuse_config=True, restart_n_warmup_cycles=5)
     assert res['restarted_from_config'] is True and res['config_source_iter'] == 4
-    assert load_from_chkpt(solver_chkpt=chkpt['h5'], iteration=5, impurity_index=0) is None
+    assert load_from_chkpt(dmft_chkpt=chkpt['h5'], iteration=5, impurity_index=0) is None
 
 
 def test_production_solve_save_conditions(tmp_path):
@@ -193,29 +188,29 @@ def test_production_solve_save_conditions(tmp_path):
     p = _toy_problem()
     params = dict(_SOLVE, n_warmup_cycles=500, restart_n_warmup_cycles=5)
 
-    res = ctseg_solver.solve_dynamic_dlr_mesh(
+    res = ctseg_solver._solve_dynamic_dlr_mesh(
         Delta_iw=p['delta'], h_loc0=p['h0'], D0_iw=p['D0'], h_int=p['h_int'],
         chkpt=dict(chkpt, save=False), reuse_config=True, **params)
     assert res['restarted_from_config'] is True
-    assert load_from_chkpt(solver_chkpt=chkpt['h5'], iteration=5, impurity_index=0) is None
+    assert load_from_chkpt(dmft_chkpt=chkpt['h5'], iteration=5, impurity_index=0) is None
 
-    res = ctseg_solver.solve_dynamic_dlr_mesh(
+    res = ctseg_solver._solve_dynamic_dlr_mesh(
         Delta_iw=p['delta'], h_loc0=p['h0'], D0_iw=p['D0'], h_int=p['h_int'],
         chkpt=chkpt, reuse_config=False, **params)
     assert res['restarted_from_config'] is False
-    assert load_from_chkpt(solver_chkpt=chkpt['h5'], iteration=5, impurity_index=0) is None
+    assert load_from_chkpt(dmft_chkpt=chkpt['h5'], iteration=5, impurity_index=0) is None
 
-    res = ctseg_solver.solve_dynamic_dlr_mesh(
+    res = ctseg_solver._solve_dynamic_dlr_mesh(
         Delta_iw=p['delta'], h_loc0=p['h0'], D0_iw=p['D0'], h_int=p['h_int'],
         chkpt=None, reuse_config=True, **params)
     assert res['restarted_from_config'] is False
 
-    res = ctseg_solver.solve_dynamic_dlr_mesh(
+    res = ctseg_solver._solve_dynamic_dlr_mesh(
         Delta_iw=p['delta'], h_loc0=p['h0'], D0_iw=p['D0'], h_int=p['h_int'],
         chkpt=chkpt, reuse_config=True, **params)
     assert res['restarted_from_config'] is True and res['config_source_iter'] == 4
-    saved = load_from_chkpt(solver_chkpt=chkpt['h5'], iteration=5, impurity_index=0)
-    previous = load_from_chkpt(solver_chkpt=chkpt['h5'], iteration=4, impurity_index=0)
+    saved = load_from_chkpt(dmft_chkpt=chkpt['h5'], iteration=5, impurity_index=0)
+    previous = load_from_chkpt(dmft_chkpt=chkpt['h5'], iteration=4, impurity_index=0)
     assert saved is not None and not _same_configuration(saved, previous)
 
 
@@ -231,16 +226,16 @@ def test_chkpt_round_trip(tmp_path):
     """
     chkpt = _shared_path(tmp_path=tmp_path, name="chkpt.h5")
     cfg = _cold_config()
-    save_to_chkpt(solver_chkpt=chkpt, iteration=3, impurity_index=0, final_config=cfg)
-    loaded = load_from_chkpt(solver_chkpt=chkpt, iteration=3, impurity_index=0)
+    save_to_chkpt(dmft_chkpt=chkpt, iteration=3, impurity_index=0, final_config=cfg)
+    loaded = load_from_chkpt(dmft_chkpt=chkpt, iteration=3, impurity_index=0)
     assert _same_configuration(loaded, cfg)
-    assert load_from_chkpt(solver_chkpt=chkpt, iteration=3, impurity_index=1) is None
+    assert load_from_chkpt(dmft_chkpt=chkpt, iteration=3, impurity_index=1) is None
     missing = _shared_path(tmp_path=tmp_path, name="missing.h5")
-    assert load_from_chkpt(solver_chkpt=missing, iteration=3, impurity_index=0) is None
+    assert load_from_chkpt(dmft_chkpt=missing, iteration=3, impurity_index=0) is None
     cfg2 = _cold_config(seed=12)
     # a re-solve replaces the group
-    save_to_chkpt(solver_chkpt=chkpt, iteration=3, impurity_index=0, final_config=cfg2)
-    loaded = load_from_chkpt(solver_chkpt=chkpt, iteration=3, impurity_index=0)
+    save_to_chkpt(dmft_chkpt=chkpt, iteration=3, impurity_index=0, final_config=cfg2)
+    loaded = load_from_chkpt(dmft_chkpt=chkpt, iteration=3, impurity_index=0)
     assert _same_configuration(loaded, cfg2)
 
 
@@ -258,7 +253,7 @@ def test_save_to_chkpt_master_error_is_collective(tmp_path):
             ar['dmft'] = 1  # write a dataset, not a group
     mpi.barrier()
     with pytest.raises(RuntimeError):
-        save_to_chkpt(solver_chkpt=chkpt, iteration=0, impurity_index=0, final_config=cfg)
+        save_to_chkpt(dmft_chkpt=chkpt, iteration=0, impurity_index=0, final_config=cfg)
 
 
 def test_load_from_chkpt_master_error_is_collective(tmp_path):
@@ -274,51 +269,4 @@ def test_load_from_chkpt_master_error_is_collective(tmp_path):
             f.write("This is not an HDF5 file\n")
     mpi.barrier()
     with pytest.raises(RuntimeError, match="load_from_chkpt"):
-        load_from_chkpt(solver_chkpt=chkpt, iteration=0, impurity_index=0)
-
-
-# ---------- input validation ----------
-
-_BASE = dict(n_cycles=1000, n_warmup_cycles=100, length_cycle=50)
-
-
-def test_reuse_requires_restart_warmup():
-    """reuse_config = True requires restart_n_warmup_cycles to be an integer >= 1.
-
-    A missing, zero, negative or fractional value is rejected with a ValueError naming the key.
-    """
-    for bad in (None, 0, -3, 0.5):
-        p = dict(_BASE, reuse_config=True)
-        if bad is not None:
-            p['restart_n_warmup_cycles'] = bad
-        with pytest.raises(ValueError, match="restart_n_warmup_cycles"):
-            _normalize_solver_params_list(solver_params_list=[p], comm_size=1)
-
-
-def test_restart_warmup_cast_and_defaults():
-    """How input normalization treats restart_n_warmup_cycles.
-
-    An integral float (1e4) is cast to int; the chemical-potential search inherits the value
-    when it sets none of its own; and, unlike n_cycles, which is divided over the ranks
-    (2 here), warm-up counts are per rank and are not divided.
-    """
-    p = dict(_BASE, reuse_config=True, restart_n_warmup_cycles=1e4,
-             chemical_potential={'tolerance': 0.1})
-    out = _normalize_solver_params_list(solver_params_list=[p], comm_size=2)[0]
-    assert out['restart_n_warmup_cycles'] == 10000
-    assert isinstance(out['restart_n_warmup_cycles'], int)
-    assert out['chemical_potential']['restart_n_warmup_cycles'] == 10000
-    assert out['n_cycles'] == 500          # n_cycles is split over ranks, warm-ups are not
-
-
-def test_reuse_needs_ctseg_with_config_reuse(monkeypatch):
-    """reuse_config = True with a ct-seg build that cannot restart fails at input time.
-
-    triqs_ctseg is replaced by an empty module (no ConfigDataT). Normalizing the input must
-    raise ImportError naming ConfigDataT, before any solve starts.
-    """
-    monkeypatch.setitem(sys.modules, 'triqs_ctseg', types.ModuleType('triqs_ctseg'))
-    with pytest.raises(ImportError, match="ConfigDataT"):
-        _normalize_solver_params_list(
-            solver_params_list=[dict(_BASE, reuse_config=True, restart_n_warmup_cycles=10)],
-            comm_size=1)
+        load_from_chkpt(dmft_chkpt=chkpt, iteration=0, impurity_index=0)
