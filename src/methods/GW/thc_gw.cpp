@@ -94,6 +94,7 @@ namespace methods {
         _Timer.add(v);
       }
 
+      _Timer.reset_all();
       _Timer.start("TOTAL");
       thc_gw_Xqindep(mb_state.sG_tskij.value().local(), mb_state.sSigma_tskij.value(), thc,
                      mb_state.dW_qtPQ.value(), mb_state.eps_inv_head.value());
@@ -152,6 +153,7 @@ namespace methods {
         _Timer.add(v);
       }
 
+      _Timer.reset_all();
       _Timer.start("TOTAL");
       sSigma_tskij.set_zero();
       if (thc.thc_X_type() == "q_dep") {
