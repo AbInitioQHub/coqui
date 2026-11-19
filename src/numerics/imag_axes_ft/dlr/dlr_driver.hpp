@@ -194,8 +194,9 @@ namespace imag_axes_ft {
         long n_ir = wn_mesh_out(iw_out);
         long n_dlr = (stats == imag_axes_ft::fermion) ? 
             static_cast<int>((n_ir - 1) / 2) : static_cast<int>(n_ir / 2);
+        // cf2eval = (dlr_rank) and dlr_rank == _it_ops.rank() <= nw_in
         auto cf2eval = if_ops.coefs2eval(eye_ndlr_in, n_dlr);
-        rhs(iw_out, nda::range(_it_ops.rank())) = cf2eval; // a symmetrized fermionic grid has rank + 1 points: gelss pads the last column
+        rhs(iw_out, nda::range(_it_ops.rank())) = cf2eval;
       }
 
       // Non-square system---use least squares solver
