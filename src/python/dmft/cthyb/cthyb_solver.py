@@ -52,6 +52,43 @@ def _mesh_indices(mesh):
   return np.array([w.index for w in mesh], dtype=np.int64)
 
 
+def _warn_offdiag_h0_without_delta(inputs, gf_struct, *, h0_tol=1e-6, delta_rel_tol=1e-8):
+  """
+  Warn about a block whose h0 couples two orbitals that Delta does not couple, judged on the
+  converted inputs the solver is given (real, symmetrized over the degenerate blocks).
+
+  The hybridization expansion builds ``G_ab`` from the ``Delta_ab`` lines of the configurations: with
+  ``Delta_ab = 0`` the estimator gives ``G_ab = 0`` whatever h0 does, and the Dyson ``Sigma`` of the
+  block is wrong. The cure is the basis in which h0 is diagonal (Delta then carries the coupling).
+  A small but nonzero ``Delta_ab`` is fine: the estimator is then unbiased, only its variance grows
+  as ``1 / Delta_ab``.
+
+  Parameters
+  ----------
+  inputs : TriqsInputs
+      ``h0_blocks`` and ``delta_iw`` are read.
+  gf_struct : list of (str, int)
+  h0_tol : float, optional
+      An off-diagonal element of h0 inside a block above this (Ha) counts as a coupling.
+  delta_rel_tol : float, optional
+      The off-diagonal elements of Delta inside the block, over every frequency, below this fraction
+      of the largest diagonal element count as zero.
+  """
+  for b, (name, size) in enumerate(gf_struct):
+    off = ~np.eye(size, dtype=bool)
+    if not off.any():
+      continue
+    h0 = np.asarray(inputs.h0_blocks[b])
+    delta = np.asarray(inputs.delta_iw[name].data)
+    h0_off = float(np.abs(h0[off]).max())
+    delta_off = float(np.abs(delta[:, off]).max())
+    delta_diag = float(np.abs(delta[:, ~off]).max())
+    if h0_off > h0_tol and delta_off <= delta_rel_tol * delta_diag:
+      app_log(1, f" [WARNING] block {name!r}: h0 is off-diagonal ({h0_off:.1e} Ha) but Delta is diagonal.\n"
+                 f"  CT-HYB measures no off-diagonal G without a Delta line, so Sigma of this block will\n"
+                 f"  be wrong. Use the basis in which h0 is diagonal.\n")
+
+
 def _solve_cthyb(inputs, problem, params, *, occupations_only, lang_firsov, dyn_n_l, n_l,
                  n_iw, n_tau, n_tau_bosonic, d_tau):
   """
@@ -81,9 +118,7 @@ def _solve_cthyb(inputs, problem, params, *, occupations_only, lang_firsov, dyn_
              delta_interface=True, n_tau_bosonic=int(n_tau_bosonic))
   for name, g in S.Delta_tau:
     g << make_gf_imtime(make_gf_dlr(inputs.delta_iw[name]), int(n_tau))
-  for c1, (n1, _) in enumerate(gf_struct):
-    for c2, (n2, _) in enumerate(gf_struct):
-      S.D0_tau[n1, n2].data[:, 0, 0] = d_tau[:, c1, c2]
+  hu.fill_d0_tau(S.D0_tau, d_tau, gf_struct)
   solve_params = dict(params)
   suppress_output = solve_params.pop('suppress_solver_output', False)
   output_file = solve_params.pop('solver_output_file', None)
@@ -113,7 +148,8 @@ class CthybSolver(ImpuritySolver):
   Any static ``h_int`` (``"density"``, ``"kanamori"``, ``"full"``); the retarded density-density
   interaction through the Lang-Firsov route; the impurity polarization from the measured density
   correlator on every production solve (from the occupation kinks for a density-density ``h_int``,
-  by a direct measurement otherwise); size-1 blocks; no configuration reuse.
+  by a direct measurement otherwise); matrix-valued blocks (h0 and Delta off-diagonal inside a
+  block, see ``solve``); no configuration reuse.
 
   Solver-block keys: the QMC controls (``n_cycles`` total over ranks, ``n_warmup_cycles``,
   ``length_cycle``, ``random_seed``), ``h_int`` ("density"), ``screen_j`` (False), the tail fit of
@@ -130,7 +166,7 @@ class CthybSolver(ImpuritySolver):
   """
   name = "cthyb"
   capabilities = SolverCapabilities(
-    occupations_only_solve=True, general_h_int=True, offdiag_delta=False,
+    occupations_only_solve=True, general_h_int=True, offdiag_delta=True,
     complex_hamiltonian=False, retarded_interaction="density", polarization="always")
 
   def __init__(self, solver_params, *, comm_size):
@@ -202,7 +238,9 @@ class CthybSolver(ImpuritySolver):
 
     Steps:
 
-    1. Convert the problem with ``problem_to_triqs`` (``h_int`` as configured, real, size-1 blocks).
+    1. Convert the problem with ``problem_to_triqs`` (``h_int`` as configured, real, matrix-valued
+       blocks) and warn about a block whose h0 couples what Delta does not
+       (``_warn_offdiag_h0_without_delta``).
     2. Resolve the meshes: ``n_iw`` at least the largest DLR fermionic index + 1 (so every IAFT point
        is read off the uniform mesh), ``n_tau`` at least ``6 n_iw + 1``.
     3. Build ``D(tau)`` on ``n_tau_bosonic`` points and, for a production solve with
@@ -211,8 +249,9 @@ class CthybSolver(ImpuritySolver):
        solve, so an empty window raises before any Monte Carlo.
     4. Run the TRIQS solve (``_solve_cthyb``): ``Delta_tau`` from the exact DLR Delta, ``D0_tau`` as
        built, the density matrix, and (production) ``G_tau`` and the density correlator ``nn_tau``.
-    5. Production: occupations from the density matrix; ``Sigma_infty`` by Hartree-Fock with the
-       D(0) Hartree term; ``G`` and ``Sigma`` on the uniform mesh (``sigma_from_g_tau``, tail fit),
+    5. Production: occupations from the density matrix, the off-diagonal density inside a block from
+       ``G(tau = 0-)`` (``density_from_g_tau``); ``Sigma_infty`` by Hartree-Fock with the D(0)
+       Hartree term; ``G`` and ``Sigma`` on the uniform mesh (``sigma_from_g_tau``, tail fit),
        read at the IAFT points; ``chi`` from ``nn_tau`` to ``Pi`` and ``W`` with the density-density
        part of the problem's static interaction.
     6. Assemble the ``ImpurityResult``.
@@ -228,13 +267,12 @@ class CthybSolver(ImpuritySolver):
     Returns
     -------
     ImpurityResult
+
     """
     gf_struct = problem.gf_struct
-    if any(size != 1 for _, size in gf_struct):
-      raise ValueError(f"cthyb_solver::CthybSolver.solve: this backend takes blocks of size 1 only, "
-                       f"got {gf_struct}")
     inputs = problem_to_triqs(problem, h_int_kind=self.h_int_kind, screen_j=self.screen_j,
                               real_hamiltonian=True)
+    _warn_offdiag_h0_without_delta(inputs, gf_struct)
     beta, iaft = problem.beta, problem.iaft
     n_iw, n_tau, n_tau_bosonic = hu.resolve_meshes(
       beta=beta, dlr_wmax=problem.dlr_wmax, max_dlr_index=int(np.abs(_mesh_indices(inputs.mesh_f)).max()),
@@ -282,7 +320,22 @@ class CthybSolver(ImpuritySolver):
                      f"  {mirror_mismatch:.1e} (Legendre coefficients): the reported kernel_error describes\n"
                      f"  a kernel the Monte Carlo did not use; the fork's kernel fit has changed.\n")
     occ_mat = orbital_occupations(S.density_matrix, gf_struct, S.h_loc_diagonalization)
-    rho = [np.asarray(occ_mat[name], dtype=complex) for name, _ in gf_struct]
+    # occ_mat[a, a'] = <c+_a c_a'>; sigma_infty_hf takes rho[a, a'] = <c+_a' c_a> (G(tau = 0-) layout)
+    rho = [np.asarray(occ_mat[name], dtype=complex).T for name, _ in gf_struct]
+    if not occupations_only:
+      # the density matrix is measured within the symmetry sectors of h_loc; an element between two
+      # sectors (nonzero only through Delta) is absent from it and comes from G(tau = 0-) instead,
+      # at the Monte Carlo precision of the measured G (a diagonal element is always held)
+      held = hu.density_matrix_sector_mask(S.h_loc_diagonalization, gf_struct)
+      missing = [(name, a, b) for blk, (name, _) in enumerate(gf_struct) for a, b in zip(*np.nonzero(~held[blk]))]
+      if missing:
+        rho_g = hu.density_from_g_tau(S.G_tau, gf_struct, problem.dlr_wmax, problem.dlr_eps)
+        for blk, (name, _) in enumerate(gf_struct):
+          rho[blk][~held[blk]] = rho_g[blk][~held[blk]]
+        app_log(1, f" [WARNING] {len(missing)} density-matrix element(s) connect different symmetry sectors of\n"
+                   f"  h_loc and are not in the solver's density matrix: {missing[:6]}{' ...' if len(missing) > 6 else ''}.\n"
+                   f"  They are taken from the DLR fit of the measured G(tau) at tau = beta, at Monte Carlo\n"
+                   f"  precision (typically 1e-2 at this budget), and enter Sigma_infty of their block.\n")
     occupations = {name: np.diag(rho[b]).real.copy() for b, (name, _) in enumerate(gf_struct)}
     dens_c = np.concatenate([np.diag(r).real for r in rho])
     diagnostics = {"average_sign": float(np.real(S.average_sign)), "n_iw": int(n_iw)}
@@ -306,21 +359,20 @@ class CthybSolver(ImpuritySolver):
     groups = problem.degenerate_blk
     D_c = postproc.color_matrix_at_points(inputs.u_weiss_iw, gf_struct, wn_b, beta)
     sigma_infty = postproc.average_blocks(postproc.sigma_infty_hf(rho, inputs.h_int, D_c[0], gf_struct), groups)
-    sigma_inf_c = np.array([float(np.real(s[0, 0])) for s in sigma_infty])
-    h0_c = np.array([float(np.real(h[0, 0])) for h in inputs.h0_blocks])
-    Sigma_iw, G_iw, G0_iw = hu.sigma_from_g_tau(S.G_tau, inputs.delta_iw, h0_c, sigma_inf_c, gf_struct, n_iw,
-                                                groups, self.tail_fit_params)
+    Sigma_iw, G_iw, G0_iw = hu.sigma_from_g_tau(S.G_tau, inputs.delta_iw, inputs.h0_blocks, sigma_infty,
+                                                gf_struct, n_iw, groups, self.tail_fit_params)
     Sigma_dyn_iw = Sigma_iw.copy()
-    for c, (name, g) in enumerate(Sigma_dyn_iw):
-      g.data[:] -= sigma_inf_c[c]
+    for b, (name, g) in enumerate(Sigma_dyn_iw):
+      g.data[:] -= sigma_infty[b][None]
     G = postproc.eval_uniform_then_dlr(G_iw, wn_f, "Fermion", beta, problem.dlr_wmax, problem.dlr_eps)
     sigma_dyn = postproc.eval_uniform_then_dlr(Sigma_dyn_iw, wn_f, "Fermion", beta, problem.dlr_wmax, problem.dlr_eps)
     G = postproc.average_blocks(G, groups)
     sigma_dyn = postproc.average_blocks(sigma_dyn, groups)
     solver_data = {"G_tau": S.G_tau, "Sigma_iw": Sigma_iw,
-                   "density_matrix": [np.asarray(m) for m in S.density_matrix]}
+                   "density_matrix": [np.asarray(m) for m in S.density_matrix],
+                   "rho_blocks": rho}                       # <c+_a' c_a> per block, as Sigma_infty used it
     nn_tau = S.nn_tau
-    q0 = np.array([float(np.real(nn_tau[name, name].data[0, 0, 0])) for name, _ in gf_struct])
+    q0 = np.concatenate([np.diag(np.asarray(nn_tau[name, name].data[0])).real for name, _ in gf_struct])
     diagnostics["q0_mismatch"] = float(np.abs(q0 - dens_c).max())
     app_log(2, f"cthyb: nn_tau(0) diagonal vs occupations differ by at most {diagnostics['q0_mismatch']:.2e}")
     chi_c, wmax_fit = hu.chi_from_q_tau(nn_tau, gf_struct, wn_b, beta, problem.dlr_wmax, problem.dlr_eps)

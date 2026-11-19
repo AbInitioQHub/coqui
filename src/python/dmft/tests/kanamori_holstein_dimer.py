@@ -55,6 +55,8 @@ from coqui.utils.imag_axes_ft import IAFT
 from coqui.dmft.solver_api import ImpurityProblem
 
 GF_STRUCT = [("up_0", 1), ("up_1", 1), ("down_0", 1), ("down_1", 1)]
+# the same colours as one matrix block per spin, for a backend that takes off-diagonal Delta
+GF_STRUCT_BLOCKS = [("up_0", 2), ("down_0", 2)]
 NORB = 2
 # colour c = index into GF_STRUCT; (orbital, spin) of every colour
 COLOR_ORBITAL = [0, 1, 0, 1]
@@ -72,6 +74,8 @@ class KanamoriParams:
   V: float = 1.0           # strong enough hybridization for CT-HYB to sample G(tau) well (order ~40)
   omega0: float = 1.0
   g: float = 0.5
+  t: float = 0.0             # inter-orbital hopping in h0 (off-diagonal one-body term)
+  V_01: float = 0.0          # cross hybridization, impurity orbital 0 <-> bath of orbital 1 and vice versa
   n_boson: int = 20
 
 
@@ -145,10 +149,13 @@ def build_hamiltonian(params):
   n_bath = sum(fermionic(c_ops[s][a].T @ c_ops[s][a]) for s in range(2) for a in range(NORB))
   hopping = sum(fermionic(d_ops[s][a].T @ c_ops[s][a] + c_ops[s][a].T @ d_ops[s][a])
                 for s in range(2) for a in range(NORB))
+  cross = sum(fermionic(d_ops[s][a].T @ c_ops[s][1 - a] + c_ops[s][1 - a].T @ d_ops[s][a])
+              for s in range(2) for a in range(NORB))
+  inter_orbital = sum(fermionic(d_ops[s][0].T @ d_ops[s][1] + d_ops[s][1].T @ d_ops[s][0]) for s in range(2))
   displacement = bosonic(boson + boson.T)
   v_abcd = kanamori_tensor(params.U, params.Uprime, params.J)
-  hamiltonian = (params.eps * charge + fermionic(interaction_operator(v_abcd, d_ops))
-                 + params.eps_b * n_bath + params.V * hopping
+  hamiltonian = (params.eps * charge + params.t * inter_orbital + fermionic(interaction_operator(v_abcd, d_ops))
+                 + params.eps_b * n_bath + params.V * hopping + params.V_01 * cross
                  + params.omega0 * bosonic(boson.T @ boson) + params.g * (charge @ displacement))
   colours = [fermionic(d_ops[COLOR_SPIN[c]][COLOR_ORBITAL[c]]) for c in range(4)]
   return hamiltonian, {"d": colours, "X": displacement, "v_abcd": v_abcd}
@@ -207,19 +214,28 @@ class KanamoriED:
   def occupations(self):
     return np.diag(self.density_matrix()).copy()
 
-  def green(self, wn_f):
-    """G_c(i w_n), w_n = n pi/beta for the odd integers wn_f; shape (nw, 4), colour-diagonal."""
+  def green_matrix(self, wn_f):
+    """
+    ``G_cc'(i w_n) = -<T d_c d^+_c'>`` over the four colours, w_n = n pi/beta for the odd integers
+    ``wn_f``; shape ``(nw, 4, 4)``. Off-diagonal elements vanish unless ``t`` or ``V_01`` is set.
+    """
     iw = 1j * np.pi * np.asarray(wn_f) / self.params.beta
-    out = np.zeros((len(iw), 4), dtype=complex)
+    out = np.zeros((len(iw), 4, 4), dtype=complex)
     de = self.energies[None, :] - self.energies[:, None]          # E_n - E_m
     for c in range(4):
-      amplitude = self.d[c]                                       # <m| d |n>
-      weight = amplitude**2 * (self.weights[:, None] + self.weights[None, :]) / self.partition
-      m_idx, n_idx = np.nonzero(np.abs(weight) > 1e-14)
-      w_nz, de_nz = weight[m_idx, n_idx], de[m_idx, n_idx]
-      for index, z in enumerate(iw):
-        out[index, c] = np.sum(w_nz / (z - de_nz))
+      for cp in range(4):
+        if COLOR_SPIN[c] != COLOR_SPIN[cp]:
+          continue
+        # <m| d_c |n> <n| d^+_c' |m> (e^{-beta E_m} + e^{-beta E_n}) / Z / (z - (E_n - E_m))
+        weight = self.d[c] * self.d[cp] * (self.weights[:, None] + self.weights[None, :]) / self.partition
+        m_idx, n_idx = np.nonzero(np.abs(weight) > 1e-14)
+        w_nz, de_nz = weight[m_idx, n_idx], de[m_idx, n_idx]
+        out[:, c, cp] = np.einsum("k,wk->w", w_nz, 1.0 / (iw[:, None] - de_nz[None, :]))
     return out
+
+  def green(self, wn_f):
+    """The diagonal of ``green_matrix``; shape (nw, 4)."""
+    return np.einsum("wcc->wc", self.green_matrix(wn_f))
 
   def chi_nn(self, wn_b_pos):
     """
@@ -267,15 +283,33 @@ class KanamoriED:
     Every quantity the solver tests compare with, on the meshes of ``iaft``; the bosonic quantities
     (``chi_dd``, ``u_iw``, ``Pi_iw``, ``W_iw``) on the first ``n_bose`` non-negative bosonic points
     only, since every Lehmann sum of the density correlator costs seconds.
+
+    ``delta_iw``, ``Sigma_iw`` and ``Sigma_dyn_iw`` are the colour-diagonal forms of ``t = V_01 = 0``
+    (``G_iw`` is always the exact diagonal); ``Sigma_iw_full``, ``Sigma_infty_full`` and
+    ``Sigma_dyn_iw_full`` are the colour matrices, exact for every ``t`` and ``V_01``.
     """
     p = self.params
     wn_f = iaft.wn_mesh('f')
     iw = 1j * np.pi * wn_f / p.beta
-    green = self.green(wn_f)
+    green_full = self.green_matrix(wn_f)
+    green = np.einsum("wcc->wc", green_full)
     delta = p.V**2 / (iw - p.eps_b)
     g0 = 1.0 / (iw - p.eps - delta)
-    sigma = 1.0 / g0[:, None] - 1.0 / green
+    sigma = 1.0 / g0[:, None] - 1.0 / green                       # colour-diagonal form, exact for t = V_01 = 0
     sigma_infty = self.sigma_infty()
+    # the matrix form over the colours (block-diagonal in spin): Sigma = G0^-1 - G^-1 per spin with
+    # G0 = (iw - h0 - Delta)^-1, h0 = eps + t off the diagonal, Delta = V_mat V_mat^T / (iw - eps_b);
+    # exact for every t and V_01, where the colour-diagonal Sigma_iw above is not
+    v_mat = np.array([[p.V, p.V_01], [p.V_01, p.V]])
+    h0_mat = np.eye(NORB) * p.eps + p.t * (np.ones((NORB, NORB)) - np.eye(NORB))
+    g0_inv_spin = (iw[:, None, None] * np.eye(NORB) - h0_mat[None]
+                   - (v_mat @ v_mat.T)[None] * (1.0 / (iw - p.eps_b))[:, None, None])
+    sigma_full = np.zeros_like(green_full)
+    for s in range(2):
+      cols = [c for c in range(4) if COLOR_SPIN[c] == s]
+      ix = np.ix_(np.arange(len(iw)), cols, cols)
+      sigma_full[ix] = g0_inv_spin - np.linalg.inv(green_full[ix])
+    sigma_infty_full = hartree_fock_sigma_infty(self.v_abcd, self.density_matrix()) + p.g * self.x_mean * np.eye(4)
     # the density-density channel: chi summed over spins per orbital pair, U_dd = V_dd + u(nu)
     # between opposite spins (v[i, i, j, j]), Pi = chi (U chi - 1)^-1 and W = U - U chi U - V_dd as
     # matrices over the orbitals, the convention of the backends' pi_w_from_chi
@@ -290,8 +324,10 @@ class KanamoriED:
       u_full = v_dd + u_iw[index]
       pi_iw[index] = chi_dd[index] @ np.linalg.inv(u_full @ chi_dd[index] - np.eye(NORB))
       w_iw[index] = u_full - u_full @ chi_dd[index] @ u_full - v_dd
-    return dict(wn_f=wn_f, wn_b=wn_b, delta_iw=delta, G_iw=green, Sigma_iw=sigma, Sigma_infty=sigma_infty,
-                Sigma_dyn_iw=sigma - sigma_infty[None, :], occupations=self.occupations(),
+    return dict(wn_f=wn_f, wn_b=wn_b, delta_iw=delta, G_iw=green, G_iw_full=green_full, Sigma_iw=sigma, Sigma_infty=sigma_infty,
+                Sigma_dyn_iw=sigma - sigma_infty[None, :], Sigma_iw_full=sigma_full,
+                Sigma_infty_full=sigma_infty_full, Sigma_dyn_iw_full=sigma_full - sigma_infty_full[None],
+                occupations=self.occupations(),
                 density_matrix=self.density_matrix(), x_mean=self.x_mean, chi_dd=chi_dd, u_iw=u_iw,
                 Pi_iw=pi_iw, W_iw=w_iw)
 
@@ -300,18 +336,29 @@ def make_iaft(params, wmax=20.0, eps=1e-10):
   return IAFT(beta=params.beta, wmax=wmax, prec="custom", eps=eps, verbose=False, basis="dlr")
 
 
-def make_problem(params, iaft, *, dlr_wmax, dlr_eps, degenerate_blk=((0, 1, 2, 3),)):
-  """The two-orbital impurity as an ImpurityProblem (unshifted h0; target density from ED)."""
+def make_problem(params, iaft, *, dlr_wmax, dlr_eps, degenerate_blk="all", gf_struct=GF_STRUCT):
+  """
+  The two-orbital impurity as an ImpurityProblem (unshifted h0; target density from ED).
+
+  ``gf_struct`` is ``GF_STRUCT`` (four size-1 blocks) or ``GF_STRUCT_BLOCKS`` (one 2x2 block per
+  spin, the layout a backend with ``offdiag_delta`` needs for ``t`` or ``V_01``); ``degenerate_blk``
+  indexes the blocks of that layout: ``"all"`` (every block in one group), ``None`` (no groups) or
+  the groups themselves.
+  """
+  if isinstance(degenerate_blk, str):
+    degenerate_blk = (tuple(range(len(gf_struct))),)
   ed = KanamoriED(params)
   ref = ed.reference(iaft)
   nw_f = len(ref["wn_f"])
   wn_b = iaft.wn_mesh('b', positive_only=True)
   nu = np.pi * wn_b / params.beta
   u_iw = -2.0 * params.g**2 * params.omega0 / (params.omega0**2 + nu**2)
+  # Delta = V_mat V_mat^T / (iw - eps_b) per spin, V_mat = [[V, V_01], [V_01, V]] over (impurity orbital, bath)
+  v_mat = np.array([[params.V, params.V_01], [params.V_01, params.V]])
   delta = np.zeros((nw_f, 2, NORB, NORB), dtype=complex)
   for s in range(2):
-    for a in range(NORB):
-      delta[:, s, a, a] = ref["delta_iw"]
+    delta[:, s] = (v_mat @ v_mat.T)[None] * (1.0 / (1j * np.pi * ref["wn_f"] / params.beta - params.eps_b))[:, None, None]
+  h0 = np.eye(NORB) * params.eps + params.t * (np.ones((NORB, NORB)) - np.eye(NORB))
   u_weiss = np.zeros((len(wn_b), NORB, NORB, NORB, NORB), dtype=complex)
   for a in range(NORB):
     for b in range(NORB):
@@ -321,8 +368,8 @@ def make_problem(params, iaft, *, dlr_wmax, dlr_eps, degenerate_blk=((0, 1, 2, 3
   for c in range(4):
     occupations_sab[COLOR_SPIN[c], COLOR_ORBITAL[c], COLOR_ORBITAL[c]] = occ[c]
   return ImpurityProblem(
-    gf_struct=GF_STRUCT, beta=params.beta, iaft=iaft, dlr_wmax=dlr_wmax, dlr_eps=dlr_eps,
-    h0_sab=np.array([np.eye(NORB) * params.eps] * 2, dtype=complex), delta_wsab=delta,
+    gf_struct=list(gf_struct), beta=params.beta, iaft=iaft, dlr_wmax=dlr_wmax, dlr_eps=dlr_eps,
+    h0_sab=np.array([h0] * 2, dtype=complex), delta_wsab=delta,
     v_abcd=kanamori_tensor(params.U, params.Uprime, params.J).astype(complex),
     u_weiss_wabcd=u_weiss, target_density=float(occ.sum()), occupations_sab=occupations_sab,
     degenerate_blk=[np.array(group) for group in degenerate_blk] if degenerate_blk else None)

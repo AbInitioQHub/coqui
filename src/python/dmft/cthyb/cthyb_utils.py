@@ -29,8 +29,8 @@ from triqs.gfs import BlockGf, MeshImFreq, make_gf_dlr, make_gf_imfreq, make_her
 from triqs.gfs.tools import make_zero_tail
 from triqs.solver_utils import tail_fit
 
-from triqs.gfs import make_gf_imtime
-from coqui.dmft.qmc_postproc import eval_on_points, connected_by_plateau, fit_tau_correlator
+from triqs.gfs import Gf, make_gf_imtime, fit_gf_dlr
+from coqui.dmft.qmc_postproc import eval_on_points, connected_by_plateau, fit_tau_correlator, block_offsets
 
 
 # ---------------------------------------------------------------- Lang-Firsov kernel
@@ -140,6 +140,13 @@ def legendre_kernel_error(D_tau, beta, n_l, D_fine=None):
   return err, float(np.abs(K).max()), dkp0
 
 
+def _component(g, i1, i2):
+  """Entry ``[i1, i2]`` of a matrix-valued ``Gf`` as a ``(1, 1)`` ``Gf`` on the same mesh (a copy)."""
+  out = Gf(mesh=g.mesh, target_shape=(1, 1))
+  out.data[:, 0, 0] = g.data[:, i1, i2]
+  return out
+
+
 def kernel_error_from_block2gf(block2gf, gf_struct, beta, n_l, n_tau_bosonic, n_fine):
   """
   ``legendre_kernel_error`` of a retarded density-density ``Block2Gf`` (the bosonic DLR mesh),
@@ -149,7 +156,8 @@ def kernel_error_from_block2gf(block2gf, gf_struct, beta, n_l, n_tau_bosonic, n_
   Parameters
   ----------
   block2gf : triqs.gfs.Block2Gf
-      One ``(1, 1)`` block per colour pair (size-1 blocks).
+      One ``(d1, d2)`` block per block pair; entry ``[i1, i2]`` couples colour ``i1`` of the first
+      block to colour ``i2`` of the second.
   gf_struct : list of (str, int)
   beta : float
   n_l : int
@@ -168,21 +176,23 @@ def kernel_error_from_block2gf(block2gf, gf_struct, beta, n_l, n_tau_bosonic, n_
   shift_max : float
       max over pairs of |K'(0)_solver - K'(0)|.
   """
-  names = [name for name, _ in gf_struct]
-  done = {}
+  done = set()
   err_max = k_max = shift_max = 0.0
-  for n1 in names:
-    for n2 in names:
+  for n1, d1 in gf_struct:
+    for n2, d2 in gf_struct:
       block = block2gf[n1, n2]
-      key = np.asarray(block.data).tobytes()
-      if key in done:
-        continue
-      dlr = make_gf_dlr(block)
-      d = np.asarray(make_gf_imtime(dlr, int(n_tau_bosonic)).data).real[:, 0, 0]
-      d_fine = np.asarray(make_gf_imtime(dlr, int(n_fine)).data).real[:, 0, 0]
-      err, kmax, dkp0 = legendre_kernel_error(d[:, None, None], beta, n_l, D_fine=d_fine[:, None, None])
-      done[key] = True
-      err_max, k_max, shift_max = max(err_max, float(err.max())), max(k_max, kmax), max(shift_max, float(np.abs(dkp0).max()))
+      for i1 in range(d1):
+        for i2 in range(d2):
+          key = np.asarray(block.data[:, i1, i2]).tobytes()
+          if key in done:
+            continue
+          done.add(key)
+          dlr = make_gf_dlr(_component(block, i1, i2))
+          d = np.asarray(make_gf_imtime(dlr, int(n_tau_bosonic)).data).real[:, 0, 0]
+          d_fine = np.asarray(make_gf_imtime(dlr, int(n_fine)).data).real[:, 0, 0]
+          err, kmax, dkp0 = legendre_kernel_error(d[:, None, None], beta, n_l, D_fine=d_fine[:, None, None])
+          err_max, k_max = max(err_max, float(err.max())), max(k_max, kmax)
+          shift_max = max(shift_max, float(np.abs(dkp0).max()))
   return err_max, k_max, shift_max
 
 
@@ -301,41 +311,25 @@ def resolve_tail_fit_window(tail_fit_params, beta, n_iw):
   return {"fit_min_n": fit_min_n, "fit_max_n": fit_max_n, "fit_max_moment": tail_fit_params.get("fit_max_moment")}
 
 
-def sigma_from_g_tau(G_tau, delta_iw, h0_c, sigma_inf_c, gf_struct, n_iw, degenerate_blk, tail_fit_params):
+def g_iw_from_g_tau(G_tau, gf_struct, n_iw, degenerate_blk):
   """
-  The Dyson self-energy on the uniform Matsubara mesh from the measured ``G(tau)``.
-
-  ``G(iw)`` from ``G(tau)`` with the known ``1/iw`` moment, hermitized and averaged over the
-  degenerate blocks before the Dyson step; ``G0 = (iw - h0 - Delta)^-1`` with the exact DLR
-  ``Delta``; ``Sigma = G0^-1 - G^-1``; with ``tail_fit_params`` the tail of ``Sigma`` is fitted
-  (``triqs.solver_utils.tail_fit``) with ``sigma_inf_c`` as the known zeroth moment and ``G`` is
-  recomputed from the Dyson equation, so the two stay consistent.
+  The measured ``G(tau)`` on the uniform Matsubara mesh: Fourier transform with the known ``1/iw``
+  moment, hermitized and averaged over the degenerate blocks.
 
   Parameters
   ----------
   G_tau : triqs.gfs.BlockGf
-      The measured ``G(tau)``, size-1 blocks.
-  delta_iw : triqs.gfs.BlockGf
-      ``Delta(iw)`` on the fermionic DLR mesh.
-  h0_c : array (n_color,)
-      The level of every colour (``mu_shift`` included).
-  sigma_inf_c : array (n_color,)
-      The static self-energy of every colour.
+      The measured ``G(tau)``, a ``(d, d)`` matrix per block.
   gf_struct : list of (str, int)
   n_iw : int
       The uniform mesh.
   degenerate_blk : list of index groups or None
-  tail_fit_params : dict or None
-      ``fit_min_n``, ``fit_max_n``, ``fit_min_w``, ``fit_max_w``, ``fit_max_moment``; resolved to
-      mesh indices by ``resolve_tail_fit_window`` (clipped to the mesh).
 
   Returns
   -------
-  Sigma_iw, G_iw, G0_iw : triqs.gfs.BlockGf on ``MeshImFreq(n_iw)``
-      The full self-energy (static part included), ``G`` and ``G0``.
+  triqs.gfs.BlockGf on ``MeshImFreq(n_iw)``
   """
-  beta = G_tau.mesh.beta
-  mesh = MeshImFreq(beta=beta, statistic="Fermion", n_iw=n_iw)
+  mesh = MeshImFreq(beta=G_tau.mesh.beta, statistic="Fermion", n_iw=n_iw)
   G_iw = BlockGf(mesh=mesh, gf_struct=gf_struct)
   for name, g in G_iw:
     km = make_zero_tail(g, 2)
@@ -344,14 +338,143 @@ def sigma_from_g_tau(G_tau, delta_iw, h0_c, sigma_inf_c, gf_struct, n_iw, degene
   G_iw = make_hermitian(G_iw)
   if degenerate_blk:
     G_iw = modest.symmetrize(G_iw, degenerate_blk)
+  return G_iw
+
+
+def fill_d0_tau(D0_tau, d_tau, gf_struct):
+  """
+  Write the colour matrix ``d_tau`` (``d0_tau_colors``) into the solver's ``D0_tau`` (``Block2Gf``
+  over ``gf_struct``, ``(d1, d2)`` per block pair): entry ``[i1, i2]`` of block pair ``(b1, b2)`` is
+  the colour pair ``(offset(b1) + i1, offset(b2) + i2)``.
+
+  Parameters
+  ----------
+  D0_tau : triqs.gfs.Block2Gf
+      Written in place.
+  d_tau : np.ndarray (n_tau, n_color, n_color)
+  gf_struct : list of (str, int)
+  """
+  offs = block_offsets(gf_struct)
+  for b1, (n1, d1) in enumerate(gf_struct):
+    for b2, (n2, d2) in enumerate(gf_struct):
+      D0_tau[n1, n2].data[:] = d_tau[:, offs[b1]:offs[b1] + d1, offs[b2]:offs[b2] + d2]
+
+
+def density_matrix_sector_mask(h_loc_diag, gf_struct):
+  """
+  Which elements ``<c+_a c_a'>`` of every block the solver's density matrix holds.
+
+  cthyb measures the reduced density matrix sector by sector of the symmetry sectors of ``h_loc``
+  (``triqs.atom_diag``), so it holds ``<c+_a c_a'>`` only when ``c+_a c_a'`` maps every sector onto
+  itself; an element between two sectors, which Delta alone can make nonzero, comes out as zero
+  whatever its value.
+
+  Parameters
+  ----------
+  h_loc_diag : triqs.atom_diag.AtomDiag
+      The solver's ``h_loc_diagonalization``.
+  gf_struct : list of (str, int)
+
+  Returns
+  -------
+  list of np.ndarray (d, d) of bool
+      ``True`` where the density matrix holds the element.
+  """
+  linear = {(str(indices[0]), int(indices[1])): index for index, indices in enumerate(h_loc_diag.fops)}
+  n_sub = int(h_loc_diag.n_subspaces)
+  out = []
+  for name, size in gf_struct:
+    mask = np.ones((size, size), dtype=bool)
+    for a in range(size):
+      for b in range(size):
+        la, lb = linear[(name, a)], linear[(name, b)]
+        for sector in range(n_sub):
+          target = h_loc_diag.c_connection(lb, sector)
+          if target != -1 and h_loc_diag.cdag_connection(la, target) != sector:
+            mask[a, b] = False
+            break
+    out.append(mask)
+  return out
+
+
+def density_from_g_tau(G_tau, gf_struct, dlr_wmax, dlr_eps):
+  """
+  The density matrix ``rho[a, a'] = <c+_a' c_a> = G(tau = 0-) = -G(beta)`` of every block from the
+  measured ``G(tau)``: a DLR least-squares fit of the uniform-grid data (``fit_gf_dlr`` at the
+  problem's ``dlr_wmax`` and ``dlr_eps``) evaluated at ``tau = beta``. The fit averages the noise
+  of the grid, where the last grid point alone, or a tail fit of ``G(iw)``, does not.
+
+  Parameters
+  ----------
+  G_tau : triqs.gfs.BlockGf
+      The measured ``G(tau)``, a ``(d, d)`` matrix per block.
+  gf_struct : list of (str, int)
+  dlr_wmax, dlr_eps : float
+
+  Returns
+  -------
+  list of np.ndarray (d, d), complex
+  """
+  out = []
+  for name, _ in gf_struct:
+    g_dlr = fit_gf_dlr(G_tau[name], w_max=float(dlr_wmax), eps=float(dlr_eps), symmetrize=True)
+    out.append(-np.asarray(make_gf_imtime(g_dlr, 2).data[-1], dtype=complex))
+  return out
+
+
+def sigma_from_g_tau(G_tau, delta_iw, h0_blocks, sigma_infty_blocks, gf_struct, n_iw, degenerate_blk,
+                     tail_fit_params):
+  """
+  ``sigma_from_g_iw`` of ``g_iw_from_g_tau(G_tau, gf_struct, n_iw, degenerate_blk)``.
+
+  Returns
+  -------
+  Sigma_iw, G_iw, G0_iw : triqs.gfs.BlockGf on ``MeshImFreq(n_iw)``
+  """
+  G_iw = g_iw_from_g_tau(G_tau, gf_struct, n_iw, degenerate_blk)
+  return sigma_from_g_iw(G_iw, delta_iw, h0_blocks, sigma_infty_blocks, gf_struct, tail_fit_params)
+
+
+def sigma_from_g_iw(G_iw, delta_iw, h0_blocks, sigma_infty_blocks, gf_struct, tail_fit_params):
+  """
+  The Dyson self-energy on the uniform Matsubara mesh of ``G_iw``.
+
+  ``G0 = (iw - h0 - Delta)^-1`` with the exact DLR ``Delta``, a matrix per block;
+  ``Sigma = G0^-1 - G^-1``; with ``tail_fit_params`` the tail of ``Sigma`` is fitted
+  (``triqs.solver_utils.tail_fit``) with ``sigma_infty_blocks`` as the known zeroth moment and ``G``
+  is recomputed from the Dyson equation, so the two stay consistent.
+
+  Parameters
+  ----------
+  G_iw : triqs.gfs.BlockGf on ``MeshImFreq``
+      The measured ``G``, hermitized and symmetrized (``g_iw_from_g_tau``).
+  delta_iw : triqs.gfs.BlockGf
+      ``Delta(iw)`` on the fermionic DLR mesh.
+  h0_blocks : list of array (d, d)
+      The one-body matrix of every block (``mu_shift`` included).
+  sigma_infty_blocks : list of array (d, d)
+      The static self-energy of every block.
+  gf_struct : list of (str, int)
+  tail_fit_params : dict or None
+      ``fit_min_n``, ``fit_max_n``, ``fit_min_w``, ``fit_max_w``, ``fit_max_moment``; resolved to
+      mesh indices by ``resolve_tail_fit_window`` (clipped to the mesh).
+
+  Returns
+  -------
+  Sigma_iw, G_iw, G0_iw : triqs.gfs.BlockGf on the mesh of ``G_iw``
+      The full self-energy (static part included), ``G`` and ``G0``.
+  """
+  beta = G_iw.mesh.beta
+  n_iw = len(G_iw.mesh) // 2
   G0_iw = G_iw.copy()
-  for c, (name, g) in enumerate(G0_iw):
+  for b, (name, g) in enumerate(G0_iw):
     delta_uni = make_gf_imfreq(make_gf_dlr(delta_iw[name]), n_iw)
-    g << inverse(iOmega_n - float(np.real(h0_c[c])) - delta_uni)
+    g << inverse(iOmega_n - np.asarray(h0_blocks[b]) - delta_uni)
   Sigma_iw = inverse(G0_iw) - inverse(G_iw)
   if tail_fit_params is not None:
     window = resolve_tail_fit_window(tail_fit_params, beta, n_iw)
-    known = {name: np.array([[[sigma_inf_c[c]]]], dtype=complex) for c, (name, _) in enumerate(gf_struct)}
+    known = {name: np.asarray(sigma_infty_blocks[b], dtype=complex)[None]
+             for b, (name, _) in enumerate(gf_struct)}
     Sigma_iw = tail_fit(Sigma_iw, fit_min_n=window["fit_min_n"], fit_max_n=window["fit_max_n"],
                         fit_max_moment=window["fit_max_moment"], fit_known_moments=known)
     G_iw = inverse(inverse(G0_iw) - Sigma_iw)
@@ -363,7 +486,7 @@ def sigma_from_g_tau(G_tau, delta_iw, h0_c, sigma_inf_c, gf_struct, n_iw, degene
 def chi_from_q_tau(Q_tau, gf_struct, wn_b, beta, dlr_wmax, dlr_eps):
   """
   The plateau-connected colour correlator at the bosonic Matsubara integers ``wn_b`` from the
-  measured ``<n_a(tau) n_b(0)>`` (``Block2Gf``, one ``(1, 1)`` block per colour pair on a uniform
+  measured ``<n_a(tau) n_b(0)>`` (``Block2Gf``, one ``(d1, d2)`` block per block pair on a uniform
   tau grid, equal-time part included: the fork's ``Q_tau`` or ``nn_tau``).
 
   Returns
@@ -372,15 +495,17 @@ def chi_from_q_tau(Q_tau, gf_struct, wn_b, beta, dlr_wmax, dlr_eps):
   w_max_fit : float
       The DLR cutoff the fit used (``fit_tau_correlator``).
   """
-  names = [name for name, _ in gf_struct]
-  n_color = len(names)
+  offs = block_offsets(gf_struct)
+  n_color = sum(size for _, size in gf_struct)
   chi_c = np.zeros((len(wn_b), n_color, n_color))
   w_max_fit = dlr_wmax
-  for c1, n1 in enumerate(names):
-    for c2, n2 in enumerate(names):
-      q = Q_tau[n1, n2].copy()
-      conn, _ = connected_by_plateau(np.asarray(Q_tau[n1, n2].data).real, beta)
-      q.data[:] = conn
-      q_dlr, w_max_fit = fit_tau_correlator(q, dlr_wmax, dlr_eps)
-      chi_c[:, c1, c2] = eval_on_points(q_dlr, wn_b, "Boson", beta)[:, 0, 0].real
+  for b1, (n1, d1) in enumerate(gf_struct):
+    for b2, (n2, d2) in enumerate(gf_struct):
+      for i1 in range(d1):
+        for i2 in range(d2):
+          q = _component(Q_tau[n1, n2], i1, i2)
+          conn, _ = connected_by_plateau(np.asarray(q.data).real, beta)
+          q.data[:] = conn
+          q_dlr, w_max_fit = fit_tau_correlator(q, dlr_wmax, dlr_eps)
+          chi_c[:, offs[b1] + i1, offs[b2] + i2] = eval_on_points(q_dlr, wn_b, "Boson", beta)[:, 0, 0].real
   return chi_c, w_max_fit

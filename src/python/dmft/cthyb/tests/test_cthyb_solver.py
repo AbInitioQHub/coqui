@@ -68,7 +68,7 @@ def test_cthyb_solver_solve(dimer):
        the fork's own kernel K_n equals the Python mirror's Legendre coefficients to 1e-8
        (diagnostics["kernel_mirror_mismatch"]: the kernel error reported describes the kernel the
        Monte Carlo used); diagnostics carry average_sign, average_order, auto_corr_time,
-       kernel_error, n_stochastic_dyn_vertex_types, max_cond; solver_data is {G_tau, Sigma_iw, density_matrix}
+       kernel_error, n_stochastic_dyn_vertex_types, max_cond; solver_data is {G_tau, Sigma_iw, density_matrix, rho_blocks}
        (no Q_tau unless store_q_tau).
     2. Occupations-only solve (the search budget, 5 % of the cycles): no Sigma, Pi None; density
        within _TOL["density_search"] of case 1's.
@@ -113,7 +113,7 @@ def test_cthyb_solver_solve(dimer):
   assert result.diagnostics["kernel_mirror_mismatch"] < 1e-8
   assert {"average_sign", "average_order", "auto_corr_time", "kernel_error", "n_stochastic_dyn_vertex_types",
           "max_cond"} <= set(result.diagnostics)
-  assert set(result.solver_data) == {"G_tau", "Sigma_iw", "density_matrix"}
+  assert set(result.solver_data) == {"G_tau", "Sigma_iw", "density_matrix", "rho_blocks"}
 
   density = solver.solve(problem, occupations_only=True, chkpt=None)
   assert density.occupations_only and density.Pi_iw_data is None

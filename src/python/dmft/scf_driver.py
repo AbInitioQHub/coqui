@@ -131,7 +131,7 @@ def run_gw_edmft(h_int, embedding, *, proj_info=None, params: dict):
                         tau grids follow the impurity DLR mesh; unknown keys are forwarded to
                         ``triqs_ctint.Solver.solve``.
                         CT-HYB keys (``type = "cthyb"``; ``h_int`` = ``"density"``, ``"kanamori"``
-                        or ``"full"``; size-1 blocks; no configuration reuse): ``perform_tail_fit`` (``True``) with the window
+                        or ``"full"``; matrix-valued blocks; no configuration reuse): ``perform_tail_fit`` (``True``) with the window
                         ``fit_min_w`` / ``fit_max_w`` (``2.5`` / ``10.0`` Ha, problem- and
                         budget-dependent) and ``fit_max_moment`` (``7``); the meshes and the
                         Lang-Firsov kernel follow the impurity DLR mesh; unknown keys are
