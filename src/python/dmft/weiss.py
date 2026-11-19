@@ -515,7 +515,18 @@ def embed_impurities(embeding_1e, embeding_2e, impurity_results, spin_average=Fa
     # A list of 3D arrays (w, i, j) with the length of the list = number of spins
     Sigma_imp_embed = embeding_1e.embed([ Res['Sigma_iw_data'] for Res in impurity_results ])
     Vhf_imp_embed   = embeding_1e.embed([ Res['Sigma_infty'] for Res in impurity_results ])
-    Pi_imp_embed    = embeding_2e.embed([ Res['Pi_iw_data'] for Res in impurity_results ])
+    # a backend that measured no density correlator (a non-density h_int) returns no polarization;
+    # the loop allows that only with screen_type = "rpa", where the embedded Pi_imp is not used,
+    # so a zero of the double-counting shape stands in for it
+    pi_imp = []
+    for Res in impurity_results:
+        if Res.get('Pi_iw_data') is None:
+            app_log(1, "Impurity polarization absent (the backend measured no density correlator):\n"
+                       "  embedding a zero Pi_imp, which screen_type = \"rpa\" does not use\n")
+            pi_imp.append([np.zeros_like(blk) for blk in Res['Pi_iw_dc_data']])
+        else:
+            pi_imp.append(Res['Pi_iw_data'])
+    Pi_imp_embed    = embeding_2e.embed(pi_imp)
 
     # The same applied to the DC terms
     Sigma_dc_embed = embeding_1e.embed([ Res['Sigma_iw_dc_data'] for Res in impurity_results ])

@@ -1,5 +1,5 @@
 """
-Impurity-solver contract of the DMFT package (coqui.dmft.solver_api). No TRIQS solver needed.
+Impurity-solver interface of the DMFT package (coqui.dmft.solver_api). No TRIQS solver needed.
 Serial: python -m pytest <this file> -v     (from outside the repository)
 MPI:    mpirun -n 2 python -m pytest <this file> -v
 """
@@ -85,9 +85,13 @@ def test_impurity_result(iaft):
     Cases:
       1. Production result: solver_agnostic_results() has the five arrays, occupations, density and the
          diagnostics, and validate(problem) passes; occupations_only is False.
-      2. Density-only result (no Sigma): occupations_only is True; solver_agnostic_results() carries no Sigma key.
+      2. Density-only result (no Sigma): occupations_only is True; solver_agnostic_results() raises ValueError.
       3. Pi_iw_data without W_iw_data raises ValueError.
       4. A Sigma_iw_data block with the wrong mesh length fails validate(problem) with ValueError.
+      5. A production result without a polarization (Pi_iw_data and W_iw_data None, as a backend
+         returns for a non-density h_int): solver_agnostic_results() carries both keys with the
+         value None, so that merging it into Res overwrites a previous iteration's polarization
+         instead of silently keeping it.
     """
     problem = _problem(iaft)
     nw_f = iaft.nw_f
@@ -106,7 +110,9 @@ def test_impurity_result(iaft):
                          "G_iw_data", "Pi_iw_data", "W_iw_data", "average_sign"}
     assert full.occupations_only is False
     dens = ImpurityResult(orbital_occupations=occ, density=1.0)
-    assert dens.occupations_only is True and "Sigma_iw_data" not in dens.solver_agnostic_results()
+    assert dens.occupations_only is True
+    with pytest.raises(ValueError, match="occupations-only"):
+        dens.solver_agnostic_results()
     with pytest.raises(ValueError, match="W_iw_data"):
         ImpurityResult(orbital_occupations=occ, density=1.0, Pi_iw_data=[np.zeros((nw_b_pos, 1, 1))])
     bad = ImpurityResult(orbital_occupations=occ, density=1.0,
@@ -114,6 +120,10 @@ def test_impurity_result(iaft):
                          Sigma_iw_data=[np.zeros((3, 1, 1), complex)] * 2)
     with pytest.raises(ValueError, match="Sigma_iw_data"):
         bad.validate(problem)
+    no_pi = ImpurityResult(orbital_occupations=occ, density=1.0, Sigma_infty=full.Sigma_infty,
+                           Sigma_iw_data=full.Sigma_iw_data, G_iw_data=full.G_iw_data)
+    flat = no_pi.solver_agnostic_results()
+    assert "Pi_iw_data" in flat and flat["Pi_iw_data"] is None and flat["W_iw_data"] is None
 
 
 def test_qmc_cycle_params():
@@ -173,8 +183,8 @@ def test_make_solver(monkeypatch):
     Cases:
       1. Registered name: a _Dummy with the block minus "type" (its mu_search table included)
          and comm_size passed through.
-      2. An unknown name raises ValueError listing the registered names; "cthyb" and "ctint"
-         are such names until their backends exist (no misleading missing-package error).
+      2. A name that is not registered raises ValueError naming "unknown solver type" and listing
+         the registered names (no misleading missing-package error).
       3. A shipped entry whose module does not exist raises ImportError naming the module and
          the package it needs; one whose class is not an ImpuritySolver raises TypeError.
          registered_solvers() lists both tables.
@@ -188,18 +198,15 @@ def test_make_solver(monkeypatch):
     solver = make_solver({"type": "dummy", "n_cycles": 10, "mu_search": {"n_cycles": 2}}, comm_size=3)
     assert isinstance(solver, _Dummy)
     assert solver.solver_params == {"n_cycles": 10, "mu_search": {"n_cycles": 2}} and solver.comm_size == 3
-    with pytest.raises(ValueError, match="dummy"):
+    with pytest.raises(ValueError, match="unknown solver type.*dummy"):
         make_solver({"type": "no_such_solver"}, comm_size=1)
-    for name in ("cthyb", "ctint"):
-        with pytest.raises(ValueError, match="unknown solver type"):
-            make_solver({"type": name}, comm_size=1)
     monkeypatch.setitem(solver_api._SHIPPED_SOLVERS, "broken", ("no_such_package.solver", "Solver", "no_such_package"))
     with pytest.raises(ImportError, match="no_such_package"):
         make_solver({"type": "broken"}, comm_size=1)
     monkeypatch.setitem(solver_api._SHIPPED_SOLVERS, "notasolver", ("coqui.dmft.solver_api", "SolverCapabilities", "coqui"))
     with pytest.raises(TypeError, match="ImpuritySolver"):
         make_solver({"type": "notasolver"}, comm_size=1)
-    assert {"ctseg", "dummy", "broken", "notasolver"} <= set(solver_api.registered_solvers())
+    assert {"ctseg", "ctint", "cthyb", "dummy", "broken", "notasolver"} <= set(solver_api.registered_solvers())
     with pytest.raises(TypeError, match="registered name"):
         make_solver({"type": _Dummy, "n_cycles": 10}, comm_size=1)
     with pytest.raises(KeyError, match="type"):

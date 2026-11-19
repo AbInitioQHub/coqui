@@ -54,6 +54,7 @@ from triqs.operators.util.extractors import block_matrix_from_op, extract_U_dict
 import triqs_modest as modest
 import coqui.dmft as coqui_dmft
 from coqui import app_log
+from coqui.dmft.qmc_postproc import eval_on_points
 
 
 def get_c_to_solver_mapping(solver_struct):
@@ -336,54 +337,26 @@ def gf_dlr_from_ir(giw_ir, iaft, mesh_dlr_iw):
 
 
 def gf_dlr_to_ir(gf_dlr, iaft):
-    stats = 'b' if gf_dlr.mesh.statistic == 'Boson' else 'f'
-    ir_idx = iaft.wn_mesh(stats=stats, phys_notation=True)
-    nw = len(ir_idx)
-    iw_mesh_uniform = MeshImFreq(
-        beta=gf_dlr.mesh.beta,
-        statistic=gf_dlr.mesh.statistic,
-        n_iw=ir_idx[-1]+10
-    )
-    def fill_gf_ir(gf_input):
-        gf_ir_out = np.zeros((nw,) + gf_input.data[:].shape[1:], dtype=complex)
-        # we don't symmetrize gf here. Call `make_hermitian` externally if needed. 
-        for i, idx in enumerate(ir_idx):
-            gf_ir_out[i] = gf_input(iw_mesh_uniform(idx))
-
-        return gf_ir_out
-
-    if isinstance(gf_dlr, BlockGf):
-
-        gf_iw_data = []
-        for blk_name, gf in gf_dlr:
-            gf_iw_data.append(fill_gf_ir(gf))
-
-        return gf_iw_data
-
-    elif isinstance(gf_dlr, Gf):
-
-        return fill_gf_ir(gf_dlr)
-
-    else:
+    """
+    A DLR Green's function (``Gf`` or ``BlockGf`` on a DLR mesh) at the points of the IAFT mesh of its
+    statistics, as an array ``(nw,) + target_shape`` (a list of them for a ``BlockGf``). The gf is
+    not symmetrized here; call ``make_hermitian`` externally if needed.
+    """
+    if not isinstance(gf_dlr, (Gf, BlockGf)):
         raise ValueError(f"gf_dlr_to_ir: Invalid type of gf_dlr")
+    stats = 'b' if gf_dlr.mesh.statistic == 'Boson' else 'f'
+    return eval_on_points(gf_dlr, iaft.wn_mesh(stats=stats), gf_dlr.mesh.statistic, gf_dlr.mesh.beta)
 
 
 def gf_dlr_to_ir_phsym(gf_dlr, iaft):
+    """
+    A bosonic DLR ``Gf`` at the non-negative half of the IAFT bosonic mesh, as an array
+    ``(nw_b_pos,) + target_shape``.
+    """
     assert gf_dlr.mesh.statistic == "Boson", (
         "gf_dlr_to_ir_phsym: Gf statistics must be Boson"
     )
-    ir_idx_b = iaft.wn_mesh(stats='b', phys_notation=True, positive_only=True)
-    nw_b_pos = len(ir_idx_b)
-    iw_mesh_uniform_b = MeshImFreq(
-        beta=gf_dlr.mesh.beta,
-        statistic=gf_dlr.mesh.statistic,
-        n_iw=ir_idx_b[-1]+10
-    )
-    gf_iw_data = np.zeros((nw_b_pos,) + gf_dlr.data[:].shape[1:], dtype=complex)
-    for i, idx in enumerate(ir_idx_b):
-        gf_iw_data[i] = gf_dlr(iw_mesh_uniform_b(idx))
-
-    return gf_iw_data
+    return eval_on_points(gf_dlr, iaft.wn_mesh(stats='b', positive_only=True), "Boson", gf_dlr.mesh.beta)
 
 
 def blk_gf_to_blk_arr(block_gf):
@@ -997,7 +970,7 @@ def problem_to_triqs(problem, *, h_int_kind="density", screen_j=False, real_hami
     u_gf = symmetrize_blk2_gf(u_gf, problem.degenerate_blk, gf_struct)
 
   # the matrices of the final (shifted, symmetrized) h0 operator
-  h0_blocks = [np.asarray(blk) for blk in block_matrix_from_op(h0_op, gf_struct)]
+  h0_blocks = [np.asarray(blk, dtype=complex) for blk in block_matrix_from_op(h0_op, gf_struct)]
   return TriqsInputs(mesh_f=mesh_f, mesh_b=mesh_b, h0_op=h0_op, h0_blocks=h0_blocks,
                      delta_iw=delta_gf, h_int=h_int, u_weiss_iw=u_gf)
 

@@ -43,6 +43,22 @@ if _TRIQS_AVAILABLE:
   except ImportError:
     pass
 
+_TRIQS_CTINT_AVAILABLE = False
+if _TRIQS_AVAILABLE:
+  try:
+    from . import ctint
+    _TRIQS_CTINT_AVAILABLE = True
+  except ImportError:
+    pass
+
+_TRIQS_CTHYB_AVAILABLE = False
+if _TRIQS_AVAILABLE:
+  try:
+    from . import cthyb
+    _TRIQS_CTHYB_AVAILABLE = True
+  except ImportError:
+    pass
+
 def __getattr__(name):
   if not _TRIQS_AVAILABLE:
     raise ImportError(
@@ -54,5 +70,15 @@ def __getattr__(name):
     raise ImportError(
       f"'ctseg' is not available because it requires TRIQS/CTSEG. "
       f"Please ensure TRIQS/CTSEG is installed (https://github.com/triqs/ctseg)."
+    )
+  if name == "ctint" and not _TRIQS_CTINT_AVAILABLE:
+    raise ImportError(
+      f"'ctint' is not available because it requires TRIQS/ctint. "
+      f"Please ensure TRIQS/ctint is installed (https://github.com/triqs/ctint)."
+    )
+  if name == "cthyb" and not _TRIQS_CTHYB_AVAILABLE:
+    raise ImportError(
+      f"'cthyb' is not available because it requires TRIQS/cthyb. "
+      f"Please ensure TRIQS/cthyb is installed (https://github.com/triqs/cthyb)."
     )
   raise AttributeError(f"module 'coqui.dmft' has no attribute '{name}'")

@@ -148,8 +148,8 @@ class ImpurityProblem:
   target_density : float
       Local density the impurity chemical-potential search aims at.
   occupations_sab : ndarray, (2, norb, norb)
-      Density matrix of the local Green's function, for backends that need occupations before
-      solving (ctint's alpha centres).
+      Density matrix of the local Green's function, stored in ``inputs/`` for backends that need
+      occupations before solving (none of the shipped backends reads it).
   degenerate_blk : list of index groups, optional
       Degenerate groups of ``gf_struct`` blocks the backend symmetrizes over.
   mu_shift : float
@@ -290,14 +290,22 @@ class ImpurityResult:
   def solver_agnostic_results(self):
     """
     The backend-independent results the GW+EDMFT loop needs to proceed, as one flat dict:
-    occupations, density, the contract arrays that are present, and the diagnostics.
+    occupations, density, the self-energy, Green's function, polarization and screened interaction
+    (``Sigma_infty``, ``Sigma_iw_data``, ``G_iw_data``, ``Pi_iw_data``, ``W_iw_data``; ``None``
+    where the backend returned nothing, so that the absence is explicit), and the diagnostics.
     ``solver_data`` is not included.
+
+    Raises
+    ------
+    ValueError
+        For an occupations-only result (the chemical-potential search reads ``density`` directly).
     """
+    if self.occupations_only:
+      raise ValueError("solver_api::ImpurityResult.solver_agnostic_results: an occupations-only "
+                       "result has no solver-agnostic arrays to merge")
     out = {"orbital_occupations": self.orbital_occupations, "density": float(self.density)}
     for key in ("Sigma_infty", "Sigma_iw_data", "G_iw_data", "Pi_iw_data", "W_iw_data"):
-      value = getattr(self, key)
-      if value is not None:
-        out[key] = value
+      out[key] = getattr(self, key)
     out.update(self.diagnostics)
     return out
 
@@ -486,6 +494,8 @@ _REGISTERED_SOLVERS = {}
 # when selected, so that ``coqui.dmft`` loads without their TRIQS packages.  
 _SHIPPED_SOLVERS = {
   "ctseg": ("coqui.dmft.ctseg", "CtsegSolver", "triqs_ctseg"),
+  "ctint": ("coqui.dmft.ctint", "CtintSolver", "triqs_ctint"),
+  "cthyb": ("coqui.dmft.cthyb", "CthybSolver", "triqs_cthyb"),
 }
 
 
@@ -553,7 +563,7 @@ def make_solver(solver_block, *, comm_size):
   ----------
   solver_block : dict
       The ``solver`` table of one impurity. ``type`` is the registered name of the backend
-      (``"ctseg"``, or a name added with ``register_solver``). Every other key, the
+      (``"ctseg"``, ``"ctint"``, ``"cthyb"``, or a name added with ``register_solver``). Every other key, the
       ``mu_search`` table included, is passed to the backend's constructor unchanged.
   comm_size : int
       Number of MPI ranks, for the backends that divide their Monte Carlo budget over ranks.

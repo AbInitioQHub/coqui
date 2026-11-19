@@ -17,7 +17,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==========================================================================
 """
-import os
 from copy import deepcopy
 import triqs.utility.mpi as mpi
 from h5 import HDFArchive
@@ -188,8 +187,7 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
     - With ``edmft_iter_per_loop == 0`` and ``gw_iter_per_loop == 1``, ``niter`` and
       ``gw_iter_per_loop`` are swapped so that the GW-only run still writes the ``embed`` data.
     
-    - ``restart = False`` is not implemented and the GW checkpoint ``{outdir}/{prefix}.mbpt.h5``
-      must exist; both are errors here, before anything runs.
+    - ``restart = False`` is not implemented and is an error here, before anything runs.
     """
     gw_edmft_group = deepcopy(gw_edmft_params)
 
@@ -235,12 +233,6 @@ def convert_gw_edmft_params(gw_edmft_params: dict):
             "Starting the GW+EDMFT workflow from scratch (restart=False) is not implemented yet. " \
             "Set restart=True (i.e. current default) to start from a previous checkpoint."
         )
-    coqui_chkpt_h5 = outdir + "/" + prefix + ".mbpt.h5"
-    if not os.path.exists(coqui_chkpt_h5):
-        raise FileNotFoundError(
-            f"The GW checkpoint {coqui_chkpt_h5} is missing. A valid GW checkpoint file is necessary to initialize the GW+EDMFT workflow."
-        )
-
     iter_params = gw_edmft_group.pop('iter_alg', {"alg": "damping", "mixing": 0.3})
     if iter_params['alg'] != 'damping':
         raise NotImplementedError(

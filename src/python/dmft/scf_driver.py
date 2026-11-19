@@ -17,6 +17,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==========================================================================
 """
+import os
 import numpy as np
 from h5 import HDFArchive
 
@@ -124,6 +125,17 @@ def run_gw_edmft(h_int, embedding, *, proj_info=None, params: dict):
                         ``reuse_config`` (``False``) with ``restart_n_warmup_cycles`` (int >= 1,
                         required with ``reuse_config``); unknown keys are forwarded to CT-SEG's
                         ``solve``.
+                        CT-INT keys (``type = "ctint"``; density-density ``h_int`` only, the
+                        polarization always measured, no configuration reuse): ``n_tau_chi2``
+                        (``1001``, the tau points of the density-correlator measurement); the
+                        tau grids follow the impurity DLR mesh; unknown keys are forwarded to
+                        ``triqs_ctint.Solver.solve``.
+                        CT-HYB keys (``type = "cthyb"``; ``h_int`` = ``"density"``, ``"kanamori"``
+                        or ``"full"``; size-1 blocks; no configuration reuse): ``perform_tail_fit`` (``True``) with the window
+                        ``fit_min_w`` / ``fit_max_w`` (``2.5`` / ``10.0`` Ha, problem- and
+                        budget-dependent) and ``fit_max_moment`` (``7``); the meshes and the
+                        Lang-Firsov kernel follow the impurity DLR mesh; unknown keys are
+                        forwarded to ``triqs_cthyb.Solver.solve``.
                     - ``init_imp_results`` (str, default ``"dc"``): initialization strategy
                         for impurity self-energies (``"dc"`` or ``"zero"``).
                     - ``degenerate_blk`` (list[list[int]], default ``None``): explicit
@@ -260,6 +272,10 @@ def run_gw_edmft(h_int, embedding, *, proj_info=None, params: dict):
     solvers = _make_solvers(impurity_params_list, coqui_mpi.comm_size(), wloc_params['screen_type'])
 
     coqui_chkpt_h5 = embed_params['outdir']+"/"+embed_params['prefix']+".mbpt.h5"
+    if not os.path.exists(coqui_chkpt_h5):
+        raise FileNotFoundError(
+            f"scf_driver::run_gw_edmft: the GW checkpoint {coqui_chkpt_h5} is missing; the GW+EDMFT "
+            f"workflow starts from a converged GW checkpoint.")
     dmft_chkpt_h5 = edmft_params.pop('chkpt_h5', coqui_chkpt_h5)
 
     # DMFT state container
@@ -546,7 +562,7 @@ def _compute_weiss_fields(coqui_mpi, imp_results, imp_inputs, imp_params, iaft):
                 coqui_dmft.eval_pi_rpa(gloc_t_mat, density_only=True), stats='b'
             )
         else:
-            if imp_results['Pi_iw_data'] is None:
+            if imp_results.get('Pi_iw_data') is None:
                 raise RuntimeError(f"scf_driver::_compute_weiss_fields: screen_type = "
                                    f"{imp_inputs['screen_type']!r} needs the impurity polarization, "
                                    f"but the impurity results carry none (the backend did not "
@@ -744,7 +760,7 @@ def _edmft_convergence_check(coqui_mpi, imp_index, Input, Res, iaft,
         metrics['diff_g_weiss'] = float(np.max(np.abs(norm_grid_gw)))
         coqui.app_log(1, f"  |g_weiss_tau - g_weiss_prev_tau|        = {metrics['diff_g_weiss']}")
 
-    if Res['W_iw_data'] is not None:
+    if Res.get('W_iw_data') is not None:
         # |Wloc - Wimp| restricted to density-density components (always computed)
         wloc_dd  = coqui_dmft.product_basis_to_density_density(Input['Wloc_t'])
         wimp_raw = iaft.w_to_tau_phsym(Res["W_iw_data"][0], stats='b')
@@ -815,7 +831,8 @@ def solve_impurities_from_chkpt(coqui_mpi, *, dmft_iteration=-1, imp_indices=Non
         as ``Sigma_iw_data``, ``Pi_iw_data``, and ``W_iw_data``.
     """
 
-    params = convert_gw_edmft_params(params)
+    # only the edmft stage is used; niter is irrelevant to a re-solve
+    params = convert_gw_edmft_params({'niter': 1, **params})
     
     edmft_params = params.pop('edmft')
     imp_iaft_params = edmft_params.pop('iaft', {})

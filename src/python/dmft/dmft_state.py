@@ -262,6 +262,8 @@ class DMFTState(object):
                 )
             gf_struct_2e = self.embedding['2e'].imp_block_structure[imp_idx]
             for blk_idx, (blk_name, blk_dim) in enumerate(gf_struct_2e):
+                if res.get('Pi_iw_data') is None:
+                    break                    # the checkpoint holds no polarization (non-density h_int)
                 assert res['Pi_iw_data'][blk_idx].shape[0] == nw_b_half, (
                     "Incompatible bosonic Matsubara mesh for the loaded impurity Pi"
                 )
@@ -380,6 +382,8 @@ class DMFTState(object):
                         raise KeyError(f"Missing key '{imp}' for impurity {imp_idx} during damping.")
                     if dc not in res:
                         raise KeyError(f"Missing key '{dc}' for impurity {imp_idx} during damping.")
+                    if res.get(imp) is None:
+                        continue             # no polarization from this backend: nothing to damp
                     _mix_into(res[imp], res[dc], mixing)
             return
         
@@ -395,6 +399,10 @@ class DMFTState(object):
             res = self.impurity_results[imp_idx]
             res_prev = impurity_results_prev[idx]
             for key in keys_to_damp:
+                if key in ('Pi_iw_data', 'Pi_iw_dc_data') and (res.get(key) is None or res_prev.get(key) is None):
+                    # an absent polarization (None, or not written to the checkpoint): a backend that
+                    # measured no density correlator (non-density h_int); nothing to damp
+                    continue
                 if key not in res or key not in res_prev:
                     raise KeyError(f"Missing key '{key}' for impurity {imp_idx} during damping.")
                 _mix_into(res[key], res_prev[key], mixing)

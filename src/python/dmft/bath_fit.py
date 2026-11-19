@@ -149,6 +149,10 @@ def fit_impurity_results_boson(imp_res, iaft, causal_params):
     if nbath == -1 and w0_pi is None and w0_w is None:
         return
 
+    if imp_res.get("Pi_iw_data") is None:
+        app_log(1, "No impurity polarization in the results (the backend measured no density correlator):\n"
+                   "  the bosonic causal projection of Pi_imp / W_imp is skipped\n")
+        return
     n_exclude = causal_params.get("n_exclude_low_freq_impurity", 0)
     fit_res = {}
     if mpi.is_master_node():
