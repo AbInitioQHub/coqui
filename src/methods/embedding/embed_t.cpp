@@ -468,14 +468,8 @@ namespace methods {
     auto& sVhf_skij = mb_state.sF_skij.value();
     auto& proj = mb_state.proj_boson.value().proj_fermi();
 
-    auto sVhf_correction_upfold = sVhf_skij;
-    sVhf_correction_upfold.set_zero();
-
     nda::array<ComplexType, 4> Vhf_correction = mb_state.Vhf_imp_sIab.value() - mb_state.Vhf_dc_sIab.value();
-    proj.upfold(sVhf_correction_upfold, Vhf_correction);
-
-    if (sVhf_skij.node_comm()->root()) sVhf_skij.local() += sVhf_correction_upfold.local();
-    sVhf_skij.communicator()->barrier();
+    proj.upfold_add(sVhf_skij, Vhf_correction);
   }
 
   void embed_t::add_Sigma_dyn_correction(MBState &mb_state, bool subtract_dc) {
@@ -484,9 +478,6 @@ namespace methods {
     auto nImps = proj.nImps();
     auto nImpOrbs = proj.nImpOrbs();
     auto& sSigma_tskij = mb_state.sSigma_tskij.value();
-
-    auto sSigma_correction_upfold = sSigma_tskij;
-    sSigma_correction_upfold.set_zero();
 
     nda::array<ComplexType, 5> Sigma_imp_tsIab(mb_state.ft->nt_f(), _MF->nspin(), nImps, nImpOrbs, nImpOrbs);
     mb_state.ft->w_to_tau(mb_state.Sigma_imp_wsIab.value(), Sigma_imp_tsIab, imag_axes_ft::fermion);
@@ -499,9 +490,7 @@ namespace methods {
       Sigma_imp_tsIab -= Sigma_dc_tsIab;
     }
 
-    proj.upfold(sSigma_correction_upfold, Sigma_imp_tsIab);
-    if (sSigma_tskij.node_comm()->root()) sSigma_tskij.local() += sSigma_correction_upfold.local();
-    sSigma_tskij.communicator()->barrier();
+    proj.upfold_add(sSigma_tskij, Sigma_imp_tsIab);
   }
 
   template<nda::ArrayOfRank<4> Array_base_t>
@@ -509,12 +498,7 @@ namespace methods {
                                      MBState &mb_state) {
 
     auto& proj = mb_state.proj_boson.value().proj_fermi();
-    auto sVcorr_skij_upfold = sVcorr_skij;
-    sVcorr_skij_upfold.set_zero();
-
-    proj.upfold(sVcorr_skij_upfold, mb_state.Vcorr_dc_sIab.value());
-    if (sVcorr_skij.node_comm()->root()) sVcorr_skij.local() -= sVcorr_skij_upfold.local();
-    sVcorr_skij.communicator()->barrier();
+    proj.upfold_add(sVcorr_skij, mb_state.Vcorr_dc_sIab.value(), ComplexType(-1.0));
   }
 
 } // methods

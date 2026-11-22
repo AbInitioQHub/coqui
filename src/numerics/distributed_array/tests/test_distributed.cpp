@@ -507,4 +507,123 @@ TEST_CASE("redistribute_nda", "[math]")
   }
 }
 
+TEST_CASE("redistribute_nda_streaming", "[math][redistribute][streaming]")
+{
+  auto world = boost::mpi3::environment::get_world_instance();
+  long size = world.size();
+
+  // Exercise Fortran layout and force each overlap through many tiny chunks.
+  {
+    using larray = nda::array<double, 2, nda::F_layout>;
+    auto A = make_distributed_array<larray>(world, {size, 1}, {size + 5, 3 * size + 7});
+    auto B = make_distributed_array<larray>(world, {1, size}, {size + 5, 3 * size + 7});
+    auto Aloc = A.local();
+    auto origin = A.origin();
+    auto gshape = A.global_shape();
+    for (long i = 0; i < Aloc.shape(0); ++i)
+      for (long j = 0; j < Aloc.shape(1); ++j)
+        Aloc(i, j) = static_cast<double>((origin[0] + i) * gshape[1] + origin[1] + j);
+
+    redistribute_streaming(A, B, 1.0, 0.0, 7);
+
+    auto Bloc = B.local();
+    origin = B.origin();
+    for (long i = 0; i < Bloc.shape(0); ++i)
+      for (long j = 0; j < Bloc.shape(1); ++j)
+        REQUIRE(Bloc(i, j) == static_cast<double>((origin[0] + i) * gshape[1] + origin[1] + j));
+
+    // A reusable plan must observe new source values while retaining the fixed
+    // layouts. The adaptive plan overload retains the collective fast path for
+    // this small regular layout.
+    auto plan = make_redistribution_plan(A, B, 7);
+    Aloc += 1000.0;
+    Bloc = -1.0;
+    redistribute(A, B, plan);
+    for (long i = 0; i < Bloc.shape(0); ++i)
+      for (long j = 0; j < Bloc.shape(1); ++j)
+        REQUIRE(Bloc(i, j) == 1000.0 +
+            static_cast<double>((origin[0] + i) * gshape[1] + origin[1] + j));
+  }
+
+  // Exercise the truthful irregular-block layout used for a selected-axis
+  // transfer: only an active subset of ranks owns source blocks, while the
+  // destination is regularly distributed over every rank.
+  {
+    using larray = nda::array<double, 2>;
+    long active_ranks = std::max(1L, (size + 1) / 2);
+    long global_rows = 2 * active_ranks + 1;
+    bool active = world.rank() < active_ranks;
+    long base_rows = global_rows / active_ranks;
+    long remainder = global_rows % active_ranks;
+    long local_rows = active ? base_rows + (world.rank() < remainder ? 1 : 0) : 0;
+    long row_origin = active ? world.rank() * base_rows + std::min(long(world.rank()), remainder) : 0;
+    std::array<long, 2> local_shape = active ? std::array<long, 2>{local_rows, 5} :
+                                               std::array<long, 2>{0, 0};
+    larray local(local_shape);
+    for (long i = 0; i < local_rows; ++i)
+      for (long j = 0; j < 5; ++j)
+        local(i, j) = static_cast<double>((row_origin + i) * 5 + j);
+
+    memory::irregular_block_darray_t<larray, decltype(world)> selected(
+        std::addressof(world), {global_rows, 5}, {row_origin, 0}, std::move(local));
+    auto B = make_distributed_array<larray>(world, {size, 1}, {global_rows, 5});
+    auto plan = make_redistribution_plan(selected, B, 7);
+    plan.validate_source_coverage();
+    plan.validate_destination_coverage();
+    redistribute_streaming(selected, B, plan);
+
+    auto Bloc = B.local();
+    auto origin = B.origin();
+    for (long i = 0; i < Bloc.shape(0); ++i)
+      for (long j = 0; j < Bloc.shape(1); ++j)
+        REQUIRE(Bloc(i, j) == static_cast<double>((origin[0] + i) * 5 + origin[1] + j));
+  }
+
+  // Exercise a higher-rank C-layout tensor and the general B = a*A + b*B path.
+  {
+    using larray = nda::array<ComplexType, 4>;
+    auto A = make_distributed_array<larray>(world, {size, 1, 1, 1}, {size + 3, size + 5, 3, 2});
+    auto B = make_distributed_array<larray>(world, {1, size, 1, 1}, {size + 3, size + 5, 3, 2});
+    auto Aloc = A.local();
+    auto Aorigin = A.origin();
+    auto gshape = A.global_shape();
+    for (long i = 0; i < Aloc.shape(0); ++i)
+      for (long j = 0; j < Aloc.shape(1); ++j)
+        for (long k = 0; k < Aloc.shape(2); ++k)
+          for (long l = 0; l < Aloc.shape(3); ++l) {
+            double x = static_cast<double>((((Aorigin[0] + i) * gshape[1] + Aorigin[1] + j) *
+                                             gshape[2] + Aorigin[2] + k) * gshape[3] + Aorigin[3] + l);
+            Aloc(i, j, k, l) = ComplexType{x, -0.5 * x};
+          }
+
+    auto Bloc = B.local();
+    auto Borigin = B.origin();
+    for (long i = 0; i < Bloc.shape(0); ++i)
+      for (long j = 0; j < Bloc.shape(1); ++j)
+        for (long k = 0; k < Bloc.shape(2); ++k)
+          for (long l = 0; l < Bloc.shape(3); ++l) {
+            double x = static_cast<double>((((Borigin[0] + i) * gshape[1] + Borigin[1] + j) *
+                                             gshape[2] + Borigin[2] + k) * gshape[3] + Borigin[3] + l);
+            Bloc(i, j, k, l) = ComplexType{1.0 + 0.25 * x, 2.0 - 0.125 * x};
+          }
+
+    ComplexType a{0.5, -1.0};
+    ComplexType b{-0.25, 0.5};
+    // Non-default coefficients must make the default dispatcher select the
+    // streaming implementation, even though this test tensor is small.
+    redistribute(A, B, a, b);
+
+    for (long i = 0; i < Bloc.shape(0); ++i)
+      for (long j = 0; j < Bloc.shape(1); ++j)
+        for (long k = 0; k < Bloc.shape(2); ++k)
+          for (long l = 0; l < Bloc.shape(3); ++l) {
+            double x = static_cast<double>((((Borigin[0] + i) * gshape[1] + Borigin[1] + j) *
+                                             gshape[2] + Borigin[2] + k) * gshape[3] + Borigin[3] + l);
+            ComplexType expected = a * ComplexType{x, -0.5 * x} +
+                                   b * ComplexType{1.0 + 0.25 * x, 2.0 - 0.125 * x};
+            REQUIRE(std::abs(Bloc(i, j, k, l) - expected) < 1.0e-12);
+          }
+  }
+}
+
 } // bdft_tests

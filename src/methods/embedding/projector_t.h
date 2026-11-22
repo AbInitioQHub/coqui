@@ -229,6 +229,17 @@ namespace methods {
     template<nda::ArrayOfRank<5> Array_base_t, nda::ArrayOfRank<6> Ac_t>
     void upfold(sArray_t<Array_base_t> &O_tskij, const Ac_t &O_tskIab) const;
 
+    /** Upfold Oloc and accumulate alpha * Oloc in an existing crystal-basis array. */
+    template<nda::ArrayOfRank<4> Array_base_t, nda::ArrayOfRank<4> Oloc_t>
+    void upfold_add(sArray_t<Array_base_t> &O_skij, const Oloc_t &Oloc_sIab,
+                    ComplexType alpha = ComplexType(1.0)) const;
+    template<nda::ArrayOfRank<5> Array_base_t, nda::ArrayOfRank<5> Oloc_t>
+    void upfold_add(sArray_t<Array_base_t> &O_tskij, const Oloc_t &Oloc_tsIab,
+                    ComplexType alpha = ComplexType(1.0)) const;
+    template<nda::ArrayOfRank<5> Array_base_t, nda::ArrayOfRank<6> Ac_t>
+    void upfold_add(sArray_t<Array_base_t> &O_tskij, const Ac_t &O_tskIab,
+                    ComplexType alpha = ComplexType(1.0)) const;
+
     template<nda::ArrayOfRank<5> Array_base_t>
     auto downfold_k_fbz(const sArray_t<Array_base_t> &O_tskij) const -> nda::array<ComplexType, 6>;
 

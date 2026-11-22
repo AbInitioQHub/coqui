@@ -73,11 +73,11 @@ public:
     // (no extrapolation as well)
     bool grow_xvsp_only;
 
-    auto get_extrapolated_state() {
+    const Vector& get_extrapolated_state() const {
         if(extrapolated_state == nullptr) {
             APP_ABORT("DIIS state is not initialized! ABORT!");
         }
-        return extrapolated_state->get();
+        return extrapolated_state->get_ref();
     }
 private:
     
@@ -158,7 +158,7 @@ public:
      * return 1 if extrapolation was performed
      *        0 if no extrapolation (just growing the subspace)
      */
-    int next_step(const Vector& new_vec) {
+    int next_step(Vector new_vec) {
         if (x_vsp->size() == 0 || grow_xvsp_only) {
             app_log(2, diis_str + "Growing vector subspace only. No extrapolation.\n");
             x_vsp->add_to_vspace(new_vec);    // growing vector space
@@ -170,15 +170,16 @@ public:
             // Normal execution
             app_log(2, diis_str + "Growing vector and residual subspaces for DIIS\n");
             // Fill the extrapolated state with the current vector for residual computation
-            extrapolated_state->put(new_vec);
-            Vector res;
-            if(! residual->get_diis_residual(res) ) {
-                APP_ABORT(diis_str +  "Could not get residual!!! ABORT!");
+            extrapolated_state->put(std::move(new_vec));
+            {
+                Vector res;
+                if(! residual->get_diis_residual(res) ) {
+                    APP_ABORT(diis_str +  "Could not get residual!!! ABORT!");
+                }
+                update_overlaps(res); // the overlap with res is added in any case...
+                res_vsp->add_to_vspace(res);   // growing residual space
             }
-            update_overlaps(res); // the overlap with res is added in any case...
-
-            res_vsp->add_to_vspace(res);   // growing residual space
-            x_vsp->add_to_vspace(new_vec); // growing vector space
+            x_vsp->add_to_vspace(extrapolated_state->get_ref()); // growing vector space
         } else {
             // The subspace is already of the maximum size
             app_log(2, diis_str + "Reached maximum subspace -> the first vector will be kicked out of the subspace.\n");
@@ -188,14 +189,16 @@ public:
             purge_overlap(0);      // purge overlap matrix of residuals
 
             // Fill the extrapolated state with the current vector for residual computation
-            extrapolated_state->put(new_vec);
-            Vector res;
-            if(! residual->get_diis_residual(res) ) {
-                APP_ABORT(diis_str +  "Could not get residual!!! ABORT!");
+            extrapolated_state->put(std::move(new_vec));
+            {
+                Vector res;
+                if(! residual->get_diis_residual(res) ) {
+                    APP_ABORT(diis_str +  "Could not get residual!!! ABORT!");
+                }
+                update_overlaps(res);
+                res_vsp->add_to_vspace(res);   // growing residual space
             }
-            update_overlaps(res);
-            res_vsp->add_to_vspace(res);   // growing residual space
-            x_vsp->add_to_vspace(new_vec); // growing vector space
+            x_vsp->add_to_vspace(extrapolated_state->get_ref()); // growing vector space
         }
 
         if (extrap && (res_vsp->size() > 1) ) {
@@ -213,7 +216,7 @@ public:
             // build extrapolated vector
             Vector result = x_vsp->make_linear_comb(m_C);
             app_log(2, "");
-            extrapolated_state->put(result); // update extrapolated state
+            extrapolated_state->put(std::move(result)); // update extrapolated state
             return 1;
             
         } else {

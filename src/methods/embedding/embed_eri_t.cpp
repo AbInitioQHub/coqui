@@ -21,6 +21,8 @@
 
 #include "mpi3/communicator.hpp"
 
+#include <algorithm>
+#include <limits>
 #include <unordered_set>
 #include "nda/nda.hpp"
 #include "nda/blas.hpp"
@@ -37,6 +39,47 @@
 #include "cholesky.hpp"
 
 namespace methods {
+  namespace {
+    // Keep MPI collectives below both the legacy int-count limit and a modest
+    // byte count.  Some MPI implementations still multiply count by the
+    // datatype extent in an int internally even when the C++ wrapper accepts
+    // a wider Size type.
+    template<typename T>
+    constexpr size_t mpi_chunk_elements() {
+      constexpr size_t max_chunk_bytes = size_t{32} * 1024 * 1024;
+      return std::max<size_t>(
+          1, std::min(static_cast<size_t>(std::numeric_limits<int>::max()),
+                      max_chunk_bytes / sizeof(T)));
+    }
+
+    template<typename communicator_t, typename T, typename Op>
+    void all_reduce_in_place_chunked(communicator_t &comm, T *data, size_t count, Op op) {
+      auto const chunk_size = mpi_chunk_elements<T>();
+      for (size_t offset = 0; offset < count; offset += chunk_size) {
+        auto n = std::min(chunk_size, count - offset);
+        comm.all_reduce_in_place_n(data + offset, static_cast<int>(n), op);
+      }
+    }
+
+    template<typename communicator_t, typename T, typename Op>
+    void reduce_in_place_chunked(communicator_t &comm, T *data, size_t count, Op op, int root = 0) {
+      auto const chunk_size = mpi_chunk_elements<T>();
+      for (size_t offset = 0; offset < count; offset += chunk_size) {
+        auto n = std::min(chunk_size, count - offset);
+        comm.reduce_in_place_n(data + offset, static_cast<int>(n), op, root);
+      }
+    }
+
+    template<typename communicator_t, typename T>
+    void broadcast_chunked(communicator_t &comm, T *data, size_t count, int root = 0) {
+      auto const chunk_size = mpi_chunk_elements<T>();
+      for (size_t offset = 0; offset < count; offset += chunk_size) {
+        auto n = std::min(chunk_size, count - offset);
+        comm.broadcast_n(data + offset, static_cast<int>(n), root);
+      }
+    }
+  } // namespace
+
   template<THC_ERI thc_t>
   auto embed_eri_t::compute_collation_impurity_basis(
       thc_t &thc, const projector_boson_t &proj_boson, nda::range u_rng)
@@ -1457,7 +1500,7 @@ namespace methods {
 
     // Bare interactions
     app_log(1, "Downfolding the bare Coulomb interactions...\n");
-    auto V_qabcd = downfold_Vq(thc, B_qIPab);
+    auto V_qabcd = downfold_Vq_root(thc, B_qIPab);
 
     // Dynamical screened interactions
     app_log(1, "Downfolding the dynamic screened interactions with screening type = {}.\n", screen_type);
@@ -1472,17 +1515,29 @@ namespace methods {
     // FIXME We assume particle-hole symmetry. This may not always be the case!
     scr_coulomb.dyson_W_in_place(dW_wqPQ, thc);
     auto [eps_inv_head_wq, eps_inv_head_w] = solvers::div_utils::eps_inv_head_w(dW_wqPQ, thc, *_MF, _div_treatment);
-    auto W_wqabcd = downfold_Wq(thc, dW_wqPQ, B_qIPab);
+    auto W_wqabcd = downfold_Wq_root(thc, dW_wqPQ, B_qIPab);
 
-    // projection for local quantities
+    // Projection for local quantities. The q-resolved tensors are assembled
+    // only on rank 0; broadcast only their much smaller q averages, which are
+    // needed by the common downstream path on every rank.
     nda::array<ComplexType, 4> V_abcd(nImpOrbs, nImpOrbs, nImpOrbs, nImpOrbs);
-    nda::array<ComplexType, 5> W_wabcd(W_wqabcd.shape(0), nImpOrbs, nImpOrbs, nImpOrbs, nImpOrbs);
-    for (size_t iq_full=0; iq_full < _MF->nqpts(); ++iq_full) {
-      V_abcd += V_qabcd(iq_full, nda::ellipsis{});
-      W_wabcd += W_wqabcd(nda::range::all, iq_full, nda::ellipsis{});
+    nda::array<ComplexType, 5> W_wabcd(eps_inv_head_w.shape(0), nImpOrbs, nImpOrbs, nImpOrbs, nImpOrbs);
+    V_abcd() = ComplexType(0.0);
+    W_wabcd() = ComplexType(0.0);
+    if (mpi->comm.root()) {
+      utils::check(V_qabcd.shape()[0] == _MF->nqpts() and
+                   W_wqabcd.shape()[0] == eps_inv_head_w.shape(0) and
+                   W_wqabcd.shape()[1] == _MF->nqpts(),
+                   "embed_eri_t::rpa_q_eri_impl: Inconsistent root-owned q tensor shapes.");
+      for (size_t iq_full=0; iq_full < _MF->nqpts(); ++iq_full) {
+        V_abcd += V_qabcd(iq_full, nda::ellipsis{});
+        W_wabcd += W_wqabcd(nda::range::all, iq_full, nda::ellipsis{});
+      }
     }
     V_abcd() /= _MF->nqpts();
     W_wabcd() /= _MF->nqpts();
+    broadcast_chunked(mpi->comm, V_abcd.data(), V_abcd.size());
+    broadcast_chunked(mpi->comm, W_wabcd.data(), W_wabcd.size());
 
     // finite-size correction to V_abcd
     V_div_correction(V_abcd, B_qIPab, thc);
@@ -1523,17 +1578,38 @@ namespace methods {
     auto dV_qPQ = thc.dZ({1, 1, mpi->comm.size()});
     // dV_qPQ = dV_qPQ + dW_wqPQ[0,...]
     {
-      // lazy for now, add redistribute routine that can operate on a submatrix, or eval_W_selected_frequencies
-      math::nda::redistribute_in_place(dW_wqPQ,{1,1,1,mpi->comm.size()},
-                     {dW_wqPQ.global_shape()[0],dW_wqPQ.global_shape()[1],dW_wqPQ.global_shape()[2],dV_qPQ.block_size()[2]}); 
-      utils::check(dV_qPQ.local_shape()[0] == dW_wqPQ.local_shape()[1] and
-                   dV_qPQ.local_shape()[1] == dW_wqPQ.local_shape()[2] and
-                   dV_qPQ.local_shape()[2] == dW_wqPQ.local_shape()[3] and
-                   dV_qPQ.origin()[0] == dW_wqPQ.origin()[1] and
-                   dV_qPQ.origin()[1] == dW_wqPQ.origin()[2] and
-                   dV_qPQ.origin()[2] == dW_wqPQ.origin()[3], 
-                   "Error in rpa_chol_eri_impl: Inconsistent data distribution, should not happen. \n");
-      dV_qPQ.local() += dW_wqPQ.local()(0,nda::ellipsis{});
+      // Materialize only the local part of w=0. Ranks in other frequency
+      // pools contribute an empty block. The streaming redistribution uses
+      // the source/destination block metadata to transfer overlaps directly
+      // to dV_qPQ, so the complete (w,q,P,Q) tensor is never redistributed or
+      // duplicated merely to select one frequency.
+      using local_Array_3D_t = memory::array<HOST_MEMORY, ComplexType, 3>;
+      auto const w0 = 0L;
+      auto const w_rng = dW_wqPQ.local_range(0);
+      bool const owns_w0 = w_rng.first() <= w0 and w0 < w_rng.last();
+      auto const dW_shape = dW_wqPQ.local_shape();
+      std::array<long, 3> w0_local_shape = owns_w0 ?
+          std::array<long, 3>{dW_shape[1], dW_shape[2], dW_shape[3]} :
+          std::array<long, 3>{0, 0, 0};
+      local_Array_3D_t W0_local(w0_local_shape);
+      if (owns_w0)
+        W0_local = dW_wqPQ.local()(w0 - dW_wqPQ.origin()[0], nda::ellipsis{});
+
+      auto const dW_global_shape = dW_wqPQ.global_shape();
+      auto const dW_origin = dW_wqPQ.origin();
+      memory::irregular_block_darray_t<local_Array_3D_t, mpi3::communicator> dW0_qPQ(
+          std::addressof(mpi->comm),
+          {dW_global_shape[1], dW_global_shape[2], dW_global_shape[3]},
+          {dW_origin[1], dW_origin[2], dW_origin[3]},
+          std::move(W0_local));
+
+      utils::check(dW0_qPQ.global_shape() == dV_qPQ.global_shape(),
+                   "Error in rpa_chol_eri_impl: w=0 and V global shapes differ.");
+      auto transfer_plan = math::nda::make_redistribution_plan(dW0_qPQ, dV_qPQ);
+      transfer_plan.validate_source_coverage();
+      transfer_plan.validate_destination_coverage();
+      math::nda::redistribute_streaming(dW0_qPQ, dV_qPQ, transfer_plan,
+                                        ComplexType(1.0), ComplexType(1.0));
     }
     dW_wqPQ.reset();
     app_log(1, "Treatment of long-wavelength divergence in V (bare): {}", _bare_div_treatment);
@@ -1642,7 +1718,7 @@ namespace methods {
         nda::blas::gemm(ComplexType(1.0), B_cd_P_conj, T_P_ab, ComplexType(1.0), V_cd_ab);
       }
     }
-    comm.all_reduce_in_place_n(V_cdab.data(), V_cdab.size(), std::plus<>{});
+    all_reduce_in_place_chunked(comm, V_cdab.data(), V_cdab.size(), std::plus<>{});
     V_cdab() /= (nqpts);
 
     // finite-size correction to V_cdab
@@ -1653,6 +1729,19 @@ namespace methods {
 
   template<THC_ERI thc_t, nda::ArrayOfRank<5> B_t>
   auto embed_eri_t::downfold_Vq(thc_t &thc, const B_t &B_qIPab)
+  -> nda::array<ComplexType, 5> {
+    auto V_qcdab = downfold_Vq_root(thc, B_qIPab);
+    auto mpi = thc.mpi();
+    auto &comm = mpi->comm;
+    auto [nqpts, nImps, NP, nImpOrbs, nImpOrbs2] = B_qIPab.shape();
+    if (not comm.root())
+      V_qcdab.resize(nqpts, nImpOrbs, nImpOrbs, nImpOrbs, nImpOrbs);
+    broadcast_chunked(comm, V_qcdab.data(), V_qcdab.size());
+    return V_qcdab;
+  }
+
+  template<THC_ERI thc_t, nda::ArrayOfRank<5> B_t>
+  auto embed_eri_t::downfold_Vq_root(thc_t &thc, const B_t &B_qIPab)
   -> nda::array<ComplexType, 5>
   {
     // B_qIPab lives in the full MP mesh
@@ -1674,7 +1763,14 @@ namespace methods {
     auto Q_rng = dV_qPQ.local_range(2);
     auto [q_origin, P_origin, Q_origin] = dV_qPQ.origin();
 
-    nda::array<ComplexType, 5> V_qcdab(nqpts, nImpOrbs, nImpOrbs, nImpOrbs, nImpOrbs);
+    // The complete q-resolved result is an output artifact consumed on rank 0
+    // by the serial HDF5 writer. Other ranks remain empty.
+    nda::array<ComplexType, 5> V_qcdab;
+    if (comm.root())
+      V_qcdab.resize(nqpts, nImpOrbs, nImpOrbs, nImpOrbs, nImpOrbs);
+    size_t orbital_slab_elements = static_cast<size_t>(nImpOrbs) * nImpOrbs * nImpOrbs * nImpOrbs;
+    size_t q_batch_size = std::max<size_t>(1, mpi_chunk_elements<ComplexType>() /
+                                                 std::max<size_t>(1, orbital_slab_elements));
 
     // V_qcdab = conj(B_qPdc) * [ V_qPQ ] * B_qQab
     nda::array<ComplexType, 2> V_PQ_loc(NP_loc, NQ_loc);
@@ -1682,33 +1778,38 @@ namespace methods {
     nda::array<ComplexType, 3> B_cdP_conj(nImpOrbs, nImpOrbs, NP_loc);
     auto B_cd_P_conj = nda::reshape(B_cdP_conj, shape_t<2>{nImpOrbs*nImpOrbs, NP_loc});
 
-    // Bare interactions
-    for (size_t iq_loc = 0; iq_loc < nq_loc; ++iq_loc) {
-      // iq lives in IBZ
-      size_t iq = q_origin + iq_loc;
+    // Bare interactions, reduced in bounded batches of full-BZ q slabs.
+    for (size_t q_begin=0; q_begin<nqpts; q_begin += q_batch_size) {
+      size_t q_end = std::min(static_cast<size_t>(nqpts), q_begin + q_batch_size);
+      nda::array<ComplexType, 5> V_batch(q_end - q_begin, nImpOrbs, nImpOrbs, nImpOrbs, nImpOrbs);
+      V_batch() = ComplexType(0.0);
+      for (size_t iq_full=q_begin; iq_full<q_end; ++iq_full) {
+        long iq = _MF->qp_to_ibz(iq_full);
+        if (q_origin <= iq and iq < q_origin + nq_loc) {
+          long iq_loc = iq - q_origin;
+          auto B_Q_ab = nda::reshape(B_qIPab(iq_full, 0, Q_rng, nda::ellipsis{}),
+                                     shape_t<2>{NQ_loc, nImpOrbs*nImpOrbs});
+          if (_MF->qp_trev(iq_full)) {
+            V_PQ_loc = nda::conj( dV_qPQ.local()(iq_loc, nda::ellipsis{}) );
+            nda::blas::gemm(V_PQ_loc, B_Q_ab, T_P_ab);
+          } else {
+            V_PQ_loc = dV_qPQ.local()(iq_loc, nda::ellipsis{});
+            nda::blas::gemm(V_PQ_loc, B_Q_ab, T_P_ab);
+          }
 
-      // loop over all symmetry-related q-points for iq
-      for (size_t iq_full=0; iq_full<nqpts; ++iq_full) {
-        if (_MF->qp_to_ibz(iq_full)!=iq) continue;
-        auto B_Q_ab = nda::reshape(B_qIPab(iq_full, 0, Q_rng, nda::ellipsis{}),
-                                   shape_t<2>{NQ_loc, nImpOrbs*nImpOrbs});
-        if (_MF->qp_trev(iq_full)) {
-          V_PQ_loc = nda::conj( dV_qPQ.local()(iq_loc, nda::ellipsis{}) );
-          nda::blas::gemm(V_PQ_loc, B_Q_ab, T_P_ab);
-        } else {
-          V_PQ_loc = dV_qPQ.local()(iq_loc, nda::ellipsis{});
-          nda::blas::gemm(V_PQ_loc, B_Q_ab, T_P_ab);
+          for (size_t P = 0; P < NP_loc; ++P) {
+            auto B_dc = B_qIPab(iq_full, 0, P_origin+P, nda::ellipsis{});
+            B_cdP_conj(nda::range::all, nda::range::all, P) = nda::conj(nda::transpose(B_dc));
+          }
+          auto V_2D = nda::reshape(V_batch(iq_full - q_begin, nda::ellipsis{}),
+                                   shape_t<2>{nImpOrbs*nImpOrbs, nImpOrbs*nImpOrbs});
+          nda::blas::gemm(ComplexType(1.0), B_cd_P_conj, T_P_ab, ComplexType(1.0), V_2D);
         }
-
-        for (size_t P = 0; P < NP_loc; ++P) {
-          auto B_dc = B_qIPab(iq_full, 0, P_origin+P, nda::ellipsis{});
-          B_cdP_conj(nda::range::all, nda::range::all, P) = nda::conj(nda::transpose(B_dc));
-        }
-        auto Vq_2D = nda::reshape(V_qcdab(iq_full, nda::ellipsis{}), shape_t<2>{nImpOrbs*nImpOrbs, nImpOrbs*nImpOrbs});
-        nda::blas::gemm(ComplexType(1.0), B_cd_P_conj, T_P_ab, ComplexType(1.0), Vq_2D);
       }
+      reduce_in_place_chunked(comm, V_batch.data(), V_batch.size(), std::plus<>{});
+      if (comm.root())
+        V_qcdab(nda::range(q_begin, q_end), nda::ellipsis{}) = V_batch;
     }
-    comm.all_reduce_in_place_n(V_qcdab.data(), V_qcdab.size(), std::plus<>{});
 
     return V_qcdab;
   }
@@ -1741,7 +1842,7 @@ namespace methods {
           for (long P = 0; P < NQ; ++P)
             nda::blas::gerc(ComplexType(e0)*chi_head(P),T_skIPa(0, is, ik, I, P, nda::range::all),
                             T_skIPa(0, is, ik, I, P, nda::range::all), BB_ab);
-      mpi->comm.reduce_in_place_n(BB_ab.data(),BB_ab.size(),std::plus<>{},0);
+      reduce_in_place_chunked(mpi->comm, BB_ab.data(), BB_ab.size(), std::plus<>{});
       if(not root)
         BB_ab = nda::array<ComplexType, 2>(0,0);
     }
@@ -1819,7 +1920,7 @@ namespace methods {
                                              nda::transpose(Vloc(iq, nda::ellipsis{})),
                             value_type(0.0), T);
           }
-          mpi->comm.all_reduce_in_place_n(T.data(),T.size(),std::plus<>{});
+          all_reduce_in_place_chunked(mpi->comm, T.data(), T.size(), std::plus<>{});
           for( long ab=0; ab<nImpOrbs*nImpOrbs; ++ab )
             D(ab) += norm * nda::blas::dotc(Bq(all,ab), T(ab,Q_rng));
         }
@@ -1909,7 +2010,7 @@ namespace methods {
             B() = ComplexType(0.0);
             for( auto [in,n] : itertools::enumerate(index) )
               B(in,Q_rng) = Bq(all,n);
-            mpi->comm.all_reduce_in_place_n(B.data(),B.size(),std::plus<>{});
+            all_reduce_in_place_chunked(mpi->comm, B.data(), B.size(), std::plus<>{});
             nda::blas::gemm(value_type(1.0), B, Vloc(iq, nda::ellipsis{}),
                             value_type(0.0), T);
             T = nda::conj(T);
@@ -1918,7 +2019,7 @@ namespace methods {
             B() = ComplexType(0.0);
             for( auto [in,n] : itertools::enumerate(index) )
               B(in,Q_rng) = nda::conj(Bq(all,n));
-            mpi->comm.all_reduce_in_place_n(B.data(),B.size(),std::plus<>{});
+            all_reduce_in_place_chunked(mpi->comm, B.data(), B.size(), std::plus<>{});
             nda::blas::gemm(value_type(1.0), B, Vloc(iq, nda::ellipsis{}),
                             value_type(0.0), T);
             nda::blas::gemm(norm, T, Bq, value_type(1.0), D);
@@ -2142,7 +2243,7 @@ namespace methods {
         }
       }
     }
-    dW_wqPQ.communicator()->all_reduce_in_place_n(W_wcdab.data(), W_wcdab.size(), std::plus<>{});
+    all_reduce_in_place_chunked(*dW_wqPQ.communicator(), W_wcdab.data(), W_wcdab.size(), std::plus<>{});
     W_wcdab() /= nqpts;
 
     // finite-size correction to W_cdab(w)
@@ -2155,6 +2256,21 @@ namespace methods {
   auto embed_eri_t::downfold_Wq([[maybe_unused]] thc_t &thc, memory::darray_t<Array_4D_t, communicator_t> &dW_wqPQ,
                                 const B_t &B_qIPab)
   -> nda::array<ComplexType, 6> {
+    auto W_wqcdab = downfold_Wq_root(thc, dW_wqPQ, B_qIPab);
+    auto &comm = *dW_wqPQ.communicator();
+    auto [nqpts, nImps, NP, nImpOrbs, nImpOrbs2] = B_qIPab.shape();
+    long nw_half = dW_wqPQ.global_shape()[0];
+    if (not comm.root())
+      W_wqcdab.resize(nw_half, nqpts, nImpOrbs, nImpOrbs, nImpOrbs, nImpOrbs);
+    broadcast_chunked(comm, W_wqcdab.data(), W_wqcdab.size());
+    return W_wqcdab;
+  }
+
+  template<THC_ERI thc_t, nda::MemoryArray Array_4D_t, typename communicator_t, nda::ArrayOfRank<5> B_t>
+  auto embed_eri_t::downfold_Wq_root([[maybe_unused]] thc_t &thc,
+                                     memory::darray_t<Array_4D_t, communicator_t> &dW_wqPQ,
+                                     const B_t &B_qIPab)
+  -> nda::array<ComplexType, 6> {
     auto [nqpts, nImps, NP, nImpOrbs, nImpOrbs2] = B_qIPab.shape();
     auto nw_half = dW_wqPQ.global_shape()[0];
     auto [nw_loc, nq_loc, NP_loc, NQ_loc] = dW_wqPQ.local_shape();
@@ -2163,8 +2279,14 @@ namespace methods {
     auto q_origin = dW_wqPQ.origin()[1];
     auto P_origin = dW_wqPQ.origin()[2];
 
-    nda::array<ComplexType, 6> W_wqcdab(nw_half, nqpts, nImpOrbs, nImpOrbs, nImpOrbs, nImpOrbs);
-    W_wqcdab() = ComplexType(0.0);
+    auto &comm = *dW_wqPQ.communicator();
+    // Root owns the complete HDF5 output; other ranks remain empty.
+    nda::array<ComplexType, 6> W_wqcdab;
+    if (comm.root())
+      W_wqcdab.resize(nw_half, nqpts, nImpOrbs, nImpOrbs, nImpOrbs, nImpOrbs);
+    size_t orbital_slab_elements = static_cast<size_t>(nImpOrbs) * nImpOrbs * nImpOrbs * nImpOrbs;
+    size_t wq_batch_size = std::max<size_t>(1, mpi_chunk_elements<ComplexType>() /
+                                                  std::max<size_t>(1, orbital_slab_elements));
 
     // W_wqcdab = conj(B_qPdc) * [ W_wqPQ ] * B_qQab
     nda::array<ComplexType, 2> T_P_ab(NP_loc, nImpOrbs*nImpOrbs);
@@ -2173,15 +2295,21 @@ namespace methods {
     auto B_cd_P_conj = nda::reshape(B_cdP_conj, shape_t<2>{nImpOrbs*nImpOrbs, NP_loc});
 
     auto W_loc = dW_wqPQ.local();
-    for (size_t iw_loc = 0; iw_loc < nw_loc; ++iw_loc) {
-      size_t iw = w_origin + iw_loc;
-      //auto W_cd_ab = nda::reshape(W_wcdab(iw, nda::ellipsis()), shape_t<2>{nImpOrbs*nImpOrbs, nImpOrbs*nImpOrbs});
-      for (size_t iq_loc = 0; iq_loc < nq_loc; ++iq_loc) {
-        size_t iq = q_origin + iq_loc; // iq lives inside IBZ
-
-        // loop over all symmetry-related q-points
-        for (size_t iq_full=0; iq_full<nqpts; ++iq_full) {
-          if (_MF->qp_to_ibz(iq_full)!=iq) continue;
+    size_t nwq = static_cast<size_t>(nw_half) * nqpts;
+    for (size_t wq_begin=0; wq_begin<nwq; wq_begin += wq_batch_size) {
+      size_t wq_end = std::min(nwq, wq_begin + wq_batch_size);
+      nda::array<ComplexType, 5> W_batch(wq_end - wq_begin, nImpOrbs, nImpOrbs, nImpOrbs, nImpOrbs);
+      W_batch() = ComplexType(0.0);
+      for (size_t iwq=wq_begin; iwq<wq_end; ++iwq) {
+        size_t iw = iwq / nqpts;
+        size_t iq_full = iwq % nqpts;
+        long iq = _MF->qp_to_ibz(iq_full);
+        bool owns_wq = w_origin <= static_cast<long>(iw) and
+                        static_cast<long>(iw) < w_origin + nw_loc and
+                        q_origin <= iq and iq < q_origin + nq_loc;
+        if (owns_wq) {
+          long iw_loc = static_cast<long>(iw) - w_origin;
+          long iq_loc = iq - q_origin;
           auto B_Q_ab = nda::reshape(B_qIPab(iq_full, 0, Q_rng, nda::ellipsis{}), shape_t<2>{NQ_loc, nImpOrbs*nImpOrbs});
           if (_MF->qp_trev(iq_full))
             W_PQ = nda::conj( W_loc(iw_loc, iq_loc, nda::ellipsis()) );
@@ -2193,12 +2321,20 @@ namespace methods {
             auto B_dc = B_qIPab(iq_full, 0, P_origin+P, nda::ellipsis{});
             B_cdP_conj(nda::range::all, nda::range::all, P) = nda::conj(nda::transpose(B_dc));
           }
-          auto W_wq_2D = nda::reshape(W_wqcdab(iw, iq_full, nda::ellipsis{}), shape_t<2>{nImpOrbs*nImpOrbs, nImpOrbs*nImpOrbs});
-          nda::blas::gemm(ComplexType(1.0), B_cd_P_conj, T_P_ab, ComplexType(1.0), W_wq_2D);
+          auto W_2D = nda::reshape(W_batch(iwq - wq_begin, nda::ellipsis{}),
+                                   shape_t<2>{nImpOrbs*nImpOrbs, nImpOrbs*nImpOrbs});
+          nda::blas::gemm(ComplexType(1.0), B_cd_P_conj, T_P_ab, ComplexType(1.0), W_2D);
+        }
+      }
+      reduce_in_place_chunked(comm, W_batch.data(), W_batch.size(), std::plus<>{});
+      if (comm.root()) {
+        for (size_t iwq=wq_begin; iwq<wq_end; ++iwq) {
+          size_t iw = iwq / nqpts;
+          size_t iq_full = iwq % nqpts;
+          W_wqcdab(iw, iq_full, nda::ellipsis{}) = W_batch(iwq - wq_begin, nda::ellipsis{});
         }
       }
     }
-    dW_wqPQ.communicator()->all_reduce_in_place_n(W_wqcdab.data(), W_wqcdab.size(), std::plus<>{});
 
     return W_wqcdab;
   }

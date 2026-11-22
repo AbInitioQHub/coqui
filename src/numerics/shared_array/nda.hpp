@@ -22,6 +22,8 @@
 #ifndef NUMERICS_SHARED_ARRAY_NDA_HPP
 #define NUMERICS_SHARED_ARRAY_NDA_HPP
 
+#include <limits>
+
 #include "configuration.hpp"
 #include "mpi3/communicator.hpp"
 #include "mpi3/shared_window.hpp"
@@ -151,14 +153,20 @@ namespace math {
         node_sync();
       }
 
-      void all_reduce() {
+      static constexpr size_t default_all_reduce_chunk_bytes = size_t{256} * 1024 * 1024;
+
+      void all_reduce(size_t max_chunk_bytes = default_all_reduce_chunk_bytes) {
         node_sync();
         if (_node_comm->root()) {
-          // split all_reduce() to avoid mpi count overflow
-          for (size_t shift=0; shift<_size; shift+=size_t(1e9)) {
+          // Bound both the MPI int count and the message size that may drive
+          // implementation-internal collective scratch.
+          size_t max_count = std::max<size_t>(
+              1, std::min<size_t>(max_chunk_bytes / sizeof(value_type),
+                                  static_cast<size_t>(std::numeric_limits<int>::max())));
+          for (size_t shift = 0; shift < _size; shift += max_count) {
             value_type *start = (value_type*)_win->base(0) + shift;
-            size_t count = (shift+size_t(1e9) < _size)? size_t(1e9) : _size-shift;
-            _internode_comm->all_reduce_in_place_n(start, count, std::plus<>{});
+            size_t count = std::min(max_count, static_cast<size_t>(_size) - shift);
+            _internode_comm->all_reduce_in_place_n(start, static_cast<int>(count), std::plus<>{});
           }
         }
         node_sync();
