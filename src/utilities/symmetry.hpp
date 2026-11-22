@@ -820,6 +820,7 @@ auto generate_dmatrix(MF_t &mf,
   bool irred = (assume_irreducible and 
                 std::all_of(eigv.begin(),eigv.end(),
                             [&](auto const& a) {return a!=0;}));
+  constexpr double degen_tol = 1e-4; // tolerance used to group energy eigenvalues into degenerate sets
   auto const& bz = mf.bz();
   long nkpts = bz.nkpts;
   long nkpts_ibz = bz.nkpts_ibz;
@@ -955,8 +956,23 @@ auto generate_dmatrix(MF_t &mf,
   sp_mat sp_d({1,1},1);
   nda::array<ComplexType,2> Temp(0,0);
   if constexpr (Sparse) {
-    int nz = (irred?long(8):nbnd);
-    sp_d = sp_mat({nbnd,nbnd},nz);  
+    long nz = nbnd;
+    if(irred) {
+      // Find the largest degenerate eigenvalue block over all k-points
+      // required for MCH hamiltonian at low potential strength  due to accidental degeneracies
+      nz = 1;
+      for( long ik=0; ik<nkpts; ++ik ) {
+        long ib=0;
+        while(ib < nbnd) {
+          long nb=1;
+          while( ib+nb<nbnd and std::abs(eigv(0,ik,ib)-eigv(0,ik,ib+nb)) < degen_tol ) nb++;
+          nz = std::max(nz,nb);
+          ib+=nb;
+        }
+      }
+      app_log(2, "  generate_dmatrix: largest degenerate block = {}\n", nz);
+    }
+    sp_d = sp_mat({nbnd,nbnd},nz);
     Temp = nda::array<ComplexType,2>(nz,nz);
   } else {
     shm_dmat = make_shared_array<Array_view_3D_t>(*mpi, {sk.size(),nbnd,nbnd});
@@ -1033,9 +1049,13 @@ auto generate_dmatrix(MF_t &mf,
       int ib=0;
       while(ib < nbnd) {
         int nb=1;
-        while( ib+nb<nbnd and std::abs(eigv(0,ik,ib)-eigv(0,ik,ib+nb)) < 1e-4 ) nb++;
+        while( ib+nb<nbnd and std::abs(eigv(0,ik,ib)-eigv(0,ik,ib+nb)) < degen_tol ) nb++;
         nda::range b_rng(ib,ib+nb);
         if constexpr (Sparse) {
+          // check for out of bounds error in dmatrix csr
+          utils::check( nb <= Temp.extent(0),
+                        "Error in generate_dmat: degenerate block of {} states exceeds "
+                        "buffer size {} at ik={}, ib={}.", nb, Temp.extent(0), ik, ib);
           nda::blas::gemm(ComplexType(1.0),psi(1,b_rng,all),
                                            nda::transpose(psi(0,b_rng,all)),
                           ComplexType(0.0),Temp(nda::range(nb),nda::range(nb)));
