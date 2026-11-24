@@ -144,6 +144,13 @@ namespace methods {
                      Cholesky_ERI auto &&chol, const nda::MemoryArrayOfRank<4> auto &S_skij);
 
       /**
+       * Check if the Cholesky integrals generated from mean-field orbitals are 
+       * purely real or complex to distinguish a gamma point solid from molecules.
+       */
+      bool use_real_cholesky(const nda::MemoryArrayOfRank<4> auto &Dm_skij,
+                               Cholesky_ERI auto &&chol);
+
+      /**
        * THC-HF implementation for q-independent interpolating points
        * @param Dm_skij
        * @param F_skij
