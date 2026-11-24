@@ -10,6 +10,24 @@
 namespace methods {
   namespace solvers {
 
+    bool hf_t::use_real_cholesky(const nda::MemoryArrayOfRank<4> auto &Dm_skij,
+                                 Cholesky_ERI auto &&chol) {
+      auto [ns, nkpts, nbnd, nbnd2] = Dm_skij.shape();
+      if (nkpts != 1 or chol.MF()->npol() != 1) return false;
+
+      auto im_ratio = [](auto const& A) {
+        return nda::max_element(nda::abs(nda::imag(A))) / nda::max_element(nda::abs(A));
+      };
+
+      double im = im_ratio(Dm_skij);
+      // check if real, DM on all ranks and Cholesky integrals on node roots
+      if (chol.mpi()->node_comm.root())
+        for (long is = 0; is < ns; ++is) im = std::max(im, im_ratio(chol.V(0, is, 0)));
+      bool is_real = chol.mpi()->comm.all_reduce_value(im, boost::mpi3::max<>{}) < 1e-8;
+      app_log(2, "    - single k-point: using {} Cholesky integrals", is_real ? "real" : "complex");
+      return is_real;
+    }
+
     template<nda::MemoryArray AF_t>
     void hf_t::add_J_mol(sArray_t<AF_t> &sF_skij, const nda::MemoryArrayOfRank<4> auto &Dm_skij,
                          Cholesky_ERI auto &&chol) {
@@ -127,7 +145,7 @@ namespace methods {
       auto Np = chol.Np();
       utils::check(MF->npol()==1, "Non-collinear calculations not yet implemented.");
 
-      if (nkpts == 1 and MF->npol()==1) {
+      if (use_real_cholesky(Dm_skij, chol)) {
         add_J_mol(sF_skij, Dm_skij, chol);
         return;
       }
@@ -283,7 +301,7 @@ namespace methods {
       auto Np = chol.Np();
       utils::check(MF->npol()==1, "Non-collinear calculations not yet implemented.");
 
-      if (nkpts == 1 and MF->npol()==1) {
+      if (use_real_cholesky(Dm_skij, chol)) {
         add_K_mol(sF_skij, Dm_skij, chol, S_skij);
         return;
       }
